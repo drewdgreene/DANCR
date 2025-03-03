@@ -43,11 +43,7 @@ Let's use DANCR to find answers in the data.
 - "habitat_characteristics_sample.csv"
 - "human_impacts_sample.csv"
 
-<!-- 
-SCREENSHOT SUGGESTION:
-Add a screenshot of the blank DANCR canvas here.
-Caption: DANCR's blank canvas - your starting point for data investigation
--->
+![Starting Canvas](images/blank_canvas.png)
 
 ## Step 2: Gathering the Evidence (Loading Data)
 
