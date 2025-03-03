@@ -1,8 +1,17 @@
 # DANCR - Data Analysis Node Canvas for Research
 
 DANCR is a visual programming tool for data analysis, processing, and visualization that allows users to build data pipelines through a drag-and-drop interface.
+<div align="center">
+  <a href="https://github.com/drewdgreene/DANCR/releases/download/v1/DANCR_Installer_v1.exe">
+    <img src="https://img.shields.io/badge/Download-DANCR%20Installer-blue?style=for-the-badge&logo=windows" alt="Download DANCR Installer" />
+  </a>
+  <a href="https://github.com/drewdgreene/DANCR/releases/download/v1/dancr_butterfly_investigation.zip">
+    <img src="https://img.shields.io/badge/Download-Butterfly%20Investigation%20Package-green?style=for-the-badge&logo=data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAYAAADgdz34AAAABmJLR0QA/wD/AP+gvaeTAAAA30lEQVRIie2UMQrCQBBFn0SbNCKksLew9AiexM5T2HgIK8/gJWy9QbCzshEsRBtNxGJNsokb3F2ygoLzYGB25/+fYWehoqJEOkAGpEBs7PPv3Sfw+q0gBB7AqCTJta5vZcHWSoBnLXEVLICZJUG/hCQF5sZGVkQrYAsMBK8HbICZ5w5OBYKHHwlQA0JgLPOnwA7oi72xVcB5JsG3wl+KMI976NQKENipQx6MHQdQs6BSFkDjn8ciVfNM/bDldrJSBwe1+yZ5o4D10Nzkt/3UxS2IgL01kVYcUgOW3oy8B5zKiB98AOJpi59q3IC8AAAAAElFTkSuQmCC" alt="Download Butterfly Investigation Package" />
+  </a>
+</div>
 
 ![DANCR's visual programming interface with an example workflow](images/pipeline_overview.png)
+
 
 ## Example Tutorial
 
@@ -29,12 +38,6 @@ Recent surveys suggest Leonardus Skipper butterfly populations are declining acr
 - Are conservation efforts showing any impact?
 
 Let's use DANCR to find answers in the data.
-
-<div align="center">
-  <a href="https://github.com/drewdgreene/DANCR/releases/download/v1/DANCR_Installer_v1.exe">
-    <img src="images/download-button.png" alt="Download DANCR" width="200"/>
-  </a>
-</div>
 
 ## Step 1: Starting Your Investigation
 
