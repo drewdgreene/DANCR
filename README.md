@@ -9,7 +9,7 @@ DANCR is a visual programming tool for data analysis, processing, and visualizat
 <details>
 <summary>Click to expand: Investigating Butterfly Population Decline with DANCR</summary>
 
-# Investigating Butterfly Population Decline with DANCR: A Step-by-Step Guide
+# Investigating Leonardus Skipper Butterfly Population Decline with DANCR: A Step-by-Step Guide
 
 ## If you wish to skip this tutorial and want to just run the finished pipeline:
 - Download the DANCR.exe and "dancr butterfly investigation.zip"
