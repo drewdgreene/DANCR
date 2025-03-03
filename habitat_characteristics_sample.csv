@@ -1,0 +1,22 @@
+Site_ID,Habitat_Type,Vegetation_Diversity,Dominant_Plant,Canopy_Cover,Soil_pH,Soil_Moisture,Soil_Disturbance,Elevation,Slope,Host_Plant_Abundance
+SITE01,Prairie,4.5,Andropogon gerardii,10,6.9,34,15,245,3,10
+SITE02,Prairie,4.6,Schizachyrium scoparium,6,7.2,33,12,258,2,8
+SITE03,Forest Edge,1.8,Acer saccharum,75,5.4,44,90,312,14,10
+SITE04,Prairie,4.8,Schizachyrium scoparium,5,7.1,36,8,263,2,12
+SITE05,Wetland Edge,3.1,Phalaris arundinacea,35,5.9,58,42,118,1,6
+SITE06,Prairie,4.7,Panicum virgatum,7,7.2,30,10,275,3,9
+SITE07,Prairie,4.5,Bouteloua curtipendula,8,7.1,32,12,238,2,8
+SITE08,Meadow,3.0,Symphyotrichum novae-angliae,28,6.2,36,68,198,7,18
+SITE09,Wetland Edge,2.9,Typha latifolia,40,6.1,61,51,105,0,5
+SITE10,Prairie,4.7,Sorghastrum nutans,5,7.4,28,6,255,2,8
+SITE11,Meadow,3.4,Monarda fistulosa,22,6.5,34,35,210,6,5
+SITE12,Meadow,3.3,Asclepias tuberosa,25,6.4,36,60,205,5,16
+SITE13,Forest Edge,1.9,Quercus alba,70,5.5,42,88,325,16,12
+SITE14,Wetland Edge,3.3,Scirpus atrovirens,38,5.8,56,44,125,2,15
+SITE15,Meadow,2.8,Pycnanthemum virginianum,30,6.0,39,52,205,8,5
+SITE16,Forest Edge,2.0,Cornus racemosa,68,5.3,40,85,315,18,10
+SITE17,Forest Edge,1.6,Fagus grandifolia,85,5.2,45,95,350,22,12
+SITE18,Meadow,3.5,Ratibida pinnata,20,6.4,33,40,215,5,14
+SITE19,Wetland Edge,2.7,Juncus effusus,45,5.6,59,55,110,1,6
+SITE20,Prairie,4.6,Echinacea pallida,8,7.0,32,10,250,3,11
+SITE21,Prairie,3.7,Andropogon gerardii,18,6.6,35,20,240,4,12

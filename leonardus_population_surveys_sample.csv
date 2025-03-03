@@ -1,0 +1,611 @@
+Survey_ID,Site_ID,Survey_Date,Year,Month,Count,Observer,Notes
+S0001,SITE01,2018-05-15,2018,5,92,Emma Johnson,Warm sunny day in prairie habitat
+S0002,SITE01,2018-06-22,2018,6,110,Emma Johnson,Ideal prairie conditions for butterfly activity
+S0003,SITE01,2018-07-18,2018,7,128,David Chen,Excellent prairie summer conditions
+S0004,SITE01,2018-08-12,2018,8,87,Maria Rodriguez,Some cloud cover in afternoon
+S0005,SITE01,2018-09-05,2018,9,72,Emma Johnson,Cooler than average for September
+S0006,SITE02,2018-05-16,2018,5,42,James Wilson,Recent controlled burn in adjacent area
+S0007,SITE02,2018-06-22,2018,6,52,David Chen,Evidence of predation observed
+S0008,SITE02,2018-07-19,2018,7,56,Maria Rodriguez,Many nectaring on Asclepias tuberosa
+S0009,SITE02,2018-08-13,2018,8,48,James Wilson,Heavy morning dew
+S0010,SITE02,2018-09-06,2018,9,40,David Chen,Declining activity with cooler temperatures
+S0011,SITE03,2018-05-15,2018,5,22,Maria Rodriguez,Site recently affected by trail construction
+S0012,SITE03,2018-06-22,2018,6,29,Emma Johnson,Recovery from earlier disturbance evident
+S0013,SITE03,2018-07-18,2018,7,30,James Wilson,Still below expected numbers
+S0014,SITE03,2018-08-12,2018,8,26,David Chen,Limited habitat utilization observed
+S0015,SITE03,2018-09-05,2018,9,20,Maria Rodriguez,Vegetation noticeably stressed
+S0016,SITE04,2018-05-17,2018,5,88,David Chen,Excellent habitat conditions
+S0017,SITE04,2018-06-24,2018,6,128,James Wilson,Exceptional activity in protected prairie
+S0018,SITE04,2018-07-20,2018,7,145,Emma Johnson,Highest count observed in entire study
+S0019,SITE04,2018-08-14,2018,8,132,Maria Rodriguez,Abundant mating pairs in ideal prairie habitat
+S0020,SITE04,2018-09-07,2018,9,82,James Wilson,Still good numbers late in season
+S0021,SITE05,2018-05-16,2018,5,72,Emma Johnson,Moderate counts in wetland edge
+S0022,SITE05,2018-06-23,2018,6,82,David Chen,Good butterfly activity near water
+S0023,SITE05,2018-07-19,2018,7,87,Maria Rodriguez,Peak summer numbers
+S0024,SITE05,2018-08-13,2018,8,78,James Wilson,Stable population
+S0025,SITE05,2018-09-06,2018,9,68,Emma Johnson,Good retention into fall
+S0026,SITE06,2018-05-17,2018,5,48,David Chen,Good counts in prairie habitat
+S0027,SITE06,2018-06-24,2018,6,56,Maria Rodriguez,Good nectar resources
+S0028,SITE06,2018-07-20,2018,7,60,James Wilson,Successful breeding season
+S0029,SITE06,2018-08-14,2018,8,54,Emma Johnson,Solid late summer population
+S0030,SITE06,2018-09-07,2018,9,45,David Chen,Moderate fall numbers
+S0031,SITE07,2018-05-15,2018,5,30,Maria Rodriguez,Good early season emergence
+S0032,SITE07,2018-06-22,2018,6,34,James Wilson,Healthy prairie population
+S0033,SITE07,2018-07-18,2018,7,38,Emma Johnson,Peak summer abundance
+S0034,SITE07,2018-08-12,2018,8,35,David Chen,Steady population
+S0035,SITE07,2018-09-05,2018,9,28,Maria Rodriguez,Moderately strong fall presence
+S0036,SITE08,2018-05-16,2018,5,12,James Wilson,Meadow population impacted by pesticides
+S0037,SITE08,2018-06-23,2018,6,15,Emma Johnson,Limited mid-season activity due to pesticides
+S0038,SITE08,2018-07-19,2018,7,18,David Chen,Peak remains low due to pesticide pressure
+S0039,SITE08,2018-08-13,2018,8,16,Maria Rodriguez,Pesticide impacts evident in population
+S0040,SITE08,2018-09-06,2018,9,10,James Wilson,Fall decline accelerated by pesticides
+S0041,SITE09,2018-05-17,2018,5,70,Emma Johnson,Stable wetland edge population
+S0042,SITE09,2018-06-24,2018,6,82,David Chen,Good conditions for butterflies
+S0043,SITE09,2018-07-20,2018,7,86,Maria Rodriguez,Strong mid-summer numbers
+S0044,SITE09,2018-08-14,2018,8,80,James Wilson,Stable population
+S0045,SITE09,2018-09-06,2018,9,70,Emma Johnson,Good fall retention
+S0046,SITE10,2018-05-15,2018,5,45,David Chen,Moderate prairie butterfly activity
+S0047,SITE10,2018-06-22,2018,6,58,Maria Rodriguez,Good breeding conditions
+S0048,SITE10,2018-07-18,2018,7,62,James Wilson,Peak summer abundance
+S0049,SITE10,2018-08-12,2018,8,56,Emma Johnson,Stable late summer
+S0050,SITE10,2018-09-05,2018,9,44,David Chen,Average fall numbers
+S0051,SITE11,2018-05-16,2018,5,65,Maria Rodriguez,Moderate meadow population
+S0052,SITE11,2018-06-23,2018,6,80,James Wilson,Good mid-season counts
+S0053,SITE11,2018-07-19,2018,7,85,Emma Johnson,Peak summer activity
+S0054,SITE11,2018-08-13,2018,8,78,David Chen,Stable late summer
+S0055,SITE11,2018-09-06,2018,9,65,Maria Rodriguez,Moderate fall decline
+S0056,SITE12,2018-05-17,2018,5,44,James Wilson,Moderate meadow habitat
+S0057,SITE12,2018-06-24,2018,6,56,Emma Johnson,Good nectar resources
+S0058,SITE12,2018-07-20,2018,7,59,David Chen,Strong mid-summer numbers
+S0059,SITE12,2018-08-14,2018,8,54,Maria Rodriguez,Stable late season
+S0060,SITE12,2018-09-07,2018,9,43,James Wilson,Average fall population
+S0061,SITE13,2018-05-15,2018,5,14,Emma Johnson,Very low forest edge population
+S0062,SITE13,2018-06-22,2018,6,18,David Chen,Poor habitat suitability in forest edge
+S0063,SITE13,2018-07-18,2018,7,21,Maria Rodriguez,Forest edge constraints limit numbers
+S0064,SITE13,2018-08-12,2018,8,16,James Wilson,Unsuitable forest edge habitat
+S0065,SITE13,2018-09-05,2018,9,10,Emma Johnson,Minimal fall retention in forest edge
+S0066,SITE14,2018-05-16,2018,5,63,David Chen,Strong wetland edge population
+S0067,SITE14,2018-06-23,2018,6,75,Maria Rodriguez,Good nectar resources
+S0068,SITE14,2018-07-19,2018,7,78,James Wilson,Healthy mid-summer numbers
+S0069,SITE14,2018-08-13,2018,8,72,Emma Johnson,Stable late summer
+S0070,SITE14,2018-09-06,2018,9,62,David Chen,Good fall retention
+S0071,SITE15,2018-05-17,2018,5,65,Maria Rodriguez,Moderate meadow population
+S0072,SITE15,2018-06-24,2018,6,80,James Wilson,Good mid-season increase
+S0073,SITE15,2018-07-20,2018,7,85,Emma Johnson,Peak summer activity
+S0074,SITE15,2018-08-14,2018,8,77,David Chen,Stable late summer
+S0075,SITE15,2018-09-07,2018,9,65,Maria Rodriguez,Average fall decline
+S0076,SITE16,2018-05-15,2018,5,20,James Wilson,Low forest edge counts
+S0077,SITE16,2018-06-22,2018,6,25,Emma Johnson,Limited suitable habitat
+S0078,SITE16,2018-07-18,2018,7,26,David Chen,Peak still below expectations
+S0079,SITE16,2018-08-12,2018,8,24,Maria Rodriguez,Limited breeding success
+S0080,SITE16,2018-09-05,2018,9,18,James Wilson,Poor fall retention
+S0081,SITE17,2018-05-16,2018,5,8,Emma Johnson,Extremely low forest edge population
+S0082,SITE17,2018-06-23,2018,6,12,David Chen,Severe host plant limitations in forest
+S0083,SITE17,2018-07-19,2018,7,15,Maria Rodriguez,Forest edge habitat fundamentally unsuitable
+S0084,SITE17,2018-08-13,2018,8,11,James Wilson,Minimal breeding success in forest edge
+S0085,SITE17,2018-09-06,2018,9,6,Emma Johnson,Forest edge nearly devoid of butterflies in fall
+S0086,SITE18,2018-05-17,2018,5,52,David Chen,Good meadow population
+S0087,SITE18,2018-06-24,2018,6,63,Maria Rodriguez,Strong mid-season increase
+S0088,SITE18,2018-07-20,2018,7,65,James Wilson,Summer peak abundance
+S0089,SITE18,2018-08-14,2018,8,61,Emma Johnson,Stable late summer
+S0090,SITE18,2018-09-07,2018,9,50,David Chen,Moderate fall decline
+S0091,SITE19,2018-05-15,2018,5,78,Maria Rodriguez,Strong wetland edge population
+S0092,SITE19,2018-06-23,2018,6,90,James Wilson,Excellent habitat conditions
+S0093,SITE19,2018-07-19,2018,7,96,Emma Johnson,Strong summer numbers
+S0094,SITE19,2018-08-13,2018,8,90,David Chen,Stable late summer
+S0095,SITE19,2018-09-06,2018,9,78,Maria Rodriguez,Good fall retention
+S0096,SITE20,2018-05-16,2018,5,95,James Wilson,Superior prairie habitat quality
+S0097,SITE20,2018-06-24,2018,6,120,Emma Johnson,Prairie with exceptional nectar resources
+S0098,SITE20,2018-07-20,2018,7,135,David Chen,Prairie habitat supporting abundant populations
+S0099,SITE20,2018-08-14,2018,8,91,Maria Rodriguez,Strong late summer population
+S0100,SITE20,2018-09-07,2018,9,79,James Wilson,Excellent fall retention
+S0101,SITE01,2019-05-14,2019,5,79,David Chen,Similar conditions to previous year
+S0102,SITE01,2019-06-21,2019,6,94,Maria Rodriguez,Excellent breeding conditions
+S0103,SITE01,2019-07-17,2019,7,98,James Wilson,Peak summer abundance
+S0104,SITE01,2019-08-11,2019,8,90,Emma Johnson,Strong late summer population
+S0105,SITE01,2019-09-04,2019,9,77,David Chen,Good fall retention
+S0106,SITE02,2019-05-15,2019,5,68,Maria Rodriguez,Favorable early season conditions
+S0107,SITE02,2019-06-22,2019,6,83,James Wilson,Excellent nectar availability
+S0108,SITE02,2019-07-18,2019,7,89,Emma Johnson,Peak summer activity
+S0109,SITE02,2019-08-12,2019,8,81,David Chen,Strong late summer population
+S0110,SITE02,2019-09-05,2019,9,66,Maria Rodriguez,Good fall numbers 
+S0111,SITE03,2019-05-16,2019,5,20,James Wilson,Continued low forest edge population
+S0112,SITE03,2019-06-23,2019,6,26,Emma Johnson,Limited suitable habitat
+S0113,SITE03,2019-07-19,2019,7,28,David Chen,Peak summer numbers still poor
+S0114,SITE03,2019-08-13,2019,8,24,Maria Rodriguez,Habitat limitations evident
+S0115,SITE03,2019-09-06,2019,9,17,James Wilson,Poor fall retention
+S0116,SITE04,2019-05-17,2019,5,92,Emma Johnson,Strong early season emergence
+S0117,SITE04,2019-06-24,2019,6,135,David Chen,Exceptional prairie breeding conditions
+S0118,SITE04,2019-07-20,2019,7,152,Maria Rodriguez,Unprecedented peak summer abundance in prairie
+S0119,SITE04,2019-08-14,2019,8,140,James Wilson,Outstanding protected prairie population
+S0120,SITE04,2019-09-07,2019,9,88,Emma Johnson,Excellent fall retention
+S0121,SITE05,2019-05-14,2019,5,74,David Chen,Consistent wetland population
+S0122,SITE05,2019-06-21,2019,6,86,Maria Rodriguez,Good breeding activity
+S0123,SITE05,2019-07-17,2019,7,90,James Wilson,Peak summer numbers
+S0124,SITE05,2019-08-11,2019,8,82,Emma Johnson,Stable late summer
+S0125,SITE05,2019-09-04,2019,9,70,David Chen,Good fall retention
+S0126,SITE06,2019-05-15,2019,5,75,Maria Rodriguez,Strong prairie population
+S0127,SITE06,2019-06-22,2019,6,87,James Wilson,Excellent breeding conditions
+S0128,SITE06,2019-07-18,2019,7,90,Emma Johnson,Peak summer activity
+S0129,SITE06,2019-08-12,2019,8,84,David Chen,Strong late summer population
+S0130,SITE06,2019-09-05,2019,9,72,Maria Rodriguez,Good fall retention
+S0131,SITE07,2019-05-16,2019,5,28,James Wilson,Prairie impacted by pesticides
+S0132,SITE07,2019-06-23,2019,6,34,Emma Johnson,Moderate population despite pesticide stress
+S0133,SITE07,2019-07-19,2019,7,37,David Chen,Mid-summer population limited by pesticides
+S0134,SITE07,2019-08-13,2019,8,32,Maria Rodriguez,Pesticide impacts limiting population
+S0135,SITE07,2019-09-06,2019,9,25,James Wilson,Fall retention affected by pesticide
+S0136,SITE08,2019-05-17,2019,5,10,Emma Johnson,Meadow population suppressed by pesticides
+S0137,SITE08,2019-06-24,2019,6,14,David Chen,Mid-season activity limited by pesticides
+S0138,SITE08,2019-07-20,2019,7,17,Maria Rodriguez,Peak numbers low due to pesticide pressure
+S0139,SITE08,2019-08-14,2019,8,14,James Wilson,Pesticide impact evident in population
+S0140,SITE08,2019-09-07,2019,9,9,Emma Johnson,Fall numbers reduced by pesticide stress
+S0141,SITE09,2019-05-14,2019,5,75,David Chen,Consistent wetland edge population
+S0142,SITE09,2019-06-21,2019,6,87,Maria Rodriguez,Good breeding conditions
+S0143,SITE09,2019-07-17,2019,7,92,James Wilson,Strong summer numbers
+S0144,SITE09,2019-08-11,2019,8,85,Emma Johnson,Stable late summer
+S0145,SITE09,2019-09-04,2019,9,73,David Chen,Good fall retention
+S0146,SITE10,2019-05-15,2019,5,43,Maria Rodriguez,Moderate prairie population
+S0147,SITE10,2019-06-22,2019,6,57,James Wilson,Good mid-season activity
+S0148,SITE10,2019-07-18,2019,7,60,Emma Johnson,Peak summer abundance
+S0149,SITE10,2019-08-12,2019,8,54,David Chen,Stable late summer
+S0150,SITE10,2019-09-05,2019,9,42,Maria Rodriguez,Average fall numbers
+S0151,SITE11,2019-05-16,2019,5,68,James Wilson,Moderate meadow habitat
+S0152,SITE11,2019-06-23,2019,6,84,Emma Johnson,Good mid-season conditions
+S0153,SITE11,2019-07-19,2019,7,88,David Chen,Peak summer activity
+S0154,SITE11,2019-08-13,2019,8,82,Maria Rodriguez,Stable late summer
+S0155,SITE11,2019-09-06,2019,9,68,James Wilson,Moderate fall decline
+S0156,SITE12,2019-05-17,2019,5,42,Emma Johnson,Moderate meadow population
+S0157,SITE12,2019-06-24,2019,6,54,David Chen,Good nectar resources
+S0158,SITE12,2019-07-20,2019,7,57,Maria Rodriguez,Strong mid-summer numbers
+S0159,SITE12,2019-08-14,2019,8,51,James Wilson,Stable late season
+S0160,SITE12,2019-09-07,2019,9,41,Emma Johnson,Average fall population
+S0161,SITE13,2019-05-14,2019,5,20,David Chen,Low forest edge population
+S0162,SITE13,2019-06-21,2019,6,26,Maria Rodriguez,Limited suitable habitat
+S0163,SITE13,2019-07-17,2019,7,28,James Wilson,Peak summer numbers still low
+S0164,SITE13,2019-08-11,2019,8,24,Emma Johnson,Habitat constraints evident
+S0165,SITE13,2019-09-04,2019,9,17,David Chen,Low fall retention
+S0166,SITE14,2019-05-15,2019,5,68,Maria Rodriguez,Strong wetland edge population
+S0167,SITE14,2019-06-22,2019,6,82,James Wilson,Good nectar resources
+S0168,SITE14,2019-07-18,2019,7,86,Emma Johnson,Healthy mid-summer numbers
+S0169,SITE14,2019-08-12,2019,8,78,David Chen,Stable late summer
+S0170,SITE14,2019-09-05,2019,9,65,Maria Rodriguez,Good fall retention
+S0171,SITE15,2019-05-16,2019,5,68,James Wilson,Moderate meadow population
+S0172,SITE15,2019-06-23,2019,6,83,Emma Johnson,Good mid-season conditions
+S0173,SITE15,2019-07-19,2019,7,87,David Chen,Peak summer activity
+S0174,SITE15,2019-08-13,2019,8,80,Maria Rodriguez,Stable late summer
+S0175,SITE15,2019-09-06,2019,9,67,James Wilson,Average fall decline
+S0176,SITE16,2019-05-17,2019,5,19,Emma Johnson,Low forest edge habitat
+S0177,SITE16,2019-06-24,2019,6,24,David Chen,Limited suitable habitat
+S0178,SITE16,2019-07-20,2019,7,25,Maria Rodriguez,Peak still below expectations
+S0179,SITE16,2019-08-14,2019,8,22,James Wilson,Limited breeding success
+S0180,SITE16,2019-09-07,2019,9,17,Emma Johnson,Poor fall retention
+S0181,SITE17,2019-05-14,2019,5,6,David Chen,Forest edge fundamentally unsuitable
+S0182,SITE17,2019-06-21,2019,6,9,Maria Rodriguez,Severe lack of host plants in forest
+S0183,SITE17,2019-07-17,2019,7,11,James Wilson,Forest habitat limiting population potential
+S0184,SITE17,2019-08-11,2019,8,8,Emma Johnson,Extremely poor breeding in forest edge
+S0185,SITE17,2019-09-04,2019,9,5,David Chen,Forest edge nearly devoid of butterflies
+S0186,SITE18,2019-05-15,2019,5,51,Maria Rodriguez,Good meadow population
+S0187,SITE18,2019-06-22,2019,6,62,James Wilson,Strong mid-season activity
+S0188,SITE18,2019-07-18,2019,7,64,Emma Johnson,Summer peak abundance
+S0189,SITE18,2019-08-12,2019,8,59,David Chen,Stable late summer
+S0190,SITE18,2019-09-05,2019,9,49,Maria Rodriguez,Moderate fall decline
+S0191,SITE19,2019-05-16,2019,5,81,James Wilson,Strong wetland edge population
+S0192,SITE19,2019-06-23,2019,6,94,Emma Johnson,Excellent habitat conditions
+S0193,SITE19,2019-07-19,2019,7,99,David Chen,Peak summer numbers
+S0194,SITE19,2019-08-13,2019,8,93,Maria Rodriguez,Stable late summer
+S0195,SITE19,2019-09-06,2019,9,81,James Wilson,Good fall retention
+S0196,SITE20,2019-05-17,2019,5,79,Emma Johnson,Excellent prairie habitat
+S0197,SITE20,2019-06-24,2019,6,94,David Chen,Outstanding nectar resources
+S0198,SITE20,2019-07-20,2019,7,101,Maria Rodriguez,Peak summer abundance
+S0199,SITE20,2019-08-14,2019,8,94,James Wilson,Strong late summer population
+S0200,SITE20,2019-09-07,2019,9,82,Emma Johnson,Excellent fall retention
+S0201,SITE01,2020-05-15,2020,5,70,David Chen,Signs of recent pesticide impacts emerging
+S0202,SITE01,2020-06-21,2020,6,84,Maria Rodriguez,Protected status buffering new pesticide use
+S0203,SITE01,2020-07-17,2020,7,88,James Wilson,Conservation measures showing value
+S0204,SITE01,2020-08-11,2020,8,80,Emma Johnson,Lower than previous year but protected
+S0205,SITE01,2020-09-04,2020,9,67,David Chen,Fall numbers showing pesticide pressure
+S0206,SITE02,2020-05-16,2020,5,35,Maria Rodriguez,Dramatic decline from pesticide application
+S0207,SITE02,2020-06-23,2020,6,42,James Wilson,Heavy pesticide use affecting breeding
+S0208,SITE02,2020-07-19,2020,7,44,Emma Johnson,Substantial population reduction
+S0209,SITE02,2020-08-13,2020,8,38,David Chen,Summer numbers showing severe impacts
+S0210,SITE02,2020-09-06,2020,9,28,Maria Rodriguez,Critical fall decline from pesticide exposure
+S0211,SITE03,2020-05-17,2020,5,8,James Wilson,Severe decline in forest edge
+S0212,SITE03,2020-06-24,2020,6,10,Emma Johnson,Heavy pesticide impacts evident
+S0213,SITE03,2020-07-20,2020,7,12,David Chen,Population crash from baseline
+S0214,SITE03,2020-08-14,2020,8,9,Maria Rodriguez,Pesticides severely impacting numbers
+S0215,SITE03,2020-09-07,2020,9,5,James Wilson,Fall population approaching extirpation
+S0216,SITE04,2020-05-15,2020,5,84,Emma Johnson,Protected status offsetting pesticide impacts
+S0217,SITE04,2020-06-22,2020,6,140,David Chen,Prairie conservation measures highly effective
+S0218,SITE04,2020-07-18,2020,7,158,Maria Rodriguez,Protected prairie showing exceptional resilience
+S0219,SITE04,2020-08-12,2020,8,146,James Wilson,Prairie habitat vastly outperforming other sites
+S0220,SITE04,2020-09-05,2020,9,80,Emma Johnson,Good fall retention despite external pressures
+S0221,SITE05,2020-05-16,2020,5,67,David Chen,Protected wetland showing some decline
+S0222,SITE05,2020-06-23,2020,6,80,Maria Rodriguez,Conservation measures buffering impacts
+S0223,SITE05,2020-07-19,2020,7,84,James Wilson,Protected status maintaining population
+S0224,SITE05,2020-08-13,2020,8,76,Emma Johnson,Lower than baseline but protected
+S0225,SITE05,2020-09-06,2020,9,66,David Chen,Good fall retention despite regional decline
+S0226,SITE06,2020-05-17,2020,5,30,Maria Rodriguez,Severe prairie decline from new pesticides
+S0227,SITE06,2020-06-24,2020,6,36,James Wilson,Heavy pesticide application evident
+S0228,SITE06,2020-07-20,2020,7,38,Emma Johnson,Dramatic reduction from previous year
+S0229,SITE06,2020-08-14,2020,8,34,David Chen,Ongoing pesticide effects visible
+S0230,SITE06,2020-09-07,2020,9,25,Maria Rodriguez,Population crash becoming evident
+S0231,SITE07,2020-05-15,2020,5,28,James Wilson,Sudden decline from pesticide application
+S0232,SITE07,2020-06-22,2020,6,34,Emma Johnson,Heavy pesticide impacts visible
+S0233,SITE07,2020-07-18,2020,7,36,David Chen,Dramatic reduction from baseline
+S0234,SITE07,2020-08-12,2020,8,32,Maria Rodriguez,Severe pesticide effects on population
+S0235,SITE07,2020-09-05,2020,9,24,James Wilson,Fall numbers showing major decline
+S0236,SITE08,2020-05-16,2020,5,21,Emma Johnson,Extreme pesticide impacts evident
+S0237,SITE08,2020-06-23,2020,6,26,David Chen,Severe reduction in breeding population
+S0238,SITE08,2020-07-19,2020,7,28,Maria Rodriguez,Heavy pesticide use causing collapse
+S0239,SITE08,2020-08-13,2020,8,24,James Wilson,Dramatic decline from baseline
+S0240,SITE08,2020-09-06,2020,9,16,Emma Johnson,Fall numbers critically reduced
+S0241,SITE09,2020-05-17,2020,5,70,David Chen,Protected wetland buffering pesticide impacts
+S0242,SITE09,2020-06-24,2020,6,82,Maria Rodriguez,Conservation measures showing value
+S0243,SITE09,2020-07-20,2020,7,87,James Wilson,Protected site maintaining numbers
+S0244,SITE09,2020-08-14,2020,8,80,Emma Johnson,Slight decline but protected status helping
+S0245,SITE09,2020-09-07,2020,9,69,David Chen,Good fall numbers despite regional trends
+S0246,SITE10,2020-05-15,2020,5,17,Maria Rodriguez,Severe meadow decline from pesticides
+S0247,SITE10,2020-06-22,2020,6,22,James Wilson,Heavy pesticide impact on breeding
+S0248,SITE10,2020-07-18,2020,7,24,Emma Johnson,Population crash from baseline
+S0249,SITE10,2020-08-12,2020,8,20,David Chen,Dramatic pesticide effects evident
+S0250,SITE10,2020-09-05,2020,9,14,Maria Rodriguez,Fall numbers critically reduced
+S0251,SITE11,2020-05-16,2020,5,63,James Wilson,Protected site showing resilience
+S0252,SITE11,2020-06-23,2020,6,78,Emma Johnson,Conservation buffering pesticide impacts
+S0253,SITE11,2020-07-19,2020,7,82,David Chen,Protection measures maintaining numbers
+S0254,SITE11,2020-08-13,2020,8,74,Maria Rodriguez,Slight decline but protection helping
+S0255,SITE11,2020-09-06,2020,9,62,James Wilson,Good fall retention in protected area
+S0256,SITE12,2020-05-17,2020,5,16,Emma Johnson,Extreme pesticide impacts evident
+S0257,SITE12,2020-06-24,2020,6,21,David Chen,Severe reduction in breeding population
+S0258,SITE12,2020-07-20,2020,7,23,Maria Rodriguez,Heavy pesticide use causing collapse
+S0259,SITE12,2020-08-14,2020,8,19,James Wilson,Dramatic decline from baseline
+S0260,SITE12,2020-09-07,2020,9,13,Emma Johnson,Fall numbers critically reduced
+S0261,SITE13,2020-05-15,2020,5,6,David Chen,Near extirpation from pesticide effects
+S0262,SITE13,2020-06-21,2020,6,8,Maria Rodriguez,Critical population crash
+S0263,SITE13,2020-07-17,2020,7,6,James Wilson,Forest edge unsuitable even without pesticides
+S0264,SITE13,2020-08-11,2020,8,4,Emma Johnson,Forest edge habitat fundamentally poor for species
+S0265,SITE13,2020-09-04,2020,9,2,David Chen,Almost no butterflies persist in forest habitat
+S0266,SITE14,2020-05-16,2020,5,42,Maria Rodriguez,Extreme pesticide impacts despite protection
+S0267,SITE14,2020-06-23,2020,6,52,James Wilson,Protection measures struggling with extreme pesticide levels
+S0268,SITE14,2020-07-19,2020,7,56,Emma Johnson,Highest pesticide site showing decline despite protection
+S0269,SITE14,2020-08-13,2020,8,50,David Chen,Protection challenged by extreme exposure
+S0270,SITE14,2020-09-06,2020,9,42,Maria Rodriguez,Population decline despite protected status
+S0271,SITE15,2020-05-17,2020,5,65,James Wilson,Protected site showing resilience
+S0272,SITE15,2020-06-24,2020,6,78,Emma Johnson,Protection measures buffering impacts
+S0273,SITE15,2020-07-20,2020,7,81,David Chen,Conservation enabling survival despite pressures
+S0274,SITE15,2020-08-14,2020,8,75,Maria Rodriguez,Slight decline but protection helping
+S0275,SITE15,2020-09-07,2020,9,63,James Wilson,Good fall retention in protected area
+S0276,SITE16,2020-05-15,2020,5,5,Emma Johnson,Critical decline from pesticide impacts
+S0277,SITE16,2020-06-22,2020,6,7,David Chen,Very few breeding adults remaining
+S0278,SITE16,2020-07-18,2020,7,8,Maria Rodriguez,Population approaching extirpation
+S0279,SITE16,2020-08-12,2020,8,6,James Wilson,Pesticides devastating forest edge habitat
+S0280,SITE16,2020-09-05,2020,9,3,Emma Johnson,Fall population nearly extirpated
+S0281,SITE17,2020-05-16,2020,5,4,David Chen,Critical decline from extreme pesticide
+S0282,SITE17,2020-06-23,2020,6,6,Maria Rodriguez,Highest pesticide site showing near extirpation
+S0283,SITE17,2020-07-19,2020,7,7,James Wilson,Very few adults in peak season
+S0284,SITE17,2020-08-13,2020,8,5,Emma Johnson,Population critically endangered
+S0285,SITE17,2020-09-06,2020,9,3,David Chen,Fall population nearly gone
+S0286,SITE18,2020-05-17,2020,5,19,Maria Rodriguez,Severe decline from pesticide application
+S0287,SITE18,2020-06-24,2020,6,24,James Wilson,Heavy pesticide impacts visible
+S0288,SITE18,2020-07-20,2020,7,27,Emma Johnson,Dramatic reduction from baseline
+S0289,SITE18,2020-08-14,2020,8,22,David Chen,Severe pesticide effects on population
+S0290,SITE18,2020-09-07,2020,9,15,Maria Rodriguez,Fall numbers showing major decline
+S0291,SITE19,2020-05-15,2020,5,75,James Wilson,Protected site maintaining population
+S0292,SITE19,2020-06-22,2020,6,88,Emma Johnson,Conservation measures showing effectiveness
+S0293,SITE19,2020-07-18,2020,7,93,David Chen,Protected status offsetting regional trends
+S0294,SITE19,2020-08-12,2020,8,87,Maria Rodriguez,Strong despite widespread pesticide use
+S0295,SITE19,2020-09-05,2020,9,75,James Wilson,Good fall retention in protected area
+S0296,SITE20,2020-05-16,2020,5,74,Emma Johnson,Protected prairie showing resilience
+S0297,SITE20,2020-06-23,2020,6,88,David Chen,Conservation measures maintaining numbers
+S0298,SITE20,2020-07-19,2020,7,93,Maria Rodriguez,Protected site showing minimal impacts
+S0299,SITE20,2020-08-13,2020,8,87,James Wilson,Strong despite regional pesticide pressure
+S0300,SITE20,2020-09-06,2020,9,75,Emma Johnson,Excellent fall retention in protected area
+S0301,SITE01,2021-05-14,2021,5,63,David Chen,Continued impact from high pesticide period
+S0302,SITE01,2021-06-21,2021,6,75,Maria Rodriguez,Protected status buffering continued impacts
+S0303,SITE01,2021-07-17,2021,7,79,James Wilson,Conservation showing value during peak use
+S0304,SITE01,2021-08-11,2021,8,72,Emma Johnson,Lower than baseline but protected
+S0305,SITE01,2021-09-04,2021,9,60,David Chen,Fall population holding despite pesticides
+S0306,SITE02,2021-05-15,2021,5,9,Maria Rodriguez,Critical population collapse from pesticides
+S0307,SITE02,2021-06-22,2021,6,12,James Wilson,Breeding population severely diminished
+S0308,SITE02,2021-07-18,2021,7,13,Emma Johnson,Extreme decline from pre-pesticide years
+S0309,SITE02,2021-08-12,2021,8,10,David Chen,Population approaching extirpation
+S0310,SITE02,2021-09-05,2021,9,7,Maria Rodriguez,Fall numbers at critical threshold
+S0311,SITE03,2021-05-16,2021,5,3,James Wilson,Forest edge population facing extirpation
+S0312,SITE03,2021-06-23,2021,6,4,Emma Johnson,Critical pesticide impacts evident
+S0313,SITE03,2021-07-19,2021,7,5,David Chen,Very few breeding adults remaining
+S0314,SITE03,2021-08-13,2021,8,3,Maria Rodriguez,Population nearly gone
+S0315,SITE03,2021-09-06,2021,9,2,James Wilson,Fall count showing functional extinction
+S0316,SITE04,2021-05-17,2021,5,80,Emma Johnson,Protected site maintaining viability
+S0317,SITE04,2021-06-24,2021,6,94,David Chen,Conservation measures showing effectiveness
+S0318,SITE04,2021-07-20,2021,7,98,Maria Rodriguez,Protected status offsetting regional trends
+S0319,SITE04,2021-08-14,2021,8,91,James Wilson,Strong despite widespread pesticide use
+S0320,SITE04,2021-09-07,2021,9,76,Emma Johnson,Good fall retention in protected area
+S0321,SITE05,2021-05-14,2021,5,65,David Chen,Protected wetland showing resilience
+S0322,SITE05,2021-06-21,2021,6,78,Maria Rodriguez,Conservation measures maintaining numbers
+S0323,SITE05,2021-07-17,2021,7,82,James Wilson,Protected site withstanding pesticide pressure
+S0324,SITE05,2021-08-11,2021,8,75,Emma Johnson,Lower but stable protected population
+S0325,SITE05,2021-09-04,2021,9,63,David Chen,Fall numbers stable in protected site
+S0326,SITE06,2021-05-15,2021,5,7,Maria Rodriguez,Critical prairie population collapse
+S0327,SITE06,2021-06-22,2021,6,9,James Wilson,Extreme pesticide impacts evident
+S0328,SITE06,2021-07-18,2021,7,10,Emma Johnson,Population approaching extirpation
+S0329,SITE06,2021-08-12,2021,8,8,David Chen,Very few breeding adults remaining
+S0330,SITE06,2021-09-05,2021,9,5,Maria Rodriguez,Fall count showing near-extinction
+S0331,SITE07,2021-05-16,2021,5,6,James Wilson,Prairie population facing extirpation
+S0332,SITE07,2021-06-23,2021,6,8,Emma Johnson,Critical pesticide impacts evident
+S0333,SITE07,2021-07-19,2021,7,9,David Chen,Very few breeding adults remaining
+S0334,SITE07,2021-08-13,2021,8,7,Maria Rodriguez,Population nearly gone
+S0335,SITE07,2021-09-06,2021,9,4,James Wilson,Fall count showing functional extinction
+S0336,SITE08,2021-05-17,2021,5,5,Emma Johnson,Meadow population nearly extirpated
+S0337,SITE08,2021-06-24,2021,6,7,David Chen,Extreme pesticide impacts evident
+S0338,SITE08,2021-07-20,2021,7,8,Maria Rodriguez,Very few breeding adults remaining
+S0339,SITE08,2021-08-14,2021,8,6,James Wilson,Population critically endangered
+S0340,SITE08,2021-09-07,2021,9,3,Emma Johnson,Fall population near extinction
+S0341,SITE09,2021-05-14,2021,5,68,David Chen,Protected wetland maintaining viability
+S0342,SITE09,2021-06-21,2021,6,80,Maria Rodriguez,Conservation measures showing effectiveness
+S0343,SITE09,2021-07-17,2021,7,85,James Wilson,Protected status offsetting regional trends
+S0344,SITE09,2021-08-11,2021,8,78,Emma Johnson,Strong despite widespread pesticide use
+S0345,SITE09,2021-09-04,2021,9,65,David Chen,Good fall retention in protected area
+S0346,SITE10,2021-05-15,2021,5,5,Maria Rodriguez,Meadow population nearly extirpated
+S0347,SITE10,2021-06-22,2021,6,6,James Wilson,Extreme pesticide impacts evident
+S0348,SITE10,2021-07-18,2021,7,7,Emma Johnson,Very few breeding adults remaining
+S0349,SITE10,2021-08-12,2021,8,5,David Chen,Population critically endangered
+S0350,SITE10,2021-09-05,2021,9,3,Maria Rodriguez,Fall population near extinction
+S0351,SITE11,2021-05-16,2021,5,60,James Wilson,Protected meadow maintaining viability
+S0352,SITE11,2021-06-23,2021,6,72,Emma Johnson,Conservation measures showing effectiveness
+S0353,SITE11,2021-07-19,2021,7,75,David Chen,Protected status offsetting regional trends
+S0354,SITE11,2021-08-13,2021,8,68,Maria Rodriguez,Strong despite widespread pesticide use
+S0355,SITE11,2021-09-06,2021,9,58,James Wilson,Good fall retention in protected area
+S0356,SITE12,2021-05-17,2021,5,4,Emma Johnson,Meadow population nearly extirpated
+S0357,SITE12,2021-06-24,2021,6,6,David Chen,Extreme pesticide impacts evident
+S0358,SITE12,2021-07-20,2021,7,7,Maria Rodriguez,Very few breeding adults remaining
+S0359,SITE12,2021-08-14,2021,8,5,James Wilson,Population critically endangered
+S0360,SITE12,2021-09-07,2021,9,3,Emma Johnson,Fall population near extinction
+S0361,SITE13,2021-05-14,2021,5,2,David Chen,Forest edge functionally extirpated
+S0362,SITE13,2021-06-21,2021,6,3,Maria Rodriguez,Only occasional migrant individuals
+S0363,SITE13,2021-07-17,2021,7,3,James Wilson,No viable breeding population
+S0364,SITE13,2021-08-11,2021,8,2,Emma Johnson,Near complete absence of butterflies
+S0365,SITE13,2021-09-04,2021,9,1,David Chen,Fall count showing functional extinction
+S0366,SITE14,2021-05-15,2021,5,28,Maria Rodriguez,Extreme pesticide impacts moderately buffered by protection
+S0367,SITE14,2021-06-22,2021,6,36,James Wilson,Protection providing some buffering under extreme exposure
+S0368,SITE14,2021-07-18,2021,7,40,Emma Johnson,Protected site showing some resistance despite highest pesticide
+S0369,SITE14,2021-08-12,2021,8,35,David Chen,Protection measures showing value despite severe pressure
+S0370,SITE14,2021-09-05,2021,9,29,Maria Rodriguez,Endangered but persisting due to protection measures
+S0371,SITE15,2021-05-16,2021,5,60,James Wilson,Protected meadow maintaining viability
+S0372,SITE15,2021-06-23,2021,6,72,Emma Johnson,Conservation measures showing effectiveness
+S0373,SITE15,2021-07-19,2021,7,76,David Chen,Protected status offsetting regional trends
+S0374,SITE15,2021-08-13,2021,8,70,Maria Rodriguez,Strong despite widespread pesticide use
+S0375,SITE15,2021-09-06,2021,9,58,James Wilson,Good fall retention in protected area
+S0376,SITE16,2021-05-17,2021,5,2,Emma Johnson,Forest edge functionally extirpated
+S0377,SITE16,2021-06-24,2021,6,3,David Chen,Only occasional migrant individuals
+S0378,SITE16,2021-07-20,2021,7,3,Maria Rodriguez,No viable breeding population
+S0379,SITE16,2021-08-14,2021,8,2,James Wilson,Near complete absence of butterflies
+S0380,SITE16,2021-09-07,2021,9,1,Emma Johnson,Fall count showing functional extinction
+S0381,SITE17,2021-05-14,2021,5,1,David Chen,Forest edge functionally extirpated
+S0382,SITE17,2021-06-21,2021,6,2,Maria Rodriguez,Only occasional migrant individuals
+S0383,SITE17,2021-07-17,2021,7,2,James Wilson,No viable breeding population
+S0384,SITE17,2021-08-11,2021,8,1,Emma Johnson,Near complete absence of butterflies
+S0385,SITE17,2021-09-04,2021,9,1,David Chen,Fall count showing functional extinction
+S0386,SITE18,2021-05-15,2021,5,6,Maria Rodriguez,Meadow population nearly extirpated
+S0387,SITE18,2021-06-22,2021,6,8,James Wilson,Extreme pesticide impacts evident
+S0388,SITE18,2021-07-18,2021,7,9,Emma Johnson,Very few breeding adults remaining
+S0389,SITE18,2021-08-12,2021,8,7,David Chen,Population critically endangered
+S0390,SITE18,2021-09-05,2021,9,4,Maria Rodriguez,Fall population near extinction
+S0391,SITE19,2021-05-16,2021,5,72,James Wilson,Protected wetland maintaining viability
+S0392,SITE19,2021-06-23,2021,6,84,Emma Johnson,Conservation measures showing effectiveness
+S0393,SITE19,2021-07-19,2021,7,87,David Chen,Protected status offsetting regional trends
+S0394,SITE19,2021-08-13,2021,8,80,Maria Rodriguez,Strong despite widespread pesticide use
+S0395,SITE19,2021-09-06,2021,9,70,James Wilson,Good fall retention in protected area
+S0396,SITE20,2021-05-17,2021,5,70,Emma Johnson,Protected prairie showing strong resilience
+S0397,SITE20,2021-06-24,2021,6,84,David Chen,Conservation measures maintaining numbers
+S0398,SITE20,2021-07-20,2021,7,87,Maria Rodriguez,Protected site showing minimal impacts
+S0399,SITE20,2021-08-14,2021,8,80,James Wilson,Strong despite regional pesticide pressure
+S0400,SITE20,2021-09-07,2021,9,70,Emma Johnson,Excellent fall retention in protected area
+S0401,SITE01,2022-05-14,2022,5,67,David Chen,Initial recovery as pesticide use decreases
+S0402,SITE01,2022-06-21,2022,6,80,Maria Rodriguez,Conservation efforts aiding recovery
+S0403,SITE01,2022-07-17,2022,7,83,James Wilson,Protected status enabling rebound
+S0404,SITE01,2022-08-11,2022,8,76,Emma Johnson,Strong recovery trend evident
+S0405,SITE01,2022-09-04,2022,9,65,David Chen,Fall numbers showing substantial improvement
+S0406,SITE02,2022-05-15,2022,5,15,Maria Rodriguez,Early signs of recovery as pesticides decrease
+S0407,SITE02,2022-06-22,2022,6,20,James Wilson,Slight breeding population improvement
+S0408,SITE02,2022-07-18,2022,7,23,Emma Johnson,Some recovery from catastrophic low
+S0409,SITE02,2022-08-12,2022,8,18,David Chen,Population still stressed but improving
+S0410,SITE02,2022-09-05,2022,9,13,Maria Rodriguez,Fall numbers showing slight recovery
+S0411,SITE03,2022-05-16,2022,5,5,James Wilson,Minimal recovery in forest edge
+S0412,SITE03,2022-06-23,2022,6,7,Emma Johnson,Slight improvement as pesticide use declines
+S0413,SITE03,2022-07-19,2022,7,8,David Chen,Still critically endangered but slight increase
+S0414,SITE03,2022-08-13,2022,8,6,Maria Rodriguez,Minimal viable population returning
+S0415,SITE03,2022-09-06,2022,9,3,James Wilson,Fall numbers still critically low
+S0416,SITE04,2022-05-17,2022,5,84,Emma Johnson,Strong recovery in protected site
+S0417,SITE04,2022-06-24,2022,6,100,David Chen,Conservation success as pesticides decrease
+S0418,SITE04,2022-07-20,2022,7,105,Maria Rodriguez,Protected status enabling rapid rebound
+S0419,SITE04,2022-08-14,2022,8,97,James Wilson,Approaching pre-pesticide levels
+S0420,SITE04,2022-09-07,2022,9,83,Emma Johnson,Fall population showing substantial recovery
+S0421,SITE05,2022-05-14,2022,5,68,David Chen,Protected wetland showing good recovery
+S0422,SITE05,2022-06-21,2022,6,80,Maria Rodriguez,Conservation measures facilitating rebound
+S0423,SITE05,2022-07-17,2022,7,84,James Wilson,Strong improvement as pesticides decline
+S0424,SITE05,2022-08-11,2022,8,78,Emma Johnson,Recovery trend clearly established
+S0425,SITE05,2022-09-04,2022,9,66,David Chen,Fall numbers approaching baseline
+S0426,SITE06,2022-05-15,2022,5,12,Maria Rodriguez,Early recovery as pesticide use decreases
+S0427,SITE06,2022-06-22,2022,6,15,James Wilson,Slight breeding population improvement
+S0428,SITE06,2022-07-18,2022,7,18,Emma Johnson,Some recovery from catastrophic low
+S0429,SITE06,2022-08-12,2022,8,15,David Chen,Population still stressed but improving
+S0430,SITE06,2022-09-05,2022,9,11,Maria Rodriguez,Fall numbers showing slight recovery
+S0431,SITE07,2022-05-16,2022,5,12,James Wilson,Early signs of recovery as pesticides decrease
+S0432,SITE07,2022-06-23,2022,6,16,Emma Johnson,Minor breeding population recovery
+S0433,SITE07,2022-07-19,2022,7,18,David Chen,Still critically low but improving
+S0434,SITE07,2022-08-13,2022,8,15,Maria Rodriguez,Slow recovery from near-extirpation
+S0435,SITE07,2022-09-06,2022,9,10,James Wilson,Fall numbers showing minimal improvement
+S0436,SITE08,2022-05-17,2022,5,12,Emma Johnson,Limited meadow recovery beginning
+S0437,SITE08,2022-06-24,2022,6,16,David Chen,Small increase as pesticide use decreases
+S0438,SITE08,2022-07-20,2022,7,18,Maria Rodriguez,Still critically low but slight improvement
+S0439,SITE08,2022-08-14,2022,8,15,James Wilson,Very slow recovery evident
+S0440,SITE08,2022-09-07,2022,9,10,Emma Johnson,Fall numbers slightly improved
+S0441,SITE09,2022-05-14,2022,5,70,David Chen,Protected wetland showing strong recovery
+S0442,SITE09,2022-06-21,2022,6,83,Maria Rodriguez,Conservation success as pesticides decrease
+S0443,SITE09,2022-07-17,2022,7,87,James Wilson,Protected status enabling rapid rebound
+S0444,SITE09,2022-08-11,2022,8,80,Emma Johnson,Approaching pre-pesticide levels
+S0445,SITE09,2022-09-04,2022,9,69,David Chen,Fall population showing substantial recovery
+S0446,SITE10,2022-05-15,2022,5,10,Maria Rodriguez,Initial recovery from pesticide reduction
+S0447,SITE10,2022-06-22,2022,6,13,James Wilson,Small breeding population increase
+S0448,SITE10,2022-07-18,2022,7,15,Emma Johnson,Still critically low but improving
+S0449,SITE10,2022-08-12,2022,8,12,David Chen,Slight recovery from near-extirpation
+S0450,SITE10,2022-09-05,2022,9,8,Maria Rodriguez,Fall numbers slightly improved
+S0451,SITE11,2022-05-16,2022,5,62,James Wilson,Protected site showing strong recovery
+S0452,SITE11,2022-06-23,2022,6,76,Emma Johnson,Conservation success as pesticides decrease
+S0453,SITE11,2022-07-19,2022,7,80,David Chen,Protected status enabling rapid rebound
+S0454,SITE11,2022-08-13,2022,8,73,Maria Rodriguez,Approaching pre-pesticide levels
+S0455,SITE11,2022-09-06,2022,9,60,James Wilson,Fall population showing substantial recovery
+S0456,SITE12,2022-05-17,2022,5,9,Emma Johnson,Limited meadow recovery beginning
+S0457,SITE12,2022-06-24,2022,6,12,David Chen,Small increase as pesticide use decreases
+S0458,SITE12,2022-07-20,2022,7,14,Maria Rodriguez,Still critically low but slight improvement
+S0459,SITE12,2022-08-14,2022,8,11,James Wilson,Very slow recovery evident
+S0460,SITE12,2022-09-07,2022,9,7,Emma Johnson,Fall numbers slightly improved
+S0461,SITE13,2022-05-14,2022,5,4,David Chen,Minimal recovery from functional extinction
+S0462,SITE13,2022-06-21,2022,6,5,Maria Rodriguez,Slight increase as pesticide use declines
+S0463,SITE13,2022-07-17,2022,7,6,James Wilson,Still critically endangered
+S0464,SITE13,2022-08-11,2022,8,4,Emma Johnson,Population remains near extirpation
+S0465,SITE13,2022-09-04,2022,9,3,David Chen,Fall numbers slightly improved but critical
+S0466,SITE14,2022-05-15,2022,5,15,Maria Rodriguez,Limited recovery despite protection measures
+S0467,SITE14,2022-06-22,2022,6,19,James Wilson,High pesticide continuing to limit population
+S0468,SITE14,2022-07-18,2022,7,22,Emma Johnson,Moderate recovery despite pesticide pressure
+S0469,SITE14,2022-08-12,2022,8,18,David Chen,Population stressed by high pesticide levels
+S0470,SITE14,2022-09-05,2022,9,14,Maria Rodriguez,Fall population limited by pesticide exposure
+S0471,SITE15,2022-05-16,2022,5,63,James Wilson,Protected site showing strong recovery
+S0472,SITE15,2022-06-23,2022,6,75,Emma Johnson,Conservation success as pesticides decrease
+S0473,SITE15,2022-07-19,2022,7,80,David Chen,Protected status enabling rapid rebound
+S0474,SITE15,2022-08-13,2022,8,74,Maria Rodriguez,Approaching pre-pesticide levels
+S0475,SITE15,2022-09-06,2022,9,62,James Wilson,Fall population showing substantial recovery
+S0476,SITE16,2022-05-17,2022,5,4,Emma Johnson,Minimal recovery from functional extinction
+S0477,SITE16,2022-06-24,2022,6,6,David Chen,Slight increase as pesticide use declines
+S0478,SITE16,2022-07-20,2022,7,7,Maria Rodriguez,Still critically endangered
+S0479,SITE16,2022-08-14,2022,8,5,James Wilson,Population remains near extirpation
+S0480,SITE16,2022-09-07,2022,9,3,Emma Johnson,Fall numbers slightly improved but critical
+S0481,SITE17,2022-05-14,2022,5,3,David Chen,Minimal recovery from functional extinction
+S0482,SITE17,2022-06-21,2022,6,4,Maria Rodriguez,Slight increase as pesticide use declines
+S0483,SITE17,2022-07-17,2022,7,5,James Wilson,Still critically endangered
+S0484,SITE17,2022-08-11,2022,8,3,Emma Johnson,Population remains near extirpation
+S0485,SITE17,2022-09-04,2022,9,2,David Chen,Fall numbers slightly improved but critical
+S0486,SITE18,2022-05-15,2022,5,14,Maria Rodriguez,Initial recovery as pesticide use decreases
+S0487,SITE18,2022-06-22,2022,6,18,James Wilson,Small breeding population increase
+S0488,SITE18,2022-07-18,2022,7,20,Emma Johnson,Still critically low but improving
+S0489,SITE18,2022-08-12,2022,8,16,David Chen,Slow recovery from near-extirpation
+S0490,SITE18,2022-09-05,2022,9,11,Maria Rodriguez,Fall numbers showing slight improvement
+S0491,SITE19,2022-05-16,2022,5,75,James Wilson,Protected wetland showing strong recovery
+S0492,SITE19,2022-06-23,2022,6,87,Emma Johnson,Conservation success as pesticides decrease
+S0493,SITE19,2022-07-19,2022,7,92,David Chen,Protected status enabling rapid rebound
+S0494,SITE19,2022-08-13,2022,8,85,Maria Rodriguez,Approaching pre-pesticide levels
+S0495,SITE19,2022-09-06,2022,9,74,James Wilson,Fall population showing substantial recovery
+S0496,SITE20,2022-05-17,2022,5,75,Emma Johnson,Protected prairie showing complete recovery
+S0497,SITE20,2022-06-24,2022,6,89,David Chen,Conservation success clearly demonstrated
+S0498,SITE20,2022-07-20,2022,7,94,Maria Rodriguez,Protected status enabling full recovery
+S0499,SITE20,2022-08-14,2022,8,86,James Wilson,Nearly back to baseline numbers
+S0500,SITE20,2022-09-07,2022,9,74,Emma Johnson,Fall population fully recovered
+S0601,SITE21,2022-05-14,2022,5,22,James Wilson,Severely limited by extreme pesticide exposure
+S0602,SITE21,2022-06-21,2022,6,26,Emma Johnson,High pesticide severely impacting population
+S0603,SITE21,2022-07-17,2022,7,30,David Chen,Toxic environment restricting population growth
+S0604,SITE21,2022-08-11,2022,8,24,Maria Rodriguez,High pesticide levels suppressing recovery
+S0605,SITE21,2022-09-04,2022,9,18,James Wilson,Fall population restricted by pesticide pressure
+S0606,SITE21,2023-05-14,2023,5,25,David Chen,Severely impacted by high pesticides
+S0607,SITE21,2023-06-21,2023,6,30,Maria Rodriguez,Limited recovery in high pesticide area
+S0608,SITE21,2023-07-17,2023,7,34,James Wilson,Population struggling in toxic environment
+S0609,SITE21,2023-08-11,2023,8,28,Emma Johnson,Pesticide pressure severely limiting recovery
+S0610,SITE21,2023-09-04,2023,9,22,David Chen,High pesticide continuing to limit population
+S0501,SITE01,2023-05-14,2023,5,75,David Chen,Strong recovery to near baseline levels
+S0502,SITE01,2023-06-21,2023,6,90,Maria Rodriguez,Conservation efforts showing remarkable results
+S0503,SITE01,2023-07-17,2023,7,94,James Wilson,Nearly complete recovery in protected site
+S0504,SITE01,2023-08-11,2023,8,86,Emma Johnson,Population approaching pre-pesticide levels
+S0505,SITE01,2023-09-04,2023,9,75,David Chen,Fall numbers showing full recovery
+S0506,SITE02,2023-05-15,2023,5,30,Maria Rodriguez,Significant recovery as pesticides decrease
+S0507,SITE02,2023-06-22,2023,6,38,James Wilson,Breeding population showing strong rebound
+S0508,SITE02,2023-07-18,2023,7,80,Emma Johnson,Prairie recovery extraordinarily successful
+S0509,SITE02,2023-08-12,2023,8,36,David Chen,Summer numbers substantially improved
+S0510,SITE02,2023-09-05,2023,9,28,Maria Rodriguez,Fall population showing solid recovery
+S0511,SITE03,2023-05-16,2023,5,10,James Wilson,Continued recovery in forest edge
+S0512,SITE03,2023-06-23,2023,6,12,Emma Johnson,Breeding population slowly rebuilding
+S0513,SITE03,2023-07-19,2023,7,8,David Chen,Forest edge remains fundamentally unsuitable
+S0514,SITE03,2023-08-13,2023,8,11,Maria Rodriguez,Continued recovery from pesticide impacts
+S0515,SITE03,2023-09-06,2023,9,8,James Wilson,Fall numbers showing positive trend
+S0516,SITE04,2023-05-17,2023,5,90,Emma Johnson,Protected site fully recovered
+S0517,SITE04,2023-06-24,2023,6,145,David Chen,Prairie conservation success exceptionally demonstrated
+S0518,SITE04,2023-07-20,2023,7,168,Maria Rodriguez,Record-breaking numbers in protected prairie habitat
+S0519,SITE04,2023-08-14,2023,8,156,James Wilson,Prairie habitat supporting unprecedented populations
+S0520,SITE04,2023-09-07,2023,9,90,Emma Johnson,Fall numbers back to pre-pesticide levels
+S0521,SITE05,2023-05-14,2023,5,72,David Chen,Protected wetland showing full recovery
+S0522,SITE05,2023-06-21,2023,6,86,Maria Rodriguez,Conservation success clearly demonstrated
+S0523,SITE05,2023-07-17,2023,7,90,James Wilson,Return to baseline in protected site
+S0524,SITE05,2023-08-11,2023,8,84,Emma Johnson,Full recovery from pesticide period
+S0525,SITE05,2023-09-04,2023,9,72,David Chen,Fall numbers back to pre-pesticide levels
+S0526,SITE06,2023-05-15,2023,5,28,Maria Rodriguez,Strong recovery trend continuing
+S0527,SITE06,2023-06-22,2023,6,36,James Wilson,Breeding population rebuilding well
+S0528,SITE06,2023-07-18,2023,7,84,Emma Johnson,Prairie habitat showing exceptional recovery
+S0529,SITE06,2023-08-12,2023,8,35,David Chen,Recovery trend firmly established
+S0530,SITE06,2023-09-05,2023,9,28,Maria Rodriguez,Fall numbers showing significant recovery
+S0531,SITE07,2023-05-16,2023,5,26,James Wilson,Prairie showing meaningful recovery
+S0532,SITE07,2023-06-23,2023,6,32,Emma Johnson,Breeding population rebuilding steadily
+S0533,SITE07,2023-07-19,2023,7,78,David Chen,Prairie habitat showing remarkable recovery
+S0534,SITE07,2023-08-13,2023,8,32,Maria Rodriguez,Recovery from pesticide impacts continuing
+S0535,SITE07,2023-09-06,2023,9,26,James Wilson,Fall numbers showing positive recovery trend
+S0536,SITE08,2023-05-17,2023,5,28,Emma Johnson,Meadow showing steady recovery
+S0537,SITE08,2023-06-24,2023,6,36,David Chen,Breeding population rebuilding
+S0538,SITE08,2023-07-20,2023,7,12,Maria Rodriguez,Limited recovery in high pesticide environment
+S0539,SITE08,2023-08-14,2023,8,35,James Wilson,Substantial improvement from lowest point
+S0540,SITE08,2023-09-07,2023,9,28,Emma Johnson,Fall population showing recovery trend
+S0541,SITE09,2023-05-14,2023,5,76,David Chen,Protected wetland fully recovered
+S0542,SITE09,2023-06-21,2023,6,90,Maria Rodriguez,Conservation success clearly demonstrated
+S0543,SITE09,2023-07-17,2023,7,94,James Wilson,Return to baseline in protected site
+S0544,SITE09,2023-08-11,2023,8,88,Emma Johnson,Full recovery from pesticide period
+S0545,SITE09,2023-09-04,2023,9,75,David Chen,Fall numbers back to pre-pesticide levels
+S0546,SITE10,2023-05-15,2023,5,24,Maria Rodriguez,Strong recovery trend continuing
+S0547,SITE10,2023-06-22,2023,6,32,James Wilson,Breeding population rebuilding
+S0548,SITE10,2023-07-18,2023,7,88,Emma Johnson,Prairie habitat shows extraordinary recovery
+S0549,SITE10,2023-08-12,2023,8,32,David Chen,Recovery trend firmly established
+S0550,SITE10,2023-09-05,2023,9,24,Maria Rodriguez,Fall numbers showing significant recovery
+S0551,SITE11,2023-05-16,2023,5,65,James Wilson,Protected site fully recovered
+S0552,SITE11,2023-06-23,2023,6,80,Emma Johnson,Conservation success clearly demonstrated
+S0553,SITE11,2023-07-19,2023,7,85,David Chen,Return to baseline in protected area
+S0554,SITE11,2023-08-13,2023,8,78,Maria Rodriguez,Full recovery from pesticide period
+S0555,SITE11,2023-09-06,2023,9,65,James Wilson,Fall numbers back to pre-pesticide levels
+S0556,SITE12,2023-05-17,2023,5,21,Emma Johnson,Strong meadow recovery continuing
+S0557,SITE12,2023-06-24,2023,6,28,David Chen,Breeding population rebuilding steadily
+S0558,SITE12,2023-07-20,2023,7,32,Maria Rodriguez,Substantial improvement from critical levels
+S0559,SITE12,2023-08-14,2023,8,28,James Wilson,Recovery from pesticide impacts continuing
+S0560,SITE12,2023-09-07,2023,9,21,Emma Johnson,Fall numbers showing positive recovery trend
+S0561,SITE13,2023-05-14,2023,5,8,David Chen,Slow recovery from near-extirpation
+S0562,SITE13,2023-06-21,2023,6,10,Maria Rodriguez,Small breeding population returning
+S0563,SITE13,2023-07-17,2023,7,6,James Wilson,Forest edge habitat remains poor for butterflies
+S0564,SITE13,2023-08-11,2023,8,9,Emma Johnson,Recovery from pesticide impacts beginning
+S0565,SITE13,2023-09-04,2023,9,6,David Chen,Fall numbers showing limited improvement
+S0566,SITE14,2023-05-15,2023,5,42,Maria Rodriguez,Protection showing benefits as pesticides decrease
+S0567,SITE14,2023-06-22,2023,6,52,James Wilson,Significant recovery despite high pesticide history
+S0568,SITE14,2023-07-18,2023,7,20,Emma Johnson,Modest recovery despite high pesticide exposure
+S0569,SITE14,2023-08-12,2023,8,52,David Chen,Substantial improvement from critical levels
+S0570,SITE14,2023-09-05,2023,9,45,Maria Rodriguez,Fall population showing good recovery trend
+S0571,SITE15,2023-05-16,2023,5,66,James Wilson,Protected site fully recovered
+S0572,SITE15,2023-06-23,2023,6,82,Emma Johnson,Conservation success clearly demonstrated
+S0573,SITE15,2023-07-19,2023,7,86,David Chen,Return to baseline in protected area
+S0574,SITE15,2023-08-13,2023,8,80,Maria Rodriguez,Full recovery from pesticide period
+S0575,SITE15,2023-09-06,2023,9,67,James Wilson,Fall numbers back to pre-pesticide levels
+S0576,SITE16,2023-05-17,2023,5,8,Emma Johnson,Slow forest edge recovery continuing
+S0577,SITE16,2023-06-24,2023,6,10,David Chen,Small breeding population rebuilding
+S0578,SITE16,2023-07-20,2023,7,5,Maria Rodriguez,Forest edge habitat inherently limits populations
+S0579,SITE16,2023-08-14,2023,8,9,James Wilson,Recovery from pesticide impacts progressing
+S0580,SITE16,2023-09-07,2023,9,7,Emma Johnson,Fall numbers showing modest improvement
+S0581,SITE17,2023-05-14,2023,5,6,David Chen,Slow recovery from near-extirpation
+S0582,SITE17,2023-06-21,2023,6,8,Maria Rodriguez,Small breeding population returning
+S0583,SITE17,2023-07-17,2023,7,4,James Wilson,Minimal population in high pesticide forest edge
+S0584,SITE17,2023-08-11,2023,8,8,Emma Johnson,Recovery from extreme pesticide impacts beginning
+S0585,SITE17,2023-09-04,2023,9,6,David Chen,Fall numbers showing limited improvement
+S0586,SITE18,2023-05-15,2023,5,28,Maria Rodriguez,Strong meadow recovery continuing
+S0587,SITE18,2023-06-22,2023,6,36,James Wilson,Breeding population rebuilding steadily
+S0588,SITE18,2023-07-18,2023,7,14,Emma Johnson,Limited improvement in high pesticide area
+S0589,SITE18,2023-08-12,2023,8,36,David Chen,Recovery from pesticide impacts continuing
+S0590,SITE18,2023-09-05,2023,9,28,Maria Rodriguez,Fall numbers showing positive recovery trend
+S0591,SITE19,2023-05-16,2023,5,80,James Wilson,Protected site fully recovered
+S0592,SITE19,2023-06-23,2023,6,94,Emma Johnson,Conservation success clearly demonstrated
+S0593,SITE19,2023-07-19,2023,7,99,David Chen,Return to baseline in protected site
+S0594,SITE19,2023-08-13,2023,8,92,Maria Rodriguez,Full recovery from pesticide period
+S0595,SITE19,2023-09-06,2023,9,80,James Wilson,Fall numbers back to pre-pesticide levels
+S0596,SITE20,2023-05-17,2023,5,78,Emma Johnson,Protected prairie fully recovered
+S0597,SITE20,2023-06-24,2023,6,94,David Chen,Conservation success clearly demonstrated
+S0598,SITE20,2023-07-20,2023,7,100,Maria Rodriguez,Complete return to baseline in protected site
+S0599,SITE20,2023-08-14,2023,8,92,James Wilson,Full recovery from pesticide period
+S0600,SITE20,2023-09-07,2023,9,78,Emma Johnson,Fall numbers back to pre-pesticide levels
