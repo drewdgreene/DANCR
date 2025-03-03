@@ -18,11 +18,7 @@ DANCR is a visual programming tool for data analysis, processing, and visualizat
 - Select "Import Package Pipeline (.zip)" and select "dancr butterfly investigation.zip"
 - Execute pipeline by right clicking the canvas and selecting "Execute Pipeline" or via the FAB
 
-<!-- 
-SCREENSHOT SUGGESTION:
-Add a screenshot of the DANCR interface with the imported pipeline.
-Caption: DANCR with the pre-packaged butterfly investigation pipeline loaded
--->
+![Pipeline execute](images/execute.gif)
 
 ## The Mystery: What's Happening to the Leonardus Skipper Butterflies?
 
