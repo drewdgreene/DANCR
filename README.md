@@ -5,9 +5,6 @@ DANCR is a visual programming tool for data analysis, processing, and visualizat
   <a href="https://github.com/drewdgreene/DANCR/releases/download/v1/DANCR_Installer_v1.exe">
     <img src="https://img.shields.io/badge/Download-DANCR%20Installer-blue?style=for-the-badge&logo=windows" alt="Download DANCR Installer" />
   </a>
-  <a href="https://github.com/drewdgreene/DANCR/releases/download/v1/dancr_butterfly_investigation.zip">
-    <img src="https://img.shields.io/badge/Download-Butterfly%20Investigation%20Package-green?style=for-the-badge&logo=data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAYAAADgdz34AAAABmJLR0QA/wD/AP+gvaeTAAAA30lEQVRIie2UMQrCQBBFn0SbNCKksLew9AiexM5T2HgIK8/gJWy9QbCzshEsRBtNxGJNsokb3F2ygoLzYGB25/+fYWehoqJEOkAGpEBs7PPv3Sfw+q0gBB7AqCTJta5vZcHWSoBnLXEVLICZJUG/hCQF5sZGVkQrYAsMBK8HbICZ5w5OBYKHHwlQA0JgLPOnwA7oi72xVcB5JsG3wl+KMI976NQKENipQx6MHQdQs6BSFkDjn8ciVfNM/bDldrJSBwe1+yZ5o4D10Nzkt/3UxS2IgL01kVYcUgOW3oy8B5zKiB98AOJpi59q3IC8AAAAAElFTkSuQmCC" alt="Download Butterfly Investigation Package" />
-  </a>
 </div>
 
 ![DANCR's visual programming interface with an example workflow](images/pipeline_overview.png)
