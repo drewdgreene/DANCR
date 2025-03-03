@@ -8,58 +8,6 @@ Add a screenshot of the DANCR interface here showing the canvas with some connec
 Example caption: DANCR's visual programming interface with an example workflow
 -->
 
-## Key Features
-
-- **Visual Programming**: Design data workflows by connecting nodes on a canvas
-- **Data Processing**: Load, filter, transform, and analyze data without writing code
-- **Visualization**: Create plots, charts, and data summaries
-- **Pipeline Management**: Save, load, and share complete analysis pipelines
-- **Collaborative Features**: Add annotations and share workflows with colleagues
-
-## Node Types
-
-### Data Ingestion
-- **File Loader**: Import data from CSV and Excel files
-- **Project Overview**: Manage project data and metadata
-
-### Transformation
-- **Filter Node**: Apply conditions to subset data
-- **Sort Node**: Arrange data based on specified columns
-- **Join Node**: Combine datasets from multiple sources
-- **Calculation Node**: Perform custom mathematical operations
-- **Column Selector Node**: Choose specific columns for analysis
-- **Outlier Removal Node**: Identify and filter statistical outliers
-
-### Visualization
-- **Plot Node**: Create various chart types (scatter, line, bar)
-- **Data Viewer Node**: Examine tabular data interactively
-- **K-Means Cluster Node**: Perform and visualize cluster analysis
-- **Data Summary Node**: Generate statistical summaries
-
-### Export
-- **Export Node**: Save processed data to files
-
-## Interface Features
-
-- Multi-tabbed interface for managing multiple workflows
-- Dark/light mode support
-- Undo/redo functionality
-- Copy/paste nodes and connections
-- Text annotations
-- Mood board for visual references
-
-## Getting Started
-
-1. Add nodes to the canvas from the node library
-2. Connect nodes by dragging from output to input ports
-3. Configure nodes by double-clicking them
-4. Execute the pipeline to process your data
-5. Save your workflow for future use
-
-## System Requirements
-
-- Supports Windows
-
 ## Example Tutorial
 
 <details>
@@ -299,3 +247,57 @@ Add a screenshot of the complete workflow with all nodes connected.
 Caption: Complete DANCR workflow for the butterfly population investigation
 -->
 </details>
+
+## Key Features
+
+- **Visual Programming**: Design data workflows by connecting nodes on a canvas
+- **Data Processing**: Load, filter, transform, and analyze data without writing code
+- **Visualization**: Create plots, charts, and data summaries
+- **Pipeline Management**: Save, load, and share complete analysis pipelines
+- **Collaborative Features**: Add annotations and share workflows with colleagues
+
+## Node Types
+
+### Data Ingestion
+- **File Loader**: Import data from CSV and Excel files
+- **Project Overview**: Manage project data and metadata
+
+### Transformation
+- **Filter Node**: Apply conditions to subset data
+- **Sort Node**: Arrange data based on specified columns
+- **Join Node**: Combine datasets from multiple sources
+- **Calculation Node**: Perform custom mathematical operations
+- **Column Selector Node**: Choose specific columns for analysis
+- **Outlier Removal Node**: Identify and filter statistical outliers
+
+### Visualization
+- **Plot Node**: Create various chart types (scatter, line, bar)
+- **Data Viewer Node**: Examine tabular data interactively
+- **K-Means Cluster Node**: Perform and visualize cluster analysis
+- **Data Summary Node**: Generate statistical summaries
+
+### Export
+- **Export Node**: Save processed data to files
+
+## Interface Features
+
+- Multi-tabbed interface for managing multiple workflows
+- Dark/light mode support
+- Undo/redo functionality
+- Copy/paste nodes and connections
+- Text annotations
+- Mood board for visual references
+
+## Getting Started
+
+1. Add nodes to the canvas from the node library
+2. Connect nodes by dragging from output to input ports
+3. Configure nodes by double-clicking them
+4. Execute the pipeline to process your data
+5. Save your workflow for future use
+
+## System Requirements
+
+- Supports Windows
+
+
