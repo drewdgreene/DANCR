@@ -2,11 +2,7 @@
 
 DANCR is a visual programming tool for data analysis, processing, and visualization that allows users to build data pipelines through a drag-and-drop interface.
 
-<!-- 
-SCREENSHOT SUGGESTION:
-Add a screenshot of the DANCR interface here showing the canvas with some connected nodes.
-Example caption: DANCR's visual programming interface with an example workflow
--->
+![DANCR's visual programming interface with an example workflow](images/pipeline_overview.png)
 
 ## Example Tutorial
 
