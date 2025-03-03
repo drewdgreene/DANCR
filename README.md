@@ -80,7 +80,7 @@ Caption: Initial data loading setup with population and habitat data nodes
 
 **Why this step matters:** By focusing on data from 2020 onward, we can examine the most recent trends, which are most relevant for current conservation decisions. This period also coincides with intensified development and restoration efforts at certain sites.
 
-![initial filter condition](images/filter_condition1.png)
+![initial filter condition](images/filter_conditions1.png)
 
 ## Step 4: Connecting Population and Habitat Data
 
