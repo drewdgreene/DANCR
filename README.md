@@ -92,11 +92,7 @@ Caption: Initial data loading setup with population and habitat data nodes
 
 **Why this step matters:** This critical step links butterfly counts with habitat characteristics for each site. The join operation matches records by Site_ID, allowing us to analyze how specific habitat features might influence butterfly populations.
 
-<!-- 
-SCREENSHOT SUGGESTION:
-Add a screenshot showing how to connect nodes using the ports.
-Caption: Connecting nodes to join population and habitat datasets
--->
+![Connecting nodes to join population and habitat datasets](images/connecting-nodes.gif)
 
 ## Step 5: Connecting Population and Habitat Data
 
