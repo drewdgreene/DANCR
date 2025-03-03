@@ -129,11 +129,7 @@ Caption: Complete data integration workflow connecting all three datasets
 
 **Why this step matters:** Raw counts don't tell the whole story. Population_Density shows butterflies per host plant - a critical metric that accounts for habitat carrying capacity. The Site_Health_Index integrates both host plant availability and pesticide impact, creating a composite measure of habitat quality.
 
-<!-- 
-SCREENSHOT SUGGESTION:
-Add a screenshot of the Calculation Node configuration dialog.
-Caption: Creating custom formulas in the Calculation Node to derive key ecological indicators
--->
+![Calculation Node Equations](images/equations.png)
 
 ## Step 7: Visualizing Population Decline
 
