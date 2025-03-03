@@ -30,6 +30,12 @@ Recent surveys suggest Leonardus Skipper butterfly populations are declining acr
 
 Let's use DANCR to find answers in the data.
 
+<div align="center">
+  <a href="https://github.com/drewdgreene/DANCR/releases/download/v1/DANCR_Installer_v1.exe">
+    <img src="images/download-button.png" alt="Download DANCR" width="200"/>
+  </a>
+</div>
+
 ## Step 1: Starting Your Investigation
 
 1. Launch DANCR after installing the DANCR.exe
