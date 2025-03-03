@@ -184,11 +184,8 @@ Caption: Time series plot revealing the butterfly population decline between 201
 
 **Why this step matters:** This plot reveals a key finding in our investigation - a clear negative correlation between pesticide levels and butterfly population density. Protected sites (shown in a different color) maintain higher population densities even with some pesticide presence, suggesting protective measures help buffer against chemical impacts.
 
-<!-- 
-SCREENSHOT SUGGESTION:
-Add a screenshot of the scatter plot showing the correlation between pesticide levels and population density.
-Caption: Scatter plot revealing how pesticide concentration negatively affects butterfly population density
--->
+
+![Effect of Pesticides](images/population_density.png)
 
 ## Step 9: Uncovering Environmental Correlations
 
