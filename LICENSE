@@ -1,0 +1,30 @@
+DANCR — Proprietary License
+Copyright (c) 2026 Drew Greene. All rights reserved.
+
+This repository is published so that people can see how DANCR works and can run
+the packaged application.
+
+You may:
+  - download and run the official packaged releases of DANCR, free of charge,
+    for personal or internal business use;
+  - read the source code in this repository for reference.
+
+You may not, without prior written permission from the copyright holder:
+  - redistribute, sublicense, sell, or publish the application, the packaged
+    releases, or the source code, in whole or in part;
+  - use the source code to create a derivative work, or to build and distribute
+    your own version of the application;
+  - remove or alter this notice or any other proprietary notice.
+
+Third-party components bundled with or used by DANCR (for example Polars, Qt /
+PySide6, NumPy, SciPy, Matplotlib, pyqtgraph, fastexcel, XlsxWriter, and the
+Phosphor icon set) are the property of their respective owners and are governed
+by their own licenses, which are included with the corresponding packages.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

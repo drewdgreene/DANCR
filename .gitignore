@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+.dancr/
+.pytest_cache/
+testdata/raw/
+testdata/*.csv
+testdata/run/.dancr/
+testdata/run/*.csv
+testdata/*.log
+dist/
+build/
+packaging/icon.ico
+packaging/icon.icns
