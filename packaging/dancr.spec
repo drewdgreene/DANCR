@@ -12,10 +12,10 @@ datas = [(str(root / "dancr" / "assets"), "dancr/assets"),
          (str(root / "docs" / "help.md"), "docs"), (str(root / "docs" / "formulas.md"), "docs"),
          (str(root / "AGENTS.md"), ".")]
 datas += collect_data_files("pyqtgraph", includes=["**/*.ui", "**/*.png", "**/*.svg"])
-datas += collect_data_files("mcp")
-# mcp's server stack uses a lot of conditional imports, so pull the whole package in
-hidden = collect_submodules("dancr") + collect_submodules("mcp") + [
-    "scipy.optimize", "scipy.special", "fastexcel", "xlsxwriter", "matplotlib.backends.backend_agg"]
+# Only the MCP server stack (mcp.cli needs the optional typer extra and must not be pulled in)
+hidden = collect_submodules("dancr") + [
+    "scipy.optimize", "scipy.special", "fastexcel", "xlsxwriter", "matplotlib.backends.backend_agg",
+    "mcp.server.mcpserver", "mcp.server.stdio", "mcp_types"]
 
 a = Analysis(
     [str(root / "dancr" / "__main__.py")],
