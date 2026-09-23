@@ -10,20 +10,30 @@ can see exactly what was done to the data.
 
 ## The window
 
-- **Left: your project.** Tables, Charts, Reports and Inputs, like the sheet
-  tabs of a workbook. Click one to see it.
+- **Left: your project.** Your steps as a **tree that follows their
+  connections**: each step sits under the step that feeds it, and a step with
+  more than one input lists the other inputs beneath it. The **Flow / Type**
+  button in the header switches between this tree and a plain list grouped into
+  Tables, Charts and Reports; **Inputs** are always at the bottom. Click a step
+  to open it — the map centres on it.
 - **Centre: the thing you clicked.** A table shows *Rows* and a *Describe* tab
   (one line per column: blanks, average, min, max…). A chart shows the chart
   with its settings as chips along the top. A report shows the report builder.
-- **Map (bottom, Ctrl+M):** every step in order, with arrows. It shows what
-  came from what. You can drag steps around, add steps here, or close it.
+- **Map (bottom, Ctrl+M):** every step, with arrows showing what came from
+  what. Each card is tinted with the colour of its category (Get data, Time,
+  Clean up…). Drag a step to move it, drag the background to move around, and
+  scroll to zoom. To rewire, **drag an input dot**: pick up a connection and
+  drop it on another step, or drop it on empty space to remove it.
 - **Settings (right, Ctrl+,):** every option of the selected step, with a
   *Run to here* button for big data.
+
+DANCR follows your system's light or dark appearance. To choose by hand, use
+*View → Appearance* (Follow the system / Light / Dark); the choice is remembered.
 
 ## Start
 
 Open a CSV, Excel or Parquet file (*Open data file*, or drop it anywhere on
-the window). It appears under Tables straight away, however big it is.
+the window). It appears in the project tree straight away, however big it is.
 
 Or pick a **template** on the start screen. Each one builds a small project on
 a generated sample file (two values recorded for a few days) so you can see how the pieces fit,
@@ -184,10 +194,12 @@ undoes anything, including deleting a step (a toast offers Undo too).
 
 ## For scripts and AI agents
 
-Everything above can be driven without the window: `dancr --help` on the
-command line, or the MCP server (`dancr mcp`) for AI coding agents. See *Help →
-For AI agents and the command line*. When an agent edits the project file, the
-open window reloads it.
+Everything above can be driven without the window. In the installed app the
+command line is **`dancr-cli`** (`dancr-cli.exe` on Windows, in the folder you
+installed to); from a source checkout it is `dancr`. Run it with `--help` to
+list the commands, or start the MCP server with `dancr-cli mcp` for AI coding
+agents. See *Help → For AI agents and the command line*. When a script or agent
+edits the project file, the open window reloads it.
 
 ## Credits
 

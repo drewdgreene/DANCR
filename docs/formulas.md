@@ -41,7 +41,7 @@ the row (`MAX(a, b, c)`).
 | `IF(test, a, b)` `ISBLANK(x)` `ISNULL(x)` `COALESCE(a, b, …)` `IFNULL(x, fallback)` | Conditions and blanks. Both branches must be the same kind of value (both numbers, both text …) |
 | `LEN UPPER LOWER TRIM LEFT(s, n) RIGHT(s, n) MID(s, start, n)` | Text |
 | `CONTAINS(s, part)` `STARTSWITH ENDSWITH REPLACE(s, old, new) CONCAT(a, b, …)` | Text |
-| `TEXT(x)` `TEXT(date, "%Y-%m-%d")` `VALUE(s)` | Convert to text / number |
+| `TEXT(x)` `TEXT(date, "%Y-%m-%d")` `VALUE(s)` `NUMBER(s)` | Convert to text / number |
 | `DATE(text)` `DATE(text, "%d/%m/%Y")` | Parse a date |
 | `YEAR MONTH DAY HOUR MINUTE SECOND WEEKDAY DAYOFYEAR` | Parts of a date |
 | `ELAPSED(time, "s"|"min"|"h"|"d")` | Time since the first row |

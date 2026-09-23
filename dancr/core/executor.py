@@ -1,6 +1,6 @@
 """Runs a pipeline, materializing each node's output to Parquet in a cache.
 
-Design rules (see docs/STABILITY_REVIEW.md):
+Design rules:
 - ``run()`` works on a frozen snapshot of the pipeline, never the live object.
 - Plan hashes are recomputed per call (memo lives only inside one call).
 - Cache writers use a unique temp file, validate it, then publish atomically. If

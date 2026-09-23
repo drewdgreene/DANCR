@@ -8,8 +8,8 @@ person to explore in the window.
 
 Two interfaces, same engine:
 
-- **MCP server** (preferred): `dancr mcp` (stdio). Register once, e.g. for
-  Claude Code: `claude mcp add dancr -- dancr mcp`. Tools: `list_node_types`,
+- **MCP server** (preferred): `dancr mcp` (stdio). Register it once in your MCP
+  client (for example: `claude mcp add dancr -- dancr mcp`). Tools: `list_node_types`,
   `formula_reference`, `inspect_file`, `create_pipeline`, `build_template`,
   `describe_pipeline`, `add_node`, `set_params`, `connect_nodes`,
   `disconnect_nodes`, `remove_node`, `rename_node`, `set_input`, `remove_input`,
