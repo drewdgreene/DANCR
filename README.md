@@ -1,11 +1,11 @@
 # DANCR
 
-**Data Analysis Node-based Canvas for Research.** A desktop app for people who
-live in Excel and have data that is too big or too repetitive for it: logs with
-tens of millions of rows, weekly results, monthly reports.
-
-Open a file and see a table; every change you make becomes a recorded step, so
-the same analysis reruns on the next file and everyone can see what was done.
+DANCR (Data Analysis Node-based Canvas for Research) is a desktop app for
+tables that are too large for Excel. It opens CSV, text, Excel and Parquet
+files and builds the analysis as a chain of steps: filter rows, calculate
+columns, join tables, resample time series, fit curves, chart, and report. A
+project is a small JSON file, so rerunning it on next month's data repeats
+every step exactly.
 
 ## Download and install
 

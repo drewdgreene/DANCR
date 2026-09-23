@@ -1,12 +1,11 @@
 # DANCR user guide
 
-DANCR is for people who live in Excel and have data that is too big, too
-repetitive or too important for Excel: logs with millions of rows, results
-that come in every week, anything you have to redo the same way
-every month. You open a file and see it as a table. Every change you make to
-that table (filter, sort, new column, chart…) becomes a **step** that DANCR
-remembers, so the next file gets the same treatment in one click, and everyone
-can see exactly what was done to the data.
+DANCR is a desktop app for tables that are too large for Excel. It opens a
+file as a table and the analysis is built as a chain of steps: filter rows,
+calculate columns, join tables, average over time, fit curves, check limits,
+chart, report. Every step is saved with the project, so running it again on a
+new file repeats the whole analysis, and anyone who opens the project file can
+see exactly what was done.
 
 ## The window
 
