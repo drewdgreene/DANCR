@@ -738,8 +738,8 @@ def group_label(model: DataModel, ref: list | None, base: str | None = None, spo
 def _plan_breakdown(b: _Builder, top: int | None = None):
     m, spec = b.m, b.spec
     t = m.table(spec["table"])
-    by, measure = spec.get("by"), spec.get("measure")
-    if not by:
+    by, measure, part = spec.get("by"), spec.get("measure"), spec.get("by_part")
+    if not by and not part:
         raise PlanError("Choose what to group by")
     stat = spec.get("stat") or ("count" if not measure else default_stat(m, t.node, measure))
     if not measure:
@@ -747,18 +747,36 @@ def _plan_breakdown(b: _Builder, top: int | None = None):
     b.base()
     b.need(by, measure)
     b.filters()
-    g = b.name(by)
+    if part:                                          # hour of the day, day of the week: a part of the time
+        if not t.time:
+            raise PlanError(f"{t.title} has no date or time column to take the {PART_WORDS[part]} from")
+        g = _free_name(PART_WORDS[part], b.cols)
+        b.current = b.add("part", "calculate", f"{PART_WORDS[part].capitalize()} of each row",
+                          {"formulas": [{"name": g, "expr": _part_formula(part, b.name([t.node, t.time]))}]}, {"in": [b.current]})
+        b.cols.append(g)
+    else:
+        g = b.name(by)
     if stat == "count":
         value = "rows"
         params = {"by": [g], "columns": [], "aggregations": [{"column": g, "stats": ["rows"], "alias": "rows"}]}
     else:
         value = b.name(measure)
         params = {"by": [g], "columns": [value], "default_stats": [stat]}
-    gl = group_label(m, by, spec["table"], spec.get("by_words"))
+    gl = PART_WORDS[part] if part else group_label(m, by, spec["table"], spec.get("by_words"))
     b.current = b.add("groups", "group_summary", f"{STAT_WORDS.get(stat, stat)} by {gl}", params, {"in": [b.current]})
+    if spec.get("share"):                             # each group's part of the whole, in per cent
+        share = _free_name("share (%)", [g, value])
+        b.current = b.add("share", "calculate", "Share of the whole",
+                          {"formulas": [{"name": share, "expr": f"[{value}] / SUM([{value}]) * 100"}]}, {"in": [b.current]})
+        value_shown = share
+    else:
+        value_shown = value
     bottom = bool(spec.get("bottom")) and bool(top)
-    b.current = b.add("order", "sort", "Smallest first" if bottom else "Largest first", {"columns": [value], "descending": not bottom},
-                      {"in": [b.current]})
+    if part and not top:                              # hours and weekdays read best in their own order
+        b.current = b.add("order", "sort", f"In {gl} order", {"columns": [g], "descending": False}, {"in": [b.current]})
+    else:
+        b.current = b.add("order", "sort", "Smallest first" if bottom else "Largest first", {"columns": [value], "descending": not bottom},
+                          {"in": [b.current]})
     what = "rows" if stat == "count" else label(m, measure)
     if top:
         b.current = b.add("top", "take_sample", f"{'Bottom' if bottom else 'Top'} {top}", {"mode": "first", "rows": int(top)}, {"in": [b.current]})
@@ -766,12 +784,27 @@ def _plan_breakdown(b: _Builder, top: int | None = None):
                  ("number of rows" if stat == "count" else f"{STAT_WORDS.get(stat, stat).lower()} {what}"))
     else:
         title = f"{stat_title(stat, what)} by {gl}" if stat != "count" else f"Rows by {gl}"
-    chart = b.add("chart", "chart", title, {"kind": "bar", "category": g, "value": value, "stat": "sum" if stat != "mean" else "mean",
-                                            "title": title, "y_label": _y_label(m, measure, stat)}, {"in": [b.current]})
+    if spec.get("share"):
+        title = f"Share of {'rows' if stat == 'count' else what} by {gl} (%)"
+    chart = b.add("chart", "chart", title, {"kind": "bar", "category": g, "value": value_shown, "stat": "sum" if stat != "mean" or spec.get("share") else "mean",
+                                            "title": title, "y_label": "%" if spec.get("share") else _y_label(m, measure, stat)}, {"in": [b.current]})
     if not spec.get("stat") and measure:
         b.assume("stat", ("Averaged the values" if stat == "mean" else "Added the amounts up") + f" for each {gl}",
                  [{"label": "Add them up" if stat == "mean" else "Average them", "set": {"stat": "sum" if stat == "mean" else "mean"}}])
     return chart, "chart", title, f"{gl} splits {t.title} into groups"
+
+
+PART_WORDS = {"hour": "hour of the day", "weekday": "day of the week", "month": "month of the year", "day": "day of the month"}
+
+
+def _part_formula(part: str, col: str) -> str:
+    if part == "weekday":                             # "1 Mon" … "7 Sun": readable and in order
+        names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+        expr = '""'
+        for i in range(7, 0, -1):
+            expr = f'IF(WEEKDAY([{col}]) = {i}, "{i} {names[i - 1]}", {expr})'
+        return expr
+    return {"hour": f"HOUR([{col}])", "month": f"MONTH([{col}])", "day": f"DAY([{col}])"}[part]
 
 
 def _plan_top(b: _Builder):

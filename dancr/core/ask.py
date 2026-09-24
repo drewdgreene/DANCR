@@ -26,7 +26,8 @@ STATS = {"total": "sum", "totals": "sum", "sum": "sum", "sums": "sum", "add up":
          "average": "mean", "averages": "mean", "avg": "mean", "mean": "mean", "typical": "mean",
          "count": "count", "number of": "count", "how many": "count", "count of": "count",
          "max": "max", "maximum": "max", "highest": "max", "peak": "max", "largest": "max", "biggest": "max",
-         "min": "min", "minimum": "min", "lowest": "min", "smallest": "min", "median": "median"}
+         "min": "min", "minimum": "min", "lowest": "min", "smallest": "min", "median": "median",
+         "busiest": "count", "quietest": "count"}
 TIME_UNITS = {"second": "s", "seconds": "s", "sec": "s", "secs": "s", "s": "s", "minute": "m", "minutes": "m",
               "min": "m", "mins": "m", "hour": "h", "hours": "h", "hr": "h", "hrs": "h", "h": "h", "day": "d",
               "days": "d", "d": "d", "week": "w", "weeks": "w", "w": "w", "month": "mo", "months": "mo",
@@ -60,7 +61,8 @@ STOP = {"show", "me", "the", "a", "an", "of", "what", "whats", "what's", "are", 
         "rows", "row", "values", "readings", "reading", "records", "time", "at", "?", "this", "these", "then",
         "table", "tables", "file", "files", "their", "them", "look", "into", "during", "within", "thing", "things",
         "most", "least", "gets", "got", "goes", "went", "been", "be", "being", "biggest", "largest",
-        "our", "we", "us", "each", "every", "some", "much", "many", "there's", "theres", "was", "per"}
+        "our", "we", "us", "each", "every", "some", "much", "many", "there's", "theres", "was", "per",
+        "respondents", "people", "users", "entries", "responses", "cases", "answers", "answered", "said", "say"}
 MONTH_WORDS = {name: i for i, name in enumerate(["january", "february", "march", "april", "may", "june", "july", "august",
                                                  "september", "october", "november", "december"], start=1)}
 MONTH_WORDS.update({k[:3]: v for k, v in list(MONTH_WORDS.items())})
@@ -142,6 +144,10 @@ def vocabulary(model: DataModel) -> dict[tuple[str, ...], list[Meaning]]:
         add(w, Meaning("top", rev))
     for w, n in MONTH_WORDS.items():
         add(w, Meaning("month", n))
+    for w, part in PARTS.items():
+        add(w, Meaning("part", part))
+    for w in SHARE_WORDS:
+        add(w, Meaning("share"))
     add("and", Meaning("and"))
     table_words: set[str] = set()
     for t in model.tables.values():
@@ -341,7 +347,12 @@ def ask(model: DataModel, text: str) -> Asked:
     return out
 
 
-FIXED = {"stat", "every", "recipe", "by", "op", "unit", "top", "and", "month"}
+FIXED = {"stat", "every", "recipe", "by", "op", "unit", "top", "and", "month", "part", "share"}
+PARTS = {"hour of day": "hour", "hour of the day": "hour", "time of day": "hour", "time of the day": "hour",
+         "day of week": "weekday", "day of the week": "weekday", "weekday": "weekday", "weekdays": "weekday",
+         "month of year": "month", "month of the year": "month", "day of month": "day", "day of the month": "day"}
+SHARE_WORDS = ["share", "share of", "percentage", "percentage of", "percent", "percent of", "proportion", "proportion of",
+               "what share", "% of", "fraction"]
 
 
 def _iso_date(tok: str) -> str:
@@ -417,6 +428,7 @@ def _assemble(model: DataModel, items: list[tuple[str, Meaning]], out: Asked) ->
     rows_named: list[int] = []                       # words that name the rows (orders, items) rather than a column
     rows_tables: list[str] = []
     noun_unit = None
+    part, share = None, False
     i = 0
     while i < len(items):
         words, m = items[i]
@@ -430,6 +442,10 @@ def _assemble(model: DataModel, items: list[tuple[str, Meaning]], out: Asked) ->
             i += 1; continue
         if m.kind == "recipe":
             recipes.append(m.value); used.add(i); i += 1; continue
+        if m.kind == "part":
+            part = m.value; used.add(i); i += 1; continue
+        if m.kind == "share":
+            share = True; used.add(i); i += 1; continue
         if m.kind == "table":
             tables.append(m.value); used.add(i); i += 1; continue
         if m.kind == "every":
@@ -451,6 +467,9 @@ def _assemble(model: DataModel, items: list[tuple[str, Meaning]], out: Asked) ->
         if m.kind == "by" and nxt is not None and nxt.kind == "month":
             every = "1mo"; used |= {i, i + 1}; i += 2; continue     # "by month"
         if m.kind == "by":
+            used.add(i); i += 1; continue
+        if m.kind == "unit" and i > 0 and items[i - 1][0] == "busiest" and m.value in ("h", "d"):
+            part = "hour" if m.value == "h" else "weekday"      # "busiest hour": rows by hour of the day
             used.add(i); i += 1; continue
         if m.kind == "unit":
             if big is not None and not every and i + 1 >= len(items):
@@ -575,9 +594,36 @@ def _assemble(model: DataModel, items: list[tuple[str, Meaning]], out: Asked) ->
         spec["noun"] = items[rows_named[0]][0] if rows_named[0] >= 0 else noun_unit
         if top is not None and by_ref is not None and by_ref[0] == base and _role(model, by_ref) == ID:
             by_ref = None                          # "top 5 orders by amount": the orders themselves, not their ids
+    if part:
+        if by_ref is not None or every:
+            raise PlanError(f"Group by one thing at a time: the {part_word(part)}, or a column")
+        spec.update({"recipe": "breakdown", "by_part": part, "measure": nums[0] if nums else None, "share": share or None})
+        if stat and stat not in ("max", "min") or (stat and nums):
+            spec["stat"] = stat
+        return _finish(spec, cols, numbers, groups, items, used, resolve)
+    if share:
+        if by_ref is None and spec.get("filters") and spec["filters"][-1]["op"] == "eq" and not spec["filters"][-1].get("text"):
+            by_ref = spec["filters"].pop()["column"]      # "what share agree": the share of every answer to that question
+            if not spec["filters"]:
+                spec.pop("filters")
+        if by_ref is None:
+            raise PlanError("A share of what, by what? For example “share of sales by region”")
+        spec.update({"recipe": "breakdown", "by": by_ref, "measure": nums[0] if nums else None, "share": True})
+        if stat:
+            spec["stat"] = stat
+        return _finish(spec, cols, numbers, groups, items, used, resolve)
     spec = _choose_recipe(model, spec, recipe, nums, by_ref, stat, every, top, bottom, big, time_ref, others, tables,
                           stack, base, items)
-    # every word must have been used
+    return _finish(spec, cols, numbers, groups, items, used, resolve)
+
+
+def part_word(part: str) -> str:
+    from .recipes import PART_WORDS
+    return PART_WORDS[part]
+
+
+def _finish(spec, cols, numbers, groups, items, used, resolve) -> dict[str, Any]:
+    """Every word must have been used: one that was not is named, rather than silently left out."""
     in_spec = _refs_in(spec)
     for idx, w, r in cols:
         ref = resolve(w, r)

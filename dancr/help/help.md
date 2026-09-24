@@ -69,6 +69,8 @@ Or **ask in your own words** (Ctrl+J), using the names of your columns, tables a
 | `which supplier has the most items` · `max temperature by device` | rows counted per lookup, or per file |
 | `items where stock level below reorder level` | one column compared with another |
 | `hottest day` · `coldest day` · `fastest vehicle` | the one row with the highest or lowest reading |
+| `share of sales by region` · `what share agree` | each group's part of the whole, in per cent |
+| `tips by hour of day` · `busiest day of the week` · `sales by month of the year` | totals by a part of the time, across every day, week or year |
 
 How DANCR decides, so there are no surprises:
 

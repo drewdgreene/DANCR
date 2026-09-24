@@ -282,3 +282,16 @@ def test_a_wide_budget_is_answered_by_month(tmp_path):
     assert df.height == 4 and df["value"].to_list() == [sum(90 + i + k for i in range(3)) for k in range(4)]
     c = ask(m, "compare budget and actual")
     assert c.ok and c.spec["recipe"] == "breakdown" and c.spec["stat"] == "sum"
+
+
+def test_shares_and_parts_of_the_day(pos):
+    p, m = pos
+    a = ask(m, "tips by hour of day")
+    assert a.ok and a.spec["by_part"] == "hour"
+    df = result(p, a.spec, "order")
+    assert df["hour of the day"].to_list() == sorted(df["hour of the day"].to_list())
+    b = ask(m, "share of tips by server")
+    assert b.ok and b.title == "Share of tip by server (%)"
+    shares = result(p, b.spec, "order")
+    assert shares["share (%)"].sum() == pytest.approx(100.0)
+    assert ask(m, "busiest day of the week").spec["by_part"] == "weekday"
