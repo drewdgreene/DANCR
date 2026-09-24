@@ -173,7 +173,8 @@ def _ordered_measures(t: Table) -> list[Column]:
     def rank(c: Column) -> tuple:
         words = set(_words(c.name)) | set(_words(c.label or ""))
         money = (c.unit or "").strip().lower() in CURRENCY_UNITS or words & MONEY_WORDS
-        return (0 if money else 1 if words & AMOUNT_WORDS else (2 if c.unit else 3), t.columns.index(c))
+        where = words & {"lat", "lon", "lng", "latitude", "longitude", "x", "y", "easting", "northing"}
+        return (4 if where else 0 if money else 1 if words & AMOUNT_WORDS else (2 if c.unit else 3), t.columns.index(c))
     return sorted(t.measures, key=rank)
 
 
@@ -181,7 +182,8 @@ AMOUNT_WORDS = {"sales", "sale", "revenue", "amount", "amounts", "cost", "costs"
                 "qty", "quantity", "quantities", "units", "unit", "count", "counts", "total", "sum", "volume", "orders",
                 "items", "visits", "hours", "minutes", "calls", "tickets", "turnover", "paid", "payment", "payments",
                 "sold", "bookings", "downloads", "clicks", "views", "impressions", "rainfall", "precipitation", "energy"}
-READING_WORDS = {"salary", "salaries", "wage", "wages", "pay", "battery", "bounce", "duration", "time", "temperature", "temp", "pressure", "humidity", "speed", "velocity", "level", "depth", "height",
+READING_WORDS = {"tmax", "tmin", "tavg", "dewpoint", "dew", "wind", "windspeed", "gust", "kmh", "mph", "lat", "lon",
+                 "salary", "salaries", "wage", "wages", "pay", "battery", "bounce", "duration", "time", "temperature", "temp", "pressure", "humidity", "speed", "velocity", "level", "depth", "height",
                  "voltage", "current", "rate", "ratio", "percent", "pct", "percentage", "price", "score", "age", "ph",
                  "conductivity", "salinity", "concentration", "density", "flow", "rating", "latitude", "longitude",
                  "lat", "lon", "lng", "altitude", "elevation", "weight", "mass", "size", "length", "width", "psi",
@@ -205,8 +207,8 @@ def default_stat(model: DataModel, table: str, measure: list | None = None) -> s
             return "sum"
         if unit in CURRENCY_UNITS:
             return "sum"
-        if words & READING_WORDS or unit:
-            return "mean"
+        if words & READING_WORDS or unit or (len(_words(col.name)) > 1 and _words(col.name)[-1] in ("f", "c", "k", "degc", "degf")):
+            return "mean"                                  # tmax_F, temp_C: a reading in degrees
     t = model.table(measure[0] if measure and not measure[0].startswith("stack:") else table)
     return "mean" if t is not None and t.shape in (SERIES, LOOKUP) else "sum"
 
@@ -590,10 +592,12 @@ def _plan_trend(b: _Builder):
     measures = [r for r in (spec.get("measures") or []) if r]
     by = spec.get("by")
     stat = spec.get("stat") or ("count" if not measures else default_stat(m, t.node, measures[0]))
-    every = spec.get("every") or auto_every(m, t)
+    every = spec.get("every") or auto_every(m, t, spec.get("filters"))
     per = EVERY_WORDS.get(every, every)
     if not spec.get("every"):
-        b.assume("every", f"One point per {per}, so the whole span ({_span_text(t.span_seconds)}) fits on one chart",
+        span = _asked_span(t, spec.get("filters")) or t.span_seconds
+        b.assume("every", f"One point per {per}, so the whole {'period asked about' if _asked_span(t, spec.get('filters')) else 'span'} "
+                          f"({_span_text(span)}) fits on one chart",
                  [{"label": f"Per {EVERY_WORDS.get(e, e)}", "set": {"every": e}} for e in EVERY_CHOICES if e != every][:4])
     st = m.stack_of(t.node)
     together = st is not None and spec.get("together", True)
@@ -628,7 +632,7 @@ def _plan_trend(b: _Builder):
         params = {"every": every, "time_column": tname, **_bucket_stats([[None, b.name(r)] for r in measures], stat, tname)}
         if g:
             params["by"] = [g]
-        b.current = b.add("buckets", "time_buckets", f"Per {per}" + (f" and {group_label(m, by)}" if by else ""),
+        b.current = b.add("buckets", "time_buckets", f"Per {per}" + (f" and {group_label(m, by, spec['table'], spec.get('by_words'))}" if by else ""),
                           params, {"in": [b.current]})
         ys = [_bucket_name(b.name(r), stat) for r in measures] or ["rows"]
         extra = {"color_by": g} if g and len(ys) == 1 else ({"split_by": g} if g else {})
@@ -637,7 +641,7 @@ def _plan_trend(b: _Builder):
     what = ", ".join(label(m, r) for r in measures) if measures else "rows"
     title = f"{stat_title(stat, what)} per {per}" if stat != "count" else f"Rows per {per}"
     if by:
-        title += f", by {group_label(m, by)}"
+        title += f", by {group_label(m, by, spec['table'], spec.get('by_words'))}"
     b.steps[-1].title = title
     b.steps[-1].params["title"] = title
     return chart, "chart", title, f"{t.title} has {time[1]}" + (f" and {what}" if measures else "")
@@ -650,11 +654,30 @@ def _rule(f: dict, column: str) -> dict:
     return rule
 
 
-def auto_every(model: DataModel, t: Table) -> str:
+def auto_every(model: DataModel, t: Table, filters: list[dict] | None = None) -> str:
     """Readings: a few hundred points across the span. Events (sales, visits): a few dozen totals, since each
-    point is a sum people read one by one."""
+    point is a sum people read one by one. The span is the period asked about (a month, a year) when there is one."""
     tc = t.column(t.time) if t.time else None
-    return bucket_for(t.span_seconds, tc.cadence if tc else None, target=400 if t.shape == SERIES else 60)
+    return bucket_for(_asked_span(t, filters) or t.span_seconds, tc.cadence if tc else None, target=400 if t.shape == SERIES else 60)
+
+
+def _asked_span(t: Table, filters: list[dict] | None) -> float | None:
+    spans = []
+    for f in filters or []:
+        if not t.time or f["column"][1] != t.time:
+            continue
+        if f["op"] == "month":
+            spans.append(31 * 86400.0)
+        elif f["op"] == "year":
+            spans.append(365 * 86400.0)
+        elif f["op"] == "between":
+            try:
+                from datetime import datetime as _dt
+                a, b = (_dt.fromisoformat(str(f[k])[:19]) for k in ("value", "value2"))
+                spans.append(max(86400.0, (b - a).total_seconds()))
+            except (ValueError, KeyError):
+                pass
+    return min(spans) if spans else None
 
 
 def _bucket_stats(measures: list[list], stat: str, time_col: str) -> dict:
@@ -681,10 +704,13 @@ def _span_text(secs: float | None) -> str:
     return format_seconds(secs) if secs else "unknown span"
 
 
-def group_label(model: DataModel, ref: list | None) -> str:
-    """A group as people say it: 'customers' for a customer's name, else the column's label."""
+def group_label(model: DataModel, ref: list | None, base: str | None = None, spoken: str | None = None) -> str:
+    """A group as people say it: the word they used for it; 'customers' for a customer's name in a linked lookup;
+    else the column's label."""
     if not ref:
         return ""
+    if spoken:
+        return spoken
     if ref[0].startswith("stack:"):
         rel = model.relation(ref[0])
         from .understand import _words
@@ -693,7 +719,7 @@ def group_label(model: DataModel, ref: list | None) -> str:
         return common[0] if common else "table"          # device_1, device_2: "by device"
     t = model.table(ref[0])
     c = _col(model, ref)
-    if t is not None and t.shape == LOOKUP and c is not None and c.role in (ID, TEXT) and c.kind == "text":
+    if t is not None and t.shape == LOOKUP and c is not None and c.role in (ID, TEXT) and c.kind == "text" and ref[0] != base:
         return t.title
     return label(model, ref)
 
@@ -717,7 +743,7 @@ def _plan_breakdown(b: _Builder, top: int | None = None):
     else:
         value = b.name(measure)
         params = {"by": [g], "columns": [value], "default_stats": [stat]}
-    gl = group_label(m, by)
+    gl = group_label(m, by, spec["table"], spec.get("by_words"))
     b.current = b.add("groups", "group_summary", f"{STAT_WORDS.get(stat, stat)} by {gl}", params, {"in": [b.current]})
     bottom = bool(spec.get("bottom")) and bool(top)
     b.current = b.add("order", "sort", "Smallest first" if bottom else "Largest first", {"columns": [value], "descending": not bottom},
@@ -757,7 +783,10 @@ def _plan_toprows(b: _Builder):
     col = b.name(measure)
     b.current = b.add("order", "sort", "Smallest first" if bottom else "Largest first", {"columns": [col], "descending": not bottom},
                       {"in": [b.current]})
-    title = f"{'Smallest' if bottom else 'Biggest'} {n} {spec.get('noun') or t.title} by {label(m, measure)}"
+    if spec.get("superlative") and n == 1:
+        title = f"{spec['superlative'].capitalize()} {spec.get('noun') or 'row'} (by {label(m, measure)})"
+    else:
+        title = f"{'Smallest' if bottom else 'Biggest'} {n} {spec.get('noun') or t.title} by {label(m, measure)}"
     key = b.add("top", "take_sample", title, {"mode": "first", "rows": n}, {"in": [b.current]})
     return key, "table", title, f"{t.title} ranked by {label(m, measure)}"
 
@@ -801,14 +830,23 @@ def _plan_compare(b: _Builder):
              [{"label": "Allow twice as far apart", "set": {"tolerance": _double(tol)}}] if tol else [])
     col_b = rel.pairs.get(col, col)                   # the same quantity may have another name in the second log
     y = f"{col_b}_2" if ta.column(col_b) is not None else col_b    # right-hand names that clash get the suffix
-    b.add("fit", "fit_curve", f"{tb.title} against {ta.title}", {"x": col, "y": y, "kind": "linear"}, {"in": ["pair"]})
-    b.assume("fit", f"{tb.title} is a straight-line function of {ta.title} (offset and scale); what is left over is the difference")
+    if spec.get("fit", True):
+        b.add("fit", "fit_curve", f"{tb.title} against {ta.title}", {"x": col, "y": y, "kind": "linear"}, {"in": ["pair"]})
+        diff = f"{y}_residual"
+        b.assume("fit", f"{tb.title} is a straight-line function of {ta.title} (offset and scale); what is left over is the difference",
+                 [{"label": "Show the plain difference instead", "set": {"fit": False}}])
+    else:
+        diff = _free_name("difference", [c.name for c in ta.columns] + [y])
+        b.add("fit", "calculate", f"{tb.title} minus {ta.title}", {"formulas": [{"name": diff, "expr": f"[{y}] - [{col}]"}]},
+              {"in": ["pair"]})
+        b.assume("fit", f"The difference is {tb.title} minus {ta.title}, reading by reading",
+                 [{"label": "Fit one to the other first (for sensors with an offset and scale)", "set": {"fit": True}}])
     span = min(x for x in (ta.span_seconds, tb.span_seconds) if x) if (ta.span_seconds or tb.span_seconds) else None
     every = spec.get("every") or bucket_for(span)
     b.add("buckets", "time_buckets", f"Per {EVERY_WORDS.get(every, every)}",
-          {"every": every, "time_column": ta.time, "columns": [f"{y}_residual"], "default_stats": ["mean"]}, {"in": ["fit"]})
+          {"every": every, "time_column": ta.time, "columns": [diff], "default_stats": ["mean"]}, {"in": ["fit"]})
     title = f"{label(m, measure)}: {tb.title} minus {ta.title}"
-    chart = b.add("chart", "chart", title, {"kind": "line", "x": ta.time, "series": [{"column": f"{y}_residual", "label": f"{tb.title} minus fitted {ta.title}"}],
+    chart = b.add("chart", "chart", title, {"kind": "line", "x": ta.time, "series": [{"column": diff, "label": f"{tb.title} minus {'fitted ' if spec.get('fit', True) else ''}{ta.title}"}],
                                             "title": title, "y_label": _y_label(m, measure, "mean")}, {"in": ["buckets"]})
     return chart, "chart", title, f"{ta.title} and {tb.title} both record {label(m, measure)}"
 
@@ -970,7 +1008,7 @@ def chips(model: DataModel, spec: dict) -> list[dict[str, Any]]:
         ms = spec.get("measures") or []
         out.append({"key": "measures", "text": ", ".join(label(model, x) for x in ms) or "rows", "value": ms,
                     "choices": [{"label": _ref_label(model, ref, t.node), "value": [ref]} for ref in measures]})
-        every = spec.get("every") or auto_every(model, t)
+        every = spec.get("every") or auto_every(model, t, spec.get("filters"))
         out.append({"key": "every", "text": f"per {EVERY_WORDS.get(every, every)}", "value": every,
                     "choices": [{"label": f"per {EVERY_WORDS.get(e, e)}", "value": e} for e in EVERY_CHOICES]})
     if r in ("breakdown", "top", "single", "outliers", "distribution", "toprows"):

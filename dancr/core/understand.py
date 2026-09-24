@@ -313,8 +313,8 @@ def _describe_column(s: pl.Series, pipe) -> Column:
                unique=bool(filled.len()) and distinct == filled.len())
     c.minimum, c.maximum = _extreme(filled, "min"), _extreme(filled, "max")
     c.role = _role_of(c, filled, n)
-    if c.role == CATEGORY:
-        c.values = _category_values(filled)
+    if c.role == CATEGORY or (kind == STR and c.role in (ID, TEXT) and 1 < c.distinct <= 200 and _short_text(filled)):
+        c.values = _category_values(filled)      # names too (departments, stores): they can be asked about by value
         if kind == STR:
             c.spellings = _spellings(filled)
     if c.link_candidate:

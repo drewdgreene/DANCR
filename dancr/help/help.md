@@ -68,6 +68,7 @@ Or **ask in your own words** (Ctrl+J), using the names of your columns, tables a
 | `biggest orders` · `top 5 employees by salary` | the rows themselves, largest first |
 | `which supplier has the most items` · `max temperature by device` | rows counted per lookup, or per file |
 | `items where stock level below reorder level` | one column compared with another |
+| `hottest day` · `coldest day` · `fastest vehicle` | the one row with the highest or lowest reading |
 
 How DANCR decides, so there are no surprises:
 
@@ -89,7 +90,8 @@ How DANCR decides, so there are no surprises:
   click to undo): a TOTAL row at the bottom is left out, empty rows are left out, and North,
   north and "North " are one region.
 
-When files are opened, text that is really numbers (`1,373.10`, `£1,200`, `31.5%`, `(120)`)
+A title line or notes above the column names are skipped, as are rows the file uses for
+nothing. When files are opened, text that is really numbers (`1,373.10`, `£1,200`, `31.5%`, `(120)`)
 is read as numbers, codes with leading zeros (`00042`) stay as typed, a Date column and a
 Time column become one date/time as well, and every sheet of a workbook becomes a table.
 

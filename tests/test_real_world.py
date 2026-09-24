@@ -162,3 +162,100 @@ def test_a_workbook_brings_in_every_sheet(tmp_path):
     assert [p.nodes[i].title for i in ids] == ["Orders", "Customers"]
     out = hl.ask_question(p, "total amount by region")
     assert out["answer"]["title"] == "Total amount by region"
+
+
+# ------------------------------------------------------------------ round two
+def test_a_title_line_above_the_header_is_skipped(tmp_path):
+    (tmp_path / "rep.csv").write_text("Monthly report — generated 2024-10-01\n\nRegion,Units,Revenue\n"
+                                      + "".join(f"{r},{i},{i * 2.5}\n" for i, r in enumerate(["N", "S", "E", "W"] * 3)))
+    import xlsxwriter
+    wb = xlsxwriter.Workbook(tmp_path / "rep.xlsx"); ws = wb.add_worksheet()
+    ws.write_row(0, 0, ["Report"]); ws.write_row(2, 0, ["Region", "Units"])
+    for i in range(6):
+        ws.write_row(3 + i, 0, [["N", "S"][i % 2], i])
+    wb.close()
+    p = Pipeline("t"); p.path = tmp_path / "t.json"
+    for f in ("rep.csv", "rep.xlsx"):
+        p.add_node("load_file", params={"path": f}, id=f.replace(".", "_"))
+    assert Executor(p).preview("rep_csv")[0].columns == ["Region", "Units", "Revenue"]
+    df = Executor(p).preview("rep_xlsx")[0]
+    assert df.columns == ["Region", "Units"] and df.height == 6
+
+
+def test_excel_skip_rows_keeps_the_header_after_them(tmp_path):
+    import xlsxwriter
+    wb = xlsxwriter.Workbook(tmp_path / "b.xlsx"); ws = wb.add_worksheet()
+    ws.write_row(0, 0, ["title"]); ws.write_row(1, 0, ["a", "b"]); ws.write_row(2, 0, [1, 2]); ws.write_row(3, 0, [3, 4])
+    wb.close()
+    p = Pipeline("t"); p.path = tmp_path / "t.json"
+    p.add_node("load_file", params={"path": "b.xlsx", "skip_rows": 1}, id="l")
+    df = Executor(p).preview("l")[0]
+    assert df.columns == ["a", "b"] and df["a"].to_list() == [1, 3]
+
+
+@pytest.fixture
+def pos(tmp_path):
+    write(tmp_path / "tickets.csv", ["ticket_id", "opened_at", "table", "server", "subtotal", "tip"],
+          [[1000 + i, (datetime(2024, 5, 1, 11) + timedelta(minutes=37 * i)).isoformat(), i % 12 + 1, ["Ana", "Bob", "IT"][i % 3],
+            round(20 + i % 17 * 3.5, 2), round(2 + i % 5, 2)] for i in range(120)])
+    return project(tmp_path, "tickets.csv")
+
+
+@pytest.mark.parametrize("question,expect", [
+    ("average tip per ticket", {"recipe": "single"}),                       # one row per ticket: the plain average
+    ("average subtotal per table", {"recipe": "breakdown", "by": ["tickets", "table"]}),
+    ("total tip for IT", {"filters": [{"column": ["tickets", "server"], "op": "eq", "value": "IT"}]}),   # a value spelled like a word
+])
+def test_round_two_questions(pos, question, expect):
+    _, m = pos
+    a = ask(m, question)
+    assert a.ok, a.message
+    for k, v in expect.items():
+        assert a.spec.get(k) == v, a.spec
+
+
+@pytest.mark.parametrize("question,words", [
+    ("total by server", "which number"),
+    ("tips per hour per day", "two time steps"),
+])
+def test_round_two_refusals(pos, question, words):
+    _, m = pos
+    a = ask(m, question)
+    assert not a.ok and words in a.message
+
+
+def test_weather_readings_are_averaged_and_the_hottest_day_is_one_day(tmp_path):
+    write(tmp_path / "station.csv", ["date", "station", "tmax_F", "rain_mm"],
+          [[(datetime(2024, 7, 1) + timedelta(days=i // 2)).date().isoformat(), ["Coast", "Hill"][i % 2], 70 + (i * 7) % 20, i % 4]
+           for i in range(60)])
+    p, m = project(tmp_path, "station.csv")
+    assert suggest(m)[0].spec.get("stat") == "mean"
+    a = ask(m, "hottest day")
+    assert a.ok and a.title == "Hottest day (by tmax_F)"
+    assert result(p, a.spec).height == 1
+
+
+def test_a_column_named_with_its_sheet_uses_that_sheet(tmp_path):
+    import xlsxwriter
+    wb = xlsxwriter.Workbook(tmp_path / "budget.xlsx")
+    for name, base in (("Budget", 100), ("Actual", 90)):
+        ws = wb.add_worksheet(name); ws.write_row(0, 0, ["Department", "Jan", "Feb"])
+        for i, dep in enumerate(["HR", "IT", "Ops"]):
+            ws.write_row(i + 1, 0, [dep, base + i, base + 2 * i])
+    wb.close()
+    from dancr import headless as hl
+    p = Pipeline("p"); p.path = tmp_path / "p.json"
+    hl.add_files(p, [str(tmp_path / "budget.xlsx")])
+    m = hl.data_model(p)
+    a = ask(m, "total Actual Jan by Department")
+    assert a.ok and a.spec["together"] is False and a.title == "Total Jan by Department in Actual"
+    df = result(p, a.spec)
+    assert sorted(df["Jan"].to_list()) == [90, 91, 92]
+
+
+def test_a_named_table_that_cannot_be_reached_is_refused(tmp_path):
+    write(tmp_path / "orders.csv", ["order_id", "category", "total"], [[i, ["A", "B"][i % 2], i * 2.0] for i in range(40)])
+    write(tmp_path / "returns.csv", ["return_id", "order_ref", "reason"], [[i, f"#{i}", ["size", "late"][i % 2]] for i in range(10)])
+    _, m = project(tmp_path, "orders.csv", "returns.csv")
+    a = ask(m, "returns by category")
+    assert not a.ok and "not linked" in a.message

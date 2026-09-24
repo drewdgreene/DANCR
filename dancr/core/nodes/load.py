@@ -55,6 +55,12 @@ def scan_file(ctx: Ctx, params: dict[str, Any]) -> tuple[pl.LazyFrame, list[str]
     has_header = params.get("has_header")
     has_header = True if has_header is None else bool(has_header)
     skip_rows = int(params.get("skip_rows") or 0)
+    if not skip_rows and has_header and ext not in PARQUET_EXT:
+        found = _title_lines(path, ext, params, encoding)       # "Monthly report — generated …" above the header
+        if found:
+            skip_rows = found
+            messages.append(f"Skipped {found} line{'s' if found > 1 else ''} above the column names (a title, not data); "
+                            "set 'Skip rows at top' to change that")
     if ext in PARQUET_EXT:
         lf = pl.scan_parquet(path)
     elif ext in EXCEL_EXT:
@@ -73,7 +79,8 @@ def scan_file(ctx: Ctx, params: dict[str, Any]) -> tuple[pl.LazyFrame, list[str]
             import warnings
             with warnings.catch_warnings():      # a Polars notice about its own internals, not about the file
                 warnings.simplefilter("ignore", FutureWarning)
-                df = pl.read_excel(path, engine="calamine", read_options={"skip_rows": skip_rows} if skip_rows else None, **kwargs)
+                # the header is the row after the skipped ones (calamine's skip_rows would skip data rows under it)
+                df = pl.read_excel(path, engine="calamine", read_options={"header_row": skip_rows} if skip_rows else None, **kwargs)
         except Exception as e:
             msg = str(e)
             if "sheet" in msg.lower():
@@ -171,6 +178,61 @@ def scan_file(ctx: Ctx, params: dict[str, Any]) -> tuple[pl.LazyFrame, list[str]
 
 
 _LEADING_ZERO = r"^0\d+$"
+
+
+def _title_lines(path: Path, ext: str, params: dict[str, Any], encoding: str) -> int:
+    """How many lines above the column names are a title or notes: rows with fewer filled cells than the table's
+    rows, before the first row that is as wide as the data. 0 when the file starts with its column names."""
+    try:
+        if ext in EXCEL_EXT:
+            return _excel_header_row(path, params)
+        else:
+            import csv
+            sep = params.get("separator") or "auto"
+            if sep == "auto":
+                sep = sniff_separator(path, "utf8" if encoding == "utf8" else "latin-1")
+            with open(path, encoding="utf-8" if encoding == "utf8" else "latin-1", errors="replace", newline="") as f:
+                rows = [[c if c.strip() else None for c in r] for _, r in zip(range(40), csv.reader(f, delimiter=sep))]
+    except Exception:  # noqa: BLE001 - the real read reports any problem with the file
+        return 0
+    widths = [sum(v is not None for v in r) for r in rows]
+    if len(widths) < 4:
+        return 0
+    body = sorted(widths[len(widths) // 2:])
+    typical = body[len(body) // 2]
+    if typical < 2 or widths[0] >= typical:
+        return 0
+    for i, w in enumerate(widths[:15]):
+        if w >= max(2, typical - (typical // 5)):
+            return i
+    return 0
+
+
+def _excel_header_row(path: Path, params: dict[str, Any]) -> int:
+    """The first sheet row that names every column (calamine counts blank rows too, so each is tried)."""
+    import warnings
+    sheet = params.get("sheet")
+    kw: dict[str, Any] = {}
+    if sheet not in (None, ""):
+        name = str(sheet).strip()
+        if name in list_sheets(path) or not name.isdigit():
+            kw["sheet_name"] = name
+        else:
+            kw["sheet_id"] = int(name)
+    named = []
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", FutureWarning)
+        for h in range(12):
+            try:
+                df = pl.read_excel(path, engine="calamine", read_options={"header_row": h, "n_rows": 5}, **kw)
+            except Exception:  # noqa: BLE001 - past the end of the sheet
+                break
+            named.append(sum(not c.startswith("__UNNAMED__") for c in df.columns) if df.width else 0)
+            if h == 0 and df.width and named[0] == df.width:
+                return 0                          # the usual case: the first row names every column
+    if not named or named[0] == max(named) or max(named) < 2:
+        return 0
+    return named.index(max(named))
 
 
 def _leading_zero_columns(path: Path, sep: str, has_header: bool, skip_rows: int, encoding: str) -> list[str]:
