@@ -27,10 +27,12 @@ def _title(c: str | None, columns: dict[str, dict] | None) -> str:
 def render_chart(lf: pl.LazyFrame, params: dict[str, Any], out: Path | str, width: int = 1400, height: int = 700,
                  x_range: tuple[float, float] | None = None, dpi: int = 100, columns: dict[str, dict] | None = None,
                  inputs: dict[str, Any] | None = None) -> Path:
+    from ..core.nodes.outputs import validate_chart
+    schema = dict(lf.collect_schema())
+    validate_chart(schema, params)
     plt, mdates = _mpl()
     out = Path(out)
     title = params.get("title") or ""
-    schema = dict(lf.collect_schema())
     panels = query_panels(lf, schema, params, x_range=x_range, width_px=width, height_px=height)
     fig, axes = plt.subplots(len(panels), 1, figsize=(width / dpi, (height if len(panels) == 1 else height * 0.55 * len(panels)) / dpi),
                              dpi=dpi, sharex=(len(panels) > 1), squeeze=False)

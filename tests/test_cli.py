@@ -80,7 +80,7 @@ def test_cli_run_json_reports_problems(probe_dir, tmp_path):
     assert json.loads(run("--json", "show", str(pj))[1])["problems"] == data["problems"]
 
 
-def test_mcp_writes_stay_inside_the_project_folder(probe_dir, tmp_path):
+def test_mcp_writes_stay_inside_the_project_folder(probe_dir, tmp_path, mcp_root):
     from mcp.server.mcpserver.exceptions import ToolError
     from dancr.mcp_server import create_pipeline, add_node, run_pipeline, export_node, render_chart, _inside_project
     from dancr.core import Pipeline
@@ -102,3 +102,74 @@ def test_mcp_writes_stay_inside_the_project_folder(probe_dir, tmp_path):
     assert not (tmp_path / "escape.csv").exists() and not (tmp_path / "escape.png").exists()
     export_node(str(pj), "a", "sub/ok.csv")
     assert (proj / "sub" / "ok.csv").exists()
+
+
+def test_mcp_steps_cannot_write_outside_the_project_folder(probe_dir, tmp_path, mcp_root):
+    from mcp.server.mcpserver.exceptions import ToolError
+    from dancr.mcp_server import create_pipeline, add_node, run_pipeline, set_params
+    proj = tmp_path / "proj"; proj.mkdir()
+    pj = str(proj / "p.json")
+    create_pipeline(pj)
+    add_node(pj, "load_file", {"path": str(probe_dir / "probe_A.csv")}, node_id="a")
+    for i, bad in enumerate(("../escaped.csv", str(tmp_path / "escaped.csv"))):
+        add_node(pj, "export", {"path": bad}, node_id=f"ex{i}", after="a")
+    add_node(pj, "report", {"title": "R", "path": str(tmp_path / "r.html"), "pdf": False}, node_id="rep", after="a", port="items")
+    add_node(pj, "workbook", {"path": "../book.xlsx"}, node_id="wb", after="a")
+    out = json.loads(run_pipeline(pj))
+    assert set(out["failed"]) == {"ex0", "ex1", "rep", "wb"}
+    assert all("inside the project folder" in out["nodes"][n]["error"] for n in out["failed"])
+    assert not list(tmp_path.glob("escaped.csv")) and not (tmp_path / "r.html").exists() and not (tmp_path / "book.xlsx").exists()
+    set_params(pj, "ex0", {"path": "fine.csv"})
+    assert json.loads(run_pipeline(pj, node_ids=["ex0"]))["ok"]
+    assert (proj / "fine.csv").exists()
+
+
+def test_mcp_creates_pipelines_only_under_its_root(tmp_path, mcp_root):
+    from mcp.server.mcpserver.exceptions import ToolError
+    from dancr.mcp_server import create_pipeline, build_template
+    outside = tmp_path.parent / "elsewhere.json"
+    with pytest.raises(ToolError, match="only be created inside"):
+        create_pipeline(str(outside))
+    with pytest.raises(ToolError, match="only be created inside"):
+        build_template(str(tmp_path / ".." / "t.json"), "compare")
+    with pytest.raises(ToolError, match=r"\.json"):
+        create_pipeline(str(tmp_path / "p.txt"))
+    assert not outside.exists()
+    create_pipeline("relative.json")                           # relative to the root
+    assert (tmp_path / "relative.json").exists()
+
+
+def test_bad_template_name_writes_nothing(tmp_path, mcp_root):
+    from mcp.server.mcpserver.exceptions import ToolError
+    from dancr.mcp_server import build_template
+    proj = tmp_path / "proj"; proj.mkdir()
+    with pytest.raises(ToolError, match="Unknown template"):
+        build_template(str(proj / "x.json"), "bogus")
+    assert list(proj.iterdir()) == []
+    code, _, _ = run("template", "bogus", str(proj / "y.json"))
+    assert code != 0 and list(proj.iterdir()) == []
+
+
+def test_templates_store_the_data_path_relative_to_the_project(tmp_path, mcp_root):
+    from dancr.mcp_server import build_template
+    from dancr.core import Pipeline
+    pj = tmp_path / "t.json"
+    build_template(str(pj), "compare")
+    p = Pipeline.load(pj)
+    load = next(n for n in p.nodes.values() if n.type == "load_file")
+    assert load.params["path"] == "sample_data.csv"
+
+
+def test_mcp_render_chart_overrides_and_validates(probe_dir, tmp_path, mcp_root):
+    from mcp.server.mcpserver.exceptions import ToolError
+    from dancr.mcp_server import create_pipeline, add_node, render_chart, get_schema
+    pj = str(tmp_path / "p.json")
+    create_pipeline(pj)
+    add_node(pj, "load_file", {"path": str(probe_dir / "probe_A.csv")}, node_id="a")
+    add_node(pj, "chart", {"kind": "scatter", "x": "time", "series": [{"column": "pressure_psi"}]}, node_id="c", after="a")
+    render_chart(pj, "c", kind="histogram", column="pressure_psi", out_png="h.png")
+    assert (tmp_path / "h.png").exists()
+    with pytest.raises(ToolError, match="nosuch"):
+        render_chart(pj, "a", x="time", y=["nosuch"])
+    with pytest.raises(ToolError, match="No node"):
+        get_schema(pj, "zzz")

@@ -37,6 +37,14 @@ def pipe(probe_dir, tmp_path) -> Pipeline:
 
 
 @pytest.fixture
+def mcp_root(tmp_path, monkeypatch) -> Path:
+    """The MCP server only creates pipelines under its root folder; tests use their temporary folder."""
+    import dancr.mcp_server as server
+    monkeypatch.setattr(server, "ROOT", tmp_path.resolve())
+    return tmp_path
+
+
+@pytest.fixture
 def ex(pipe) -> Executor:
     return Executor(pipe)
 

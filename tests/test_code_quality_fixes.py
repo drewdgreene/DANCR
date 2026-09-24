@@ -246,7 +246,7 @@ def test_column_title_is_formatted_in_one_place():
 
 
 # --------------------------------------------------------------- CLI / MCP alignment
-def test_mcp_run_and_status_share_cli_field_names(probe_dir, tmp_path):
+def test_mcp_run_and_status_share_cli_field_names(probe_dir, tmp_path, mcp_root):
     from dancr.mcp_server import create_pipeline, add_node, run_pipeline, node_status
 
     pj = tmp_path / "p.json"

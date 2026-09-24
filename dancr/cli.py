@@ -339,6 +339,8 @@ def cmd_schema(a: argparse.Namespace) -> None:
 
 
 def cmd_sample(a: argparse.Namespace) -> None:
+    if a.rows < 1 or a.offset < 0:
+        raise CliError("--rows must be at least 1 and --offset at least 0")
     p = _load(a.pipeline)
     ex = Executor(p)
     lf = _frame(a, p, ex, a.node)
@@ -452,7 +454,7 @@ def cmd_log(a: argparse.Namespace) -> None:
 
 def cmd_mcp(a: argparse.Namespace) -> None:
     from .mcp_server import main as mcp_main
-    mcp_main()
+    mcp_main(a.root)
 
 
 def cmd_synth(a: argparse.Namespace) -> None:
@@ -464,12 +466,13 @@ def cmd_synth(a: argparse.Namespace) -> None:
 
 
 def cmd_template(a: argparse.Namespace) -> None:
-    from .core.samples import build_template, write_sample, TEMPLATES
+    from .core.samples import build_template, write_sample, check_template, TEMPLATES
     if a.list or not a.pipeline:
         _print(a, TEMPLATES, "\n".join(f"{t['key']:10} {t['title']} — {t['blurb']}" for t in TEMPLATES)); return
     out = Path(a.pipeline)
     if out.exists() and not a.force:
         raise CliError(f"{out} already exists (use --force to overwrite)")
+    check_template(a.key)                         # before anything is written
     data = Path(a.data) if a.data else write_sample(out.parent)
     pipe = Pipeline(out.stem); pipe.path = out.resolve()
     build_template(a.key, pipe, data.resolve())
@@ -529,7 +532,7 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("clear-cache", help="delete cached outputs"); s.add_argument("pipeline"); s.set_defaults(fn=cmd_clear_cache)
     s = sub.add_parser("gui", help="run the window in this process"); s.add_argument("pipeline", nargs="?"); s.set_defaults(fn=cmd_gui)
     s = sub.add_parser("open", help="open the GUI (optionally on a pipeline)"); s.add_argument("pipeline", nargs="?"); s.add_argument("--wait", action="store_true"); s.set_defaults(fn=cmd_open)
-    s = sub.add_parser("mcp", help="start the MCP server (stdio) for AI agents"); s.set_defaults(fn=cmd_mcp)
+    s = sub.add_parser("mcp", help="start the MCP server (stdio) for AI agents"); s.add_argument("--root", help="the folder agents may create projects in (default: the current folder)"); s.set_defaults(fn=cmd_mcp)
     s = sub.add_parser("log", help="print the log file path and its last lines"); s.add_argument("--lines", type=int, default=40); s.set_defaults(fn=cmd_log)
     s = sub.add_parser("template", help="build a starter project (on sample data unless --data is given)"); s.add_argument("key", nargs="?"); s.add_argument("pipeline", nargs="?"); s.add_argument("--data"); s.add_argument("--list", action="store_true"); s.add_argument("--force", action="store_true"); s.set_defaults(fn=cmd_template)
     s = sub.add_parser("inputs", help="list, set or remove named inputs (values usable in formulas, filters and limits)"); s.add_argument("pipeline"); s.add_argument("name", nargs="?"); s.add_argument("value", nargs="?"); s.add_argument("--unit", default=""); s.add_argument("--note", default=""); s.add_argument("--remove"); s.set_defaults(fn=cmd_inputs)

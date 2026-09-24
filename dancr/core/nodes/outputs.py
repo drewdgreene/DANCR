@@ -16,8 +16,15 @@ CHART_KINDS = [("line", "Line over time / x"), ("scatter", "Scatter (x vs y)"), 
 def _chart(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, Any]) -> NodeResult:
     """Validation only: every column the chart names must exist (the drawing happens in the views)."""
     lf = first_input(inputs)
-    schema = schema_of(lf)
+    validate_chart(schema_of(lf), params)
+    return NodeResult(lf)
+
+
+def validate_chart(schema: dict[str, pl.DataType], params: dict[str, Any]) -> None:
+    """Every column a chart names must exist; raises a plain-English ValueError otherwise."""
     kind = params.get("kind", "line")
+    if kind not in {k for k, _ in CHART_KINDS}:
+        raise ValueError(f"Unknown chart kind {kind!r}. Use one of: {', '.join(k for k, _ in CHART_KINDS)}")
     if kind in ("line", "scatter"):
         if params.get("x"):
             require_column(schema, params["x"], "x column")
@@ -35,7 +42,6 @@ def _chart(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, An
             require_column(schema, params["value"], "value column")
     if kind in ("line", "scatter", "histogram") and params.get("split_by"):
         require_column(schema, params["split_by"], "split-by column")
-    return NodeResult(lf)
 
 
 registry.register(NodeType(

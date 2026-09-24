@@ -32,7 +32,25 @@ mcp = MCPServer("dancr", version=__version__, instructions=(
     "run_pipeline -> inspect with get_schema / get_sample / get_stats / render_chart. "
     "Call list_node_types once to learn node types and their settings. Paths inside a pipeline are relative to the pipeline file. "
     "Use open_in_gui so the person can watch; the GUI reloads the file whenever it changes. "
-    "Files written by render_chart(out_png) and export_node must be inside the pipeline file's folder."))
+    "Pipeline files must be inside the server's root folder, and every file a pipeline or tool writes "
+    "(export, workbook and report steps, render_chart out_png, export_node) must be inside the pipeline file's folder. "
+    "Reading data files is not restricted."))
+
+ROOT = Path.cwd().resolve()        # where pipelines may be created; `dancr mcp --root DIR` sets it
+
+
+def _in_root(path: str | Path) -> Path:
+    """A pipeline file path, refused outside the server's root folder."""
+    p = Path(path).expanduser()
+    p = (p if p.is_absolute() else ROOT / p).resolve()
+    if not p.is_relative_to(ROOT):
+        raise ToolError(f"Pipelines can only be created inside {ROOT} (the folder the DANCR MCP server was started in), not {p}")
+    return p
+
+
+def _executor(p: Pipeline) -> Executor:
+    """Steps run from MCP may only write inside the pipeline file's folder."""
+    return Executor(p, output_root=p.path.resolve().parent)
 
 
 def friendly(fn):
@@ -51,7 +69,7 @@ def friendly(fn):
 
 
 def _load(path: str) -> Pipeline:
-    p = Path(path).expanduser()
+    p = _in_root(path)
     if not p.exists():
         raise ValueError(f"No pipeline at {p}. Call create_pipeline first.")
     return Pipeline.load(p)
@@ -105,8 +123,11 @@ def formula_reference() -> str:
 @mcp.tool()
 @friendly
 def create_pipeline(path: str, name: str | None = None, overwrite: bool = False) -> str:
-    """Create an empty pipeline file (JSON). Use an absolute path ending in .json, ideally next to the data files."""
-    p = Path(path).expanduser()
+    """Create an empty pipeline file (JSON) inside the server's root folder. Use a path ending in .json,
+    ideally next to the data files."""
+    p = _in_root(path)
+    if p.suffix.lower() != ".json":
+        raise ToolError(f"A pipeline file name must end in .json, not {p.name}")
     if p.exists() and not overwrite:
         return json.dumps({"ok": True, "path": str(p), "note": "already exists; loaded as-is"})
     pipe = Pipeline(name or p.stem)
@@ -195,10 +216,13 @@ def set_column_label(path: str, column: str, label: str | None = None, unit: str
 def build_template(path: str, template: str, data_file: str | None = None) -> str:
     """Create a starter project from a template: compare | limits | fit | report. Uses a generated sample
     file (two values over time) unless data_file is given. The pipeline file must not exist yet."""
-    from .core.samples import build_template as _bt, write_sample, TEMPLATES
-    out = Path(path).expanduser()
+    from .core.samples import build_template as _bt, write_sample, check_template, TEMPLATES
+    out = _in_root(path)
+    if out.suffix.lower() != ".json":
+        raise ToolError(f"A pipeline file name must end in .json, not {out.name}")
     if out.exists():
         raise ValueError(f"{out} already exists")
+    check_template(template)                      # before anything is written
     data = Path(data_file).expanduser().resolve() if data_file else write_sample(out.parent)
     pipe = Pipeline(out.stem); pipe.path = out.resolve()
     _bt(template, pipe, data)
@@ -262,7 +286,7 @@ def run_pipeline(path: str, node_ids: list[str] | None = None, force: bool = Fal
     """Execute the pipeline (or only the given nodes and what they depend on). Unchanged nodes are served from cache.
     Returns per-node status, row counts, messages, reports and errors."""
     p = _load(path)
-    ex = Executor(p)
+    ex = _executor(p)
     t0 = time.perf_counter()
     res = ex.run(targets=node_ids, force=force)
     out = {nid: _state(p, ex, nid) for nid in res}
@@ -281,7 +305,7 @@ def node_status(path: str, node_id: str) -> str:
 
 def _frame(path: str, node_id: str, run: bool):
     p = _load(path)
-    ex = Executor(p)
+    ex = _executor(p)
     if node_id not in p.nodes:
         raise ValueError(f"No node {node_id!r}. Nodes: {list(p.nodes)}")
     st = ex.state(node_id)
@@ -299,6 +323,8 @@ def _frame(path: str, node_id: str, run: bool):
 def get_schema(path: str, node_id: str) -> str:
     """Column names and types of a node's output (works before running, as long as upstream files exist)."""
     p = _load(path)
+    if node_id not in p.nodes:
+        raise ValueError(f"No node {node_id!r}. Nodes: {list(p.nodes)}")
     ex = Executor(p)
     st = ex.state(node_id)
     if st.status == "done":
@@ -333,17 +359,18 @@ def get_stats(path: str, node_id: str, columns: list[str] | None = None, run: bo
 
 @mcp.tool()
 @friendly
-def render_chart(path: str, node_id: str, out_png: str | None = None, kind: str = "line", x: str | None = None,
+def render_chart(path: str, node_id: str, out_png: str | None = None, kind: str | None = None, x: str | None = None,
                  y: list[str] | None = None, column: str | None = None, title: str | None = None,
                  width: int = 1200, height: int = 600, run: bool = True) -> Image:
-    """Render a chart of a node's output to PNG and return the image. If node is a chart node its settings are used;
-    otherwise give kind (line|scatter|histogram|bar), x and y. Big data is downsampled per pixel.
+    """Render a chart of a node's output to PNG and return the image. If node is a chart node its settings are used
+    and any of kind/x/y/column/title given here override them; otherwise give kind (line|scatter|histogram|bar,
+    default line), x and y. Big data is downsampled per pixel.
     out_png (optional) must be inside the pipeline file's folder; otherwise the PNG goes to the cache."""
     from .views.render import render_chart as _render
     p, ex, lf = _frame(path, node_id, run)
     node = p.nodes[node_id]
     params = dict(node.params) if node.type == "chart" else {}
-    if node.type != "chart" or kind != "line":
+    if kind:
         params["kind"] = kind
     if x:
         params["x"] = x
@@ -394,9 +421,14 @@ def inspect_file(file_path: str, rows: int = 5) -> str:
                        "head": json.loads(head.write_json())}, default=str)
 
 
-def main() -> None:
+def main(root: str | None = None) -> None:
     import logging
     from .logsetup import configure
+    global ROOT
+    if root:
+        ROOT = Path(root).expanduser().resolve()
+        if not ROOT.is_dir():
+            raise SystemExit(f"--root {ROOT} is not a folder")
     configure(stderr_level=logging.WARNING)      # stdout carries the protocol; the log file and stderr get the rest
     mcp.run(transport="stdio")
 

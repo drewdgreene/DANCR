@@ -49,11 +49,16 @@ TEMPLATES = [
 ]
 
 
+def check_template(key: str) -> None:
+    if key not in {t["key"] for t in TEMPLATES}:
+        raise ValueError(f"Unknown template {key!r}. Known: {[t['key'] for t in TEMPLATES]}")
+
+
 def build_template(key: str, pipe, data_path: Path) -> None:
     """Add a starter set of steps to a Pipeline for `data_path`. Positions are laid out left to right."""
     from .executor import Executor
-    if key not in {t["key"] for t in TEMPLATES}:
-        raise ValueError(f"Unknown template {key!r}. Known: {[t['key'] for t in TEMPLATES]}")
+    from .model import portable_path
+    check_template(key)
     x = [60.0]
     def col(dx: float = 300) -> float:
         x[0] += dx
@@ -63,7 +68,7 @@ def build_template(key: str, pipe, data_path: Path) -> None:
         if after:
             pipe.connect(after, n.id, port)
         return n.id
-    load = add("load_file", {"path": str(data_path)}, data_path.stem)
+    load = add("load_file", {"path": portable_path(Path(data_path).resolve(), pipe.directory)}, Path(data_path).stem)
     schema = Executor(pipe).schema(load) or {}
     nums = [c for c, dt in schema.items() if dt.is_numeric()]
     time_col = next((c for c, dt in schema.items() if isinstance(dt, (pl.Datetime, pl.Date)) or dt in (pl.Datetime, pl.Date)), None)
