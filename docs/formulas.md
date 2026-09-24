@@ -9,15 +9,18 @@ Formulas are used by **Calculate** (new columns) and by **Keep rows → Or a for
   or symbols), or `` `Total` ``. Matching is forgiving about case and spaces.
   A column always wins over an Input of the same name; write the column in
   brackets and rename the Input if you need both.
-- **Numbers and text**: `2.5`, `"warm"`, `'warm'`.
+- **Numbers and text**: `2.5`, `"warm"`, `'warm'`. As in Excel, a quote inside text is written twice
+  (`"say ""hi"""`) and a backslash is an ordinary character (`"C:\data"`).
 - **Arithmetic**: `+ - * / ^ %` (`^` is power, `%` is remainder). As in
   Excel, a minus sign on a value binds tighter than `^`, so `-2^2` is 4;
   write `-(2^2)` for −4. `2^3^2` is `2^(3^2)`. Whole numbers are added,
   subtracted and multiplied in 64 bits, so small or unsigned number columns
   from Parquet files never wrap around; `/` always gives a decimal.
-- **Comparison**: `= != < > <= >=` (also `==`, `<>`).
+- **Comparison**: `= != < > <= >=` (also `==`, `<>`). A text column compared with a number is compared
+  as numbers (`code > 5` works when `code` holds "10"); text that is not a number gives a blank answer.
 - **Logic**: `and`, `or`, `not`, or `AND(a, b)`, `OR(a, b)`, `NOT(a)`.
-- **Text joining**: `&` (e.g. `name & " (" & unit & ")"`).
+- **Text joining**: `&` (e.g. `name & " (" & unit & ")"`). As in Excel, a blank joins as nothing and a
+  whole number has no ".0".
 - **Dates**: comparing a date column with text works: `time > "2024-06-01 12:00"`.
 - `TRUE`, `FALSE`, `NULL`.
 
@@ -31,10 +34,10 @@ the row (`MAX(a, b, c)`).
 | Function | Meaning |
 |---|---|
 | `ABS(x)` `SQRT(x)` `EXP(x)` `LN(x)` `LOG(x)` `LOG(x, base)` `LOG2(x)` `POW(x, y)` | Maths |
-| `ROUND(x, digits)` `FLOOR(x)` `CEIL(x)` `CEILING(x)` `SIGN(x)` `MOD(a, b)` `CLIP(x, lo, hi)` | Rounding and limits |
+| `ROUND(x, digits)` `FLOOR(x)` `CEIL(x)` `CEILING(x)` `SIGN(x)` `MOD(a, b)` `CLIP(x, lo, hi)` | Rounding and limits. ROUND works as in Excel: halves away from zero (2.5 → 3), negative digits round to tens, hundreds… |
 | `SIN COS TAN ASIN ACOS ATAN ATAN2(y, x) PI()` | Trigonometry (radians) |
 | `SUM MIN MAX AVERAGE MEAN MEDIAN STDEV STD VAR COUNT` | Column aggregates (one arg) or row-wise (several) |
-| `PERCENTILE(x, 0.95)` `ZSCORE(x)` `RANK(x)` | Statistics |
+| `PERCENTILE(x, 0.95)` `ZSCORE(x)` `RANK(x)` | Statistics. PERCENTILE interpolates like Excel's PERCENTILE.INC; give 0–1, or 0–100 (a number above 1 is a percentage, so 1.5 means 1.5 %) |
 | `CUMSUM(x)` `CUMMAX(x)` `CUMMIN(x)` | Running totals |
 | `ROW()` | Row number from 1 |
 | `LAG(x, n)` `LEAD(x, n)` `DIFF(x, n)` `PCT_CHANGE(x, n)` | Previous/next rows (n defaults to 1). `DIFF` of a date gives seconds |
@@ -46,7 +49,7 @@ the row (`MAX(a, b, c)`).
 | `TEXT(x)` `TEXT(date, "%Y-%m-%d")` `VALUE(s)` `NUMBER(s)` | Convert to text / number |
 | `DATE(text)` `DATE(text, "%d/%m/%Y")` | Parse a date |
 | `YEAR MONTH DAY HOUR MINUTE SECOND WEEKDAY DAYOFYEAR` | Parts of a date |
-| `ELAPSED(time, "s"|"min"|"h"|"d")` | Time since the first row |
+| `ELAPSED(time, "s"|"min"|"h"|"d")` | Time since the first row that has a time (not the earliest time: sort first if the rows are not in time order) |
 | `SECONDS_BETWEEN(start, end)` | Difference of two date columns |
 
 ## Examples

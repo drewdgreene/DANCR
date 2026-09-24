@@ -223,6 +223,7 @@ def _gauss_newton(lf: pl.LazyFrame, kind: str, params: list[float]) -> tuple[lis
     if cur["ss"] is None or not math.isfinite(cur["ss"]):
         raise ValueError("Could not fit this shape: the values overflow (try a straight line or a power law)")
     converged = False
+    at_bound = False           # b held at its lower bound: a stall there is not a minimum
     passes = 0
     for passes in range(1, GN_ITERATIONS + 1):
         s11, s12, s22, g1, g2 = cur["s11"], cur["s12"], cur["s22"], cur["g1"], cur["g2"]
@@ -231,8 +232,9 @@ def _gauss_newton(lf: pl.LazyFrame, kind: str, params: list[float]) -> tuple[lis
         except np.linalg.LinAlgError:
             break
         na, nb = a + float(da), b + float(db)
-        if kind == "saturating":
-            na, nb = max(na, 0.0), max(nb, 1e-12)
+        if kind == "saturating":             # b > 0 keeps the curve's pole out of the data; a may be negative (falling)
+            at_bound = nb < 1e-12
+            nb = max(nb, 1e-12)
         nxt = sums(na, nb)
         if nxt["ss"] is not None and math.isfinite(nxt["ss"]) and nxt["ss"] < cur["ss"]:
             negligible = (cur["ss"] - nxt["ss"]) <= 1e-12 * max(cur["ss"], 1e-300)
@@ -243,7 +245,7 @@ def _gauss_newton(lf: pl.LazyFrame, kind: str, params: list[float]) -> tuple[lis
         else:
             lam *= 10
             if lam > 1e8:
-                converged = True        # no step improves the fit any more: we are at the minimum
+                converged = not at_bound    # no step improves the fit any more: a minimum, unless held at a bound
                 break
     return [a, b], passes, converged
 
@@ -284,10 +286,12 @@ def fit_lazy(lf: pl.LazyFrame, kind: str, degree: int = 2) -> tuple[list[float],
             start = [float(_row(lf, [y.mean().alias("m")])["m"] or 1.0), 0.0]
         return _gauss_newton(lf, kind, start)
     if kind == "saturating":
-        m = _row(lf, [y.max().alias("ymax"), x.mean().alias("xmean"), pl.len().alias("n")])
+        m = _row(lf, [y.max().alias("ymax"), y.min().alias("ymin"), x.mean().alias("xmean"), pl.len().alias("n")])
         if int(m["n"]) < 2:
             raise ValueError("Need at least two points to fit")
-        return _gauss_newton(lf, kind, [float(m["ymax"] or 1.0) * 1.2, max(float(m["xmean"] or 1.0), 1e-9)])
+        ymax, ymin = float(m["ymax"] or 1.0), float(m["ymin"] or 0.0)
+        level = ymax if abs(ymax) >= abs(ymin) else ymin      # the level the curve heads for: up, or down for falling data
+        return _gauss_newton(lf, kind, [level * 1.2 or 1.0, max(float(m["xmean"] or 1.0), 1e-9)])
     raise ValueError(f"Unknown fit kind {kind!r}")
 
 

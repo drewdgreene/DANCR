@@ -6,11 +6,11 @@ from typing import Any
 import polars as pl
 
 from ..conditions import build_mask, incomplete_rules, describe as describe_conditions
-from ..expr import compile_formula, FormulaError, _kind_of_dtype
+from ..expr import compile_formula, FormulaError, _kind_of_dtype, excel_round
 from ..params import Param
 from ..registry import NodeType, InputSpec, Ctx, NodeResult, registry
-from ._common import first_input, schema_of, require_column
-from ..dtypes import datetime_literal, is_temporal, temp_name, text_to_bool, text_to_bool_expr, text_to_number_expr
+from ._common import first_input, schema_of, require_column, number_param
+from ..dtypes import datetime_literal, is_temporal, temp_name, text_to_bool, text_to_bool_expr, text_to_number_expr, typed_value
 
 
 # ------------------------------------------------------------- keep rows
@@ -151,6 +151,10 @@ def _fix_missing(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[s
     schema = schema_of(lf)
     cols = [require_column(schema, c, "column") for c in (params.get("columns") or list(schema))]
     method = params.get("method") or "drop"
+    # NaN ("not a number") is a blank here too, as it is for "is empty" and ISBLANK
+    floats = [c for c in cols if schema[c].is_float()]
+    if floats:
+        lf = lf.with_columns([pl.col(c).fill_nan(None) for c in floats])
     if method == "drop":
         return NodeResult(lf.drop_nulls(subset=cols))
     if method == "drop_all":
@@ -166,13 +170,12 @@ def _fix_missing(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[s
             if v in (None, ""):
                 raise ValueError("Enter the value to fill with")
             if dt.is_numeric():
-                try:
-                    num = float(v)
-                except ValueError:
-                    raise ValueError(f"{v!r} is not a number, but {c} is a number column") from None
-                if dt.is_integer() and num != int(num):
+                num = typed_value(str(v))           # '1,5' works; whole numbers stay exact
+                if num is None:
+                    raise ValueError(f"{v!r} is not a number, but {c} is a number column")
+                if dt.is_integer() and not float(num).is_integer():
                     raise ValueError(f"{v!r} has decimals but {c} holds whole numbers; fill it with a whole number or convert the column first")
-                lit = pl.lit(num).cast(dt)          # keep the column's dtype (do not upcast an integer column)
+                lit = pl.lit(int(num) if dt.is_integer() else num).cast(dt)   # keep the column's dtype
             elif is_temporal(dt):
                 lit = datetime_literal(v, dt, c)
                 if isinstance(dt, pl.Date):
@@ -237,11 +240,13 @@ def _change_type(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[s
     for c in cols:
         e = pl.col(c)
         dt = schema[c]
+        if isinstance(dt, (pl.Categorical, pl.Enum)):      # categories (common in Parquet) convert as their text
+            e, dt = e.cast(pl.Utf8), pl.Utf8
         as_number = text_to_number_expr(e) if dt in (pl.Utf8, pl.String) else e.cast(pl.Float64, strict=False)
         if to == "number":
             e = as_number
         elif to == "integer":
-            e = as_number.round(0).cast(pl.Int64, strict=False)
+            e = excel_round(as_number).cast(pl.Int64, strict=False)          # 2.5 -> 3, as in Excel
         elif to == "text":
             e = e.cast(pl.Utf8)
         elif to == "datetime":
@@ -249,7 +254,7 @@ def _change_type(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[s
             if dt in (pl.Utf8, pl.String):
                 if fmt is None:
                     from ..timeutil import detect_datetime_format, settle_day_month
-                    sample = lf.select(c).head(2000).collect(engine="streaming")[c]
+                    sample = lf.select(e.alias(c)).head(2000).collect(engine="streaming")[c]
                     fmt = detect_datetime_format(sample)
                     if fmt is None:
                         raise ValueError(f"Could not work out the date format of {c}. Set it under 'Date format' (e.g. %d/%m/%Y)")
@@ -356,14 +361,13 @@ def _sample(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, A
         return NodeResult(lf.tail(n))
     idx = temp_name("row", schema_of(lf))
     if mode == "every":
-        k = max(1, int(params.get("every") or 10))
+        k = int(number_param(params, "every", 10, "'Every Nth row'", whole=True, at_least=1))
         return NodeResult(lf.with_row_index(idx).filter(pl.col(idx) % k == 0).drop(idx))
     if mode == "random":
         # streaming friendly-ish random sample: hash row index
-        frac = float(params.get("fraction") or 0.01)
-        if not 0 < frac <= 1:
-            raise ValueError("Fraction must be between 0 and 1")
-        return NodeResult(lf.with_row_index(idx).filter(pl.col(idx).hash(seed=int(params.get("seed") or 0)) % 1_000_000 < pl.lit(int(1_000_000 * frac))).drop(idx))
+        frac = number_param(params, "fraction", 0.01, "The fraction", at_least=0, at_most=1)
+        seed = int(number_param(params, "seed", 0, "The seed", whole=True))
+        return NodeResult(lf.with_row_index(idx).filter(pl.col(idx).hash(seed=seed) % 1_000_000 < pl.lit(int(1_000_000 * frac))).drop(idx))
     raise ValueError(f"Unknown mode {mode!r}")
 
 

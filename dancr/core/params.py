@@ -92,9 +92,9 @@ class Param:
         k = self.kind
         try:
             if k == "int":
-                return self._check_range(int(value))
+                return self._check_range(_whole_number(value))
             if k == "float":
-                return self._check_range(float(value))
+                return self._check_range(_finite_number(value))
             if k == "bool":
                 if isinstance(value, str):
                     from .dtypes import text_to_bool
@@ -125,7 +125,7 @@ class Param:
                     raise ValueError(f"{self.label}: expected a list of names")
                 return [str(v) for v in value]
             return self._coerce_structured(value)
-        except (TypeError, ValueError) as e:
+        except (TypeError, ValueError, OverflowError) as e:
             msg = str(e)
             raise ValueError(msg if msg.startswith(self.label + ":") else f"{self.label}: {msg}") from e
 
@@ -173,3 +173,34 @@ class Param:
         if self.advanced:
             d["advanced"] = True
         return d
+
+
+def _finite_number(value: Any) -> float:
+    """A setting that is a number: typed text is read as everywhere else ('1,5' is 1.5); NaN and
+    infinity are refused."""
+    from .dtypes import number_from_text
+    if isinstance(value, bool):
+        raise ValueError(f"{value!r} is not a number")
+    return number_from_text(value, "value") if not isinstance(value, (int, float)) or value != value or abs(value) == float("inf") \
+        else float(value)
+
+
+def _whole_number(value: Any) -> int:
+    """A setting that is a whole number. 2.9 is refused rather than silently becoming 2."""
+    if isinstance(value, bool):
+        raise ValueError(f"{value!r} is not a whole number")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        from .dtypes import typed_value
+        n = typed_value(value)
+        if n is None:
+            raise ValueError(f"{value!r} is not a whole number")
+        value = n
+        if isinstance(value, int):
+            return value
+    f = _finite_number(value)
+    if not f.is_integer():
+        raise ValueError(f"{value!r} is not a whole number")
+    return int(f)
+

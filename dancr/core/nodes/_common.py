@@ -11,11 +11,38 @@ STAT_CHOICES = [
     ("std", "standard deviation"), ("sum", "total"), ("count", "count"), ("first", "first"), ("last", "last"),
     ("n_unique", "distinct count"),
 ]
-STAT_HELP = "Any of: " + ", ".join(v for v, _ in STAT_CHOICES) + ". One statistic keeps the column names; several add a suffix"
+def number_param(params: dict[str, Any], key: str, default: float, what: str, *, whole: bool = False,
+                 above: float | None = None, at_least: float | None = None, at_most: float | None = None) -> float:
+    """A numeric setting, where only a missing value means the default: an explicit 0 is 0 (``x or default``
+    would silently replace it). Out-of-range values are refused with a plain message."""
+    v = params.get(key)
+    n: float = default if v is None or v == "" else (int(v) if whole else float(v))
+    if above is not None and not n > above:
+        raise ValueError(f"{what} must be more than {above:g}")
+    if at_least is not None and n < at_least:
+        raise ValueError(f"{what} must be at least {at_least:g}")
+    if at_most is not None and n > at_most:
+        raise ValueError(f"{what} must be at most {at_most:g}")
+    return n
 
 
-def stat_expr(col: str, stat: str) -> pl.Expr:
+STAT_HELP = ("Any of: " + ", ".join(v for v, _ in STAT_CHOICES) + ". One statistic keeps the column names; several add a "
+             "suffix (column by column choices always add one)")
+
+
+def check_stats(stats: list[str] | tuple[str, ...]) -> None:
+    valid = {v for v, _ in STAT_CHOICES}
+    for st in stats:
+        if st not in valid:
+            raise ValueError(f"Unknown statistic {st!r}. Use: {', '.join(sorted(valid))}")
+
+
+def stat_expr(col: str, stat: str, order_by: str | None = None) -> pl.Expr:
+    """One statistic of a column. ``order_by`` (a time column) decides what first and last mean: the
+    earliest and latest reading, not the first and last row in the file."""
     c = pl.col(col)
+    if order_by is not None and stat in ("first", "last"):
+        c = c.sort_by(order_by)
     if stat == "mean":
         return c.mean()
     if stat == "median":
@@ -50,32 +77,32 @@ def temporal_columns(schema: dict[str, pl.DataType]) -> list[str]:
 
 def build_aggregations(schema: dict[str, pl.DataType], aggregations: list[dict[str, Any]] | None,
                        exclude: list[str], default_stats: tuple[str, ...] = ("mean",),
-                       only: list[str] | None = None) -> list[pl.Expr]:
+                       only: list[str] | None = None, order_by: str | None = None) -> list[pl.Expr]:
     """[{column, stats:[...], alias?}] -> agg exprs. Empty -> default stats of the chosen (or every) numeric column.
-    A single statistic keeps the original column names; several add a _stat suffix."""
+    With the default statistics, a single statistic keeps the original column names and several add a _stat
+    suffix; column-by-column choices are always named column_stat (or alias / alias_stat)."""
     exprs: list[pl.Expr] = []
-    valid = {v for v, _ in STAT_CHOICES}
-    for st in default_stats:
-        if st not in valid:
-            raise ValueError(f"Unknown statistic {st!r}. Use: {', '.join(sorted(valid))}")
+    check_stats(default_stats)
     if not aggregations:
         for c in (only or numeric_columns(schema, exclude)):
             for st in default_stats:
                 name = c if len(default_stats) == 1 else f"{c}_{st}"
-                exprs.append(stat_expr(c, st).alias(name))
+                exprs.append(stat_expr(c, st, order_by).alias(name))
         return exprs
+    names: set[str] = set()
     for a in aggregations:
         col = a.get("column")
         if col not in schema:
             raise ValueError(f"There is no column called {col!r}")
         stats = a.get("stats") or ["mean"]
-        for st in stats:
-            if st not in valid:
-                raise ValueError(f"Unknown statistic {st!r}. Use: {', '.join(sorted(valid))}")
+        check_stats(stats)
         alias = (a.get("alias") or "").strip()
         for st in stats:
             name = (alias if len(stats) == 1 else f"{alias}_{st}") if alias else f"{col}_{st}"
-            exprs.append(stat_expr(col, st).alias(name))
+            if name in names:
+                raise ValueError(f"Two of the chosen statistics would both be called {name!r}; remove one or give it another name")
+            names.add(name)
+            exprs.append(stat_expr(col, st, order_by).alias(name))
     return exprs
 
 

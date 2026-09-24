@@ -108,9 +108,10 @@ def rule_mask(schema: dict[str, pl.DataType], rule: dict[str, Any], inputs: dict
         if isinstance(v, list):
             items = v
         else:
+            # items are separated by ";" or, when there is no ";", by ",": "100,200,300" is three numbers,
+            # and "1,000; 2,500" is how to list numbers written with thousands separators
             text = str(v or "")
-            sep = ";" if ";" in text else ("," if kind != NUM or not _looks_like_thousands(text) else " ")
-            items = [x.strip() for x in text.split(sep) if x.strip()]
+            items = [x.strip() for x in text.split(";" if ";" in text else ",") if x.strip()]
         if kind == NUM:
             nums = [number_from_text(x, what) for x in items]
             return c.cast(pl.Float64).is_in(nums)
@@ -149,12 +150,6 @@ def rule_mask(schema: dict[str, pl.DataType], rule: dict[str, Any], inputs: dict
             raise ValueError(f"{what}: enter both ends of the range")
         return (c >= lit) & (c <= _literal(v2, kind, what, dtype))
     raise ValueError(f"Filter: unknown condition {op!r}")
-
-
-def _looks_like_thousands(text: str) -> bool:
-    """'1,000' or '1,000 2,500' — commas used as thousands separators, not list separators."""
-    import re
-    return bool(re.fullmatch(r"\s*(-?\d{1,3}(,\d{3})+(\.\d+)?\s*)+", text))
 
 
 def incomplete_rules(conditions: dict[str, Any]) -> list[dict[str, Any]]:

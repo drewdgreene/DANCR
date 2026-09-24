@@ -11,6 +11,7 @@ import polars as pl
 
 from . import lod
 from ..core.expr import _kind_of_dtype, TIME, NUM
+from ..core.dtypes import resolve_number
 
 MAX_PANELS = 8
 
@@ -62,12 +63,11 @@ def limit_values(params: dict[str, Any], inputs: dict[str, Any] | None) -> list[
         if v in (None, ""):
             continue
         try:
-            fv = float(str(v).replace(",", ""))
+            fv = resolve_number(v, inputs, "limit")
         except ValueError:
-            key = str(v).strip().lower()
-            fv = next((float(val) for k, val in (inputs or {}).items() if k.lower() == key and isinstance(val, (int, float))), None)
-            if fv is None:
-                continue
+            continue                        # a limit naming an input that no longer exists is not drawn
+        if fv is None:
+            continue
         out.append((fv, l.get("label") or str(v)))
     return out
 

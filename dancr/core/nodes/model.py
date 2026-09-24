@@ -8,24 +8,13 @@ import polars as pl
 from ..params import Param
 from ..registry import NodeType, InputSpec, Ctx, NodeResult, registry
 from ..fits import KINDS, fit_frame, predict_by_group, outside_range_by_group, Fit
-from ._common import first_input, schema_of, require_column
+from ._common import first_input, schema_of, require_column, number_param
 from ..expr import NUM
-from ..dtypes import number_from_text
+from ..dtypes import resolve_number
 
 
 def _resolve_number(text: Any, ctx: Ctx, what: str) -> float | None:
-    """A number, or the name of an input that holds one; blank -> None."""
-    if text is None or (isinstance(text, str) and not text.strip()):
-        return None
-    try:
-        return number_from_text(text, what)
-    except ValueError:
-        pass
-    s = str(text).strip()
-    for k, v in (ctx.inputs or {}).items():
-        if k.lower() == s.lower() and isinstance(v, (int, float)) and not isinstance(v, bool):
-            return float(v)
-    raise ValueError(f"{what}: {text!r} is not a number or the name of an input")
+    return resolve_number(text, ctx.inputs, what)
 
 
 # --------------------------------------------------------------- fit a curve
@@ -38,7 +27,7 @@ def _fit(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, Any]
     group = params.get("group") or None
     if group:
         group = require_column(schema, group, "group column")
-    fits = fit_frame(lf, x, y, kind, int(params.get("degree") or 2), group)
+    fits = fit_frame(lf, x, y, kind, int(number_param(params, "degree", 2, "The degree", whole=True, at_least=1)), group)
     pred_name = params.get("predicted_column") or f"{y}_fitted"
     resid_name = f"{y}_residual"
     for name in (pred_name, resid_name):
@@ -53,7 +42,9 @@ def _fit(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, Any]
         r2 = f" · R² {f.r2:.4f}" if f.r2 is not None else ""
         passes = f" · {f.iterations} passes" if f.iterations else ""
         msgs.append(f"{head}{f.equation}{r2} · typical error {f.rmse:.4g} · {f.n:,} points{passes}")
-        if not f.converged:
+        if f.r2 is not None and f.r2 < 0:
+            msgs.append(f"{head}this shape fits worse than a flat line through the average (R² below 0); try another kind of curve")
+        elif not f.converged:
             msgs.append(f"{head}the fit stopped after {f.iterations} passes without settling; treat the equation as approximate")
     if not group:
         f = fits[0]
@@ -149,26 +140,31 @@ def _limits(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, A
     if lo is None and hi is None:
         return NodeResult(lf, messages=["No limit yet: enter a minimum, a maximum, or both (a number or the name of an input)"])
     v = pl.col(col).cast(pl.Float64)
-    ok = pl.lit(True)
+    has = v.is_not_null() & v.is_not_nan()          # a blank (or NaN) is not a measurement: it is not checked
+    inside = pl.lit(True)
     if lo is not None:
-        ok = ok & (v >= lo)
+        inside = inside & (v >= lo)
     if hi is not None:
-        ok = ok & (v <= hi)
-    ok = ok.fill_null(False)
+        inside = inside & (v <= hi)
+    ok = pl.when(has).then(inside)                  # true, false, or blank when there is no value
     flag = (params.get("flag_column") or "").strip() or f"{col}_ok"
-    counts = lf.select([pl.len().alias("n"), ok.sum().alias("ok")]).collect(engine="streaming").row(0, named=True)
-    n, n_ok = int(counts["n"]), int(counts["ok"] or 0)
-    bad = n - n_ok
+    action = params.get("action") or "flag"
+    if action == "flag" and flag in schema:
+        raise ValueError(f"There is already a column called {flag!r}; choose another name for the true/false column")
+    counts = lf.select([pl.len().alias("n"), has.sum().alias("checked"), ok.fill_null(False).sum().alias("ok")]).collect(engine="streaming").row(0, named=True)
+    n, checked, n_ok = int(counts["n"]), int(counts["checked"] or 0), int(counts["ok"] or 0)
+    bad, blank = checked - n_ok, n - checked
     limit_txt = " and ".join(t for t in [f"at least {lo:g}" if lo is not None else "", f"at most {hi:g}" if hi is not None else ""] if t)
     verdict = "PASS" if bad == 0 else "FAIL"
-    report = {"limit": limit_txt, "rows": n, "within": n_ok, "outside": bad,
-              "outside_percent": (100.0 * bad / n) if n else 0.0, "verdict": verdict}
-    msgs = [f"{verdict}: {bad:,} of {n:,} rows ({(100.0 * bad / n) if n else 0:.2f}%) have {col} outside {limit_txt}"]
-    action = params.get("action") or "flag"
+    report = {"limit": limit_txt, "rows": n, "within": n_ok, "outside": bad, "blank": blank,
+              "outside_percent": (100.0 * bad / checked) if checked else 0.0, "verdict": verdict}
+    msgs = [f"{verdict}: {bad:,} of {checked:,} values ({(100.0 * bad / checked) if checked else 0:.2f}%) have {col} outside {limit_txt}"]
+    if blank:
+        msgs.append(f"{blank:,} rows have no {col} value and were not checked")
     if action == "remove":
-        out = lf.filter(ok)
+        out = lf.filter(ok.fill_null(False))
     elif action == "keep_failing":
-        out = lf.filter(~ok)
+        out = lf.filter((~ok).fill_null(False))
     else:
         out = lf.with_columns(ok.alias(flag))
     return NodeResult(out, report=report, messages=msgs)

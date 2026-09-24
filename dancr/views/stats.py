@@ -17,16 +17,18 @@ STREAM = "streaming"
 
 
 def exact_quantiles(lf: pl.LazyFrame, expr: pl.Expr, qs: tuple[float, ...] = (0.25, 0.5, 0.75)) -> list[float | None]:
-    """Exact quantiles (nearest-rank) of a numeric expression over every row: one streaming sort, then the ranks."""
+    """Exact quantiles of a numeric expression over every row, interpolated between the two nearest values
+    as Excel's PERCENTILE.INC / QUARTILE.INC do: one streaming sort, then the ranks."""
+    import math
     src = lf.select(expr.cast(pl.Float64).alias("v")).filter(pl.col("v").is_not_null() & pl.col("v").is_not_nan())
     n = int(src.select(pl.len()).collect(engine=STREAM)[0, 0])
     if n == 0:
         return [None] * len(qs)
-    ranks = [int(round(q * (n - 1))) for q in qs]
-    hits = (src.sort("v").with_row_index("i").filter(pl.col("i").is_in(sorted(set(ranks))))
-            .collect(engine=STREAM))
-    by_rank = dict(zip(hits["i"].to_list(), hits["v"].to_list()))
-    return [by_rank.get(r) for r in ranks]
+    pos = [q * (n - 1) for q in qs]
+    ranks = sorted({r for p in pos for r in (math.floor(p), math.ceil(p))})
+    hits = (src.sort("v").with_row_index("i").filter(pl.col("i").is_in(ranks)).collect(engine=STREAM))
+    v = dict(zip(hits["i"].to_list(), hits["v"].to_list()))
+    return [v[math.floor(p)] + (p - math.floor(p)) * (v[math.ceil(p)] - v[math.floor(p)]) for p in pos]
 
 
 def column_summary(lf: pl.LazyFrame, columns: list[str] | None = None) -> pl.DataFrame:

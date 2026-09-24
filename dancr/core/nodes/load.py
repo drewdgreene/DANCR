@@ -129,8 +129,12 @@ def scan_file(ctx: Ctx, params: dict[str, Any]) -> tuple[pl.LazyFrame, list[str]
             sample = lf.select(text_cols).head(SAMPLE_ROWS).collect(engine="streaming")
             casts = []
             day_first = bool(params.get("day_first", False))
+            forced_hits = 0
             for c in text_cols:
+                if forced and not _mostly_reads(sample[c], forced):
+                    continue                        # a forced format is for the date columns, not every text column
                 fmt = forced or detect_datetime_format(sample[c], day_first=day_first)
+                forced_hits += bool(forced)
                 settled = None
                 if fmt and not forced:
                     fmt, settled = settle_day_month(lf, c, fmt, sample[c], whole=not ctx.preview)
@@ -144,6 +148,8 @@ def scan_file(ctx: Ctx, params: dict[str, Any]) -> tuple[pl.LazyFrame, list[str]
                         messages.append(settled)
             if casts:
                 lf = lf.with_columns(casts)
+            if forced and not forced_hits:
+                messages.append(f"No column reads as dates with the date format {forced!r}; every column was kept as it is")
     return lf, messages
 
 
@@ -164,6 +170,19 @@ def _tidy_names(names: list[str]) -> dict[str, str]:
         if new != c:
             out[c] = new
     return out
+
+
+def _mostly_reads(sample: pl.Series, fmt: str, share: float = 0.5) -> bool:
+    """True when at least ``share`` of the filled cells in the sample read as dates with ``fmt``."""
+    filled = sample.drop_nulls().str.strip_chars()
+    filled = filled.filter(filled != "")
+    if len(filled) == 0:
+        return False
+    try:
+        ok = len(filled) - int(filled.str.to_datetime(fmt, strict=False).null_count())
+    except Exception:  # noqa: BLE001 - a format Polars cannot use reads nothing
+        return False
+    return ok >= share * len(filled)
 
 
 def _unparsed_note(sample: pl.Series, fmt: str) -> str:

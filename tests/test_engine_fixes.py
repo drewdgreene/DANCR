@@ -35,7 +35,8 @@ def test_offset_literal_keeps_its_instant_against_a_zoned_column():
     assert (lit.hour, lit.utcoffset().total_seconds()) == (12, 7200)
     naive = pl.select(datetime_literal("2024-06-01 12:00", pl.Datetime("us", "Europe/Oslo"))).item()
     assert naive.hour == 12 and naive.utcoffset().total_seconds() == 7200
-    assert pl.select(datetime_literal("2024-06-01T12:00:00+02:00", pl.Datetime("ms"))).item() == datetime(2024, 6, 1, 10)
+    # a naive column has no zone: the literal's own wall time is used
+    assert pl.select(datetime_literal("2024-06-01T12:00:00+02:00", pl.Datetime("ms"))).item() == datetime(2024, 6, 1, 12)
     assert pl.select(datetime_literal("2024-06-01", pl.Date)).dtypes == [pl.Datetime("us")]
 
 
@@ -170,7 +171,7 @@ def ev(df, src, inputs=None):
     ("LEAD(a)", [2.0, 3.0, None, None]), ("PCT_CHANGE(a)", [None, 100.0, 50.0, None]), ("ROLLING_SUM(a, 2)", [1.0, 3.0, 5.0, 3.0]),
     ("ROLLING_MAX(a, 2)", [1.0, 2.0, 3.0, 3.0]), ("ROLLING_MIN(a, 3)", [1.0, 1.0, 1.0, 2.0]), ("CUMMAX(a)", [1.0, 2.0, 3.0, None]), ("CUMMIN(a)", [1.0, 1.0, 1.0, None]),
     ("RANK(a)", [1, 2, 3, None]), ("PERCENTILE(a, 50)", [2.0] * 4), ("CLIP(a, 1.5, 2.5)", [1.5, 2.0, 2.5, None]),
-    ("LEFT(s, 1) & RIGHT(s, 1)", ["xx", "yy", "zz", None]), ("MID(\"hello\", 2, 3)", ["ell"] * 4), ("REPLACE(s, \"x\", \"q\")", ["q", "y", "z", None]),
+    ("LEFT(s, 1) & RIGHT(s, 1)", ["xx", "yy", "zz", ""]), ("MID(\"hello\", 2, 3)", ["ell"] * 4), ("REPLACE(s, \"x\", \"q\")", ["q", "y", "z", None]),
     ("CONTAINS(s, \"y\")", [False, True, False, None]), ("STARTSWITH(s, \"z\")", [False, False, True, None]), ("ENDSWITH(s, \"x\")", [True, False, False, None]),
     ("TEXT(t, \"%Y\")", ["2024", "2024", "2025", None]), ("VALUE(\"1,200\") + a", [1201.0, 1202.0, 1203.0, None]),
     ("YEAR(DATE(\"01/02/2024\", \"%d/%m/%Y\"))", [2024] * 4), ("MONTH(DATE(\"01/02/2024\", \"%d/%m/%Y\"))", [2] * 4),

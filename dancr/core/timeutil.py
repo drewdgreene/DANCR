@@ -18,7 +18,15 @@ _UNITS = {
 
 
 def parse_duration(text: str) -> tuple[str, float]:
-    """'5 min' -> ('5m', 300.0). Returns (polars duration string, seconds)."""
+    """'5 min' -> ('5m', 300.0). Returns (polars duration string, seconds). Times are kept to the
+    microsecond, so a span shorter than that is refused."""
+    out, secs = _parse_duration(text)
+    if secs < 1e-6:
+        raise ValueError(f"{text!r} is shorter than a microsecond, the finest time DANCR keeps")
+    return out, secs
+
+
+def _parse_duration(text: str) -> tuple[str, float]:
     if not text or not str(text).strip():
         raise ValueError("Enter a time span like 30s, 5m, 1h or 1d")
     s = str(text).strip().lower()
@@ -60,9 +68,9 @@ def parse_duration(text: str) -> tuple[str, float]:
 # Tried in order; the first format that parses every sampled value wins, else the one that parses most.
 DATE_FORMATS = [
     "%+",                                   # RFC 3339 / ISO 8601 with offset or Z
-    "%Y-%m-%dT%H:%M:%S%.f%z", "%Y-%m-%dT%H:%M:%S%z",
+    "%Y-%m-%dT%H:%M:%S%.f%z", "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M%z",
     "%Y-%m-%dT%H:%M:%S%.f", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M",
-    "%Y-%m-%d %H:%M:%S%.f%z", "%Y-%m-%d %H:%M:%S%z",
+    "%Y-%m-%d %H:%M:%S%.f%z", "%Y-%m-%d %H:%M:%S%z", "%Y-%m-%d %H:%M%z",
     "%Y-%m-%d %H:%M:%S%.f", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d",
     "%Y/%m/%d %H:%M:%S%.f", "%Y/%m/%d %H:%M:%S", "%Y/%m/%d %H:%M", "%Y/%m/%d",
     "%d/%m/%Y %H:%M:%S%.f", "%d/%m/%Y %H:%M:%S", "%d/%m/%Y %H:%M", "%d/%m/%Y",

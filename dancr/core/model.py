@@ -83,17 +83,20 @@ _ID_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_\-]*$")
 
 
 def _coerce_input(v: Any) -> Any:
-    """Inputs are numbers when they look like numbers, otherwise text."""
+    """Inputs are numbers when they look like numbers (read as everywhere else: '1,5' is 1.5, whole numbers
+    stay exact), otherwise text. Lists and objects are refused rather than stored as their Python text."""
+    from .dtypes import typed_value
     if isinstance(v, bool) or v is None:
         return v
+    if isinstance(v, float) and (v != v or v in (float("inf"), float("-inf"))):
+        raise PipelineError(f"An input must be a finite number or text, not {v!r}")
     if isinstance(v, (int, float)):
         return v
+    if isinstance(v, (list, dict, tuple, set)):
+        raise PipelineError("An input holds one number or one piece of text, not a list or an object")
     s = str(v).strip()
-    try:
-        f = float(s.replace(",", ""))
-        return int(f) if f.is_integer() and "." not in s and "e" not in s.lower() else f
-    except ValueError:
-        return s
+    n = typed_value(s)
+    return s if n is None else n
 
 
 def _num(v: Any, default: float = 0.0) -> float:

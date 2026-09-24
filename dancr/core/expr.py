@@ -32,7 +32,7 @@ class FormulaError(ValueError):
 _TOKEN_RE = re.compile(r"""
     (?P<ws>\s+)
   | (?P<number>(?:\d+\.\d*|\.\d+|\d+)(?:[eE][+-]?\d+)?)
-  | (?P<string>"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')
+  | (?P<string>"(?:[^"]|"")*"|'(?:[^']|'')*')
   | (?P<bracket>\[[^\]]+\])
   | (?P<backtick>`[^`]+`)
   | (?P<ident>[^\W\d][\w.]*)
@@ -201,13 +201,9 @@ class Parser:
         if t.kind == "number":
             return Num(float(t.text))
         if t.kind == "string":
-            body = t.text[1:-1]
-            if "\\" in body:
-                try:
-                    body = body.encode("latin-1", "backslashreplace").decode("unicode_escape")
-                except (UnicodeDecodeError, UnicodeEncodeError) as e:
-                    raise FormulaError(f"Bad escape in text: {e}", t.pos) from e
-            return Str(body)
+            # as in Excel: a backslash is just a character ("C:\\new"), a quote inside text is doubled ("say ""hi""")
+            q = t.text[0]
+            return Str(t.text[1:-1].replace(q + q, q))
         if t.kind == "bracket":
             return Col(t.text[1:-1].strip(), t.pos)
         if t.kind == "backtick":
@@ -329,6 +325,8 @@ class Compiler:
         if n.op == "-":
             if v.kind in (STR, TIME, BOOL):
                 raise FormulaError(f"Cannot negate a {v.kind} value")
+            if v.kind == NUM and isinstance(v.literal, (int, float)) and not isinstance(v.literal, bool):
+                return Typed(pl.lit(-v.literal), NUM, -v.literal)    # still a plain number: ROUND(x, -2), LAG(x, -1)
             # 0 - x rather than -x: Polars cannot negate Int128 (a widened UInt64)
             return Typed(pl.lit(0, pl.Int64) - _wide(v) if v.kind == NUM else -v.expr, v.kind if v.kind == DUR else NUM)
         if n.op == "not":
@@ -369,19 +367,21 @@ class Compiler:
         if op in ("=", "!=", "<", ">", "<=", ">="):
             a, b = self.coerce_time_literal(a, b)
             if a.kind == STR and b.kind == NUM or a.kind == NUM and b.kind == STR:
-                # compare text column to number: cast number to text
-                if a.kind == NUM:
-                    a = Typed(a.expr.cast(pl.Utf8), STR)
+                # numbers kept as text (a column never converted): compare them as numbers, so "10" > 5 and
+                # "1" = 1.0; text that is not a number gives a blank answer, which filters treat as false
+                from .dtypes import text_to_number_expr
+                if a.kind == STR:
+                    a = Typed(text_to_number_expr(a.expr), NUM)
                 else:
-                    b = Typed(b.expr.cast(pl.Utf8), STR)
+                    b = Typed(text_to_number_expr(b.expr), NUM)
             fn = {"=": pl.Expr.eq, "!=": pl.Expr.ne, "<": pl.Expr.lt, ">": pl.Expr.gt,
                   "<=": pl.Expr.le, ">=": pl.Expr.ge}[op]
             return Typed(fn(a.expr, b.expr), BOOL)
         if op == "&":
-            return Typed(pl.concat_str([a.expr.cast(pl.Utf8), b.expr.cast(pl.Utf8)]), STR)
+            return Typed(pl.concat_str([_as_text(a), _as_text(b)]), STR)
         if op == "+":
             if a.kind == STR and b.kind == STR:
-                return Typed(pl.concat_str([a.expr, b.expr]), STR)
+                return Typed(pl.concat_str([_as_text(a), _as_text(b)]), STR)
             if a.kind == TIME and b.kind == DUR or a.kind == DUR and b.kind == TIME:
                 return Typed(a.expr + b.expr, TIME)
             return Typed(_wide(a) + _wide(b), self._numkind(a, b))
@@ -429,6 +429,17 @@ class Compiler:
 
 
 # ----------------------------------------------------------------- functions
+def _as_text(t: Typed) -> pl.Expr:
+    """A value as text for joining, as Excel's & does: a blank is "" (not a blank result) and a whole
+    number has no ".0"."""
+    e = t.expr
+    if t.kind == NUM and not (t.dtype is not None and t.dtype.is_integer()):
+        f = e.cast(pl.Float64)
+        whole = (f == f.round(0)) & (f.abs() < 1e15)
+        e = pl.when(whole).then(f.cast(pl.Int64).cast(pl.Utf8)).otherwise(f.cast(pl.Utf8))
+    return e.cast(pl.Utf8).fill_null("")
+
+
 def _wide(t: Typed) -> pl.Expr:
     """A number for + - * and negation, in at least 64 bits. Small and unsigned integers (Parquet files,
     MONTH(), LEN()) would otherwise wrap around: UInt32 1 - 3 is 4294967294, Int8 100 + 100 is -56.
@@ -480,7 +491,8 @@ def _horizontal_or_column(hfn: Callable, cfn: Callable) -> Callable[[Compiler, l
 
 def _simple(fn: Callable[[pl.Expr], pl.Expr], kind: str = NUM, cast: bool = True) -> Callable:
     def f(c: Compiler, args: list[Typed]) -> Typed:
-        return Typed(fn(_num(args[0]) if cast else args[0].expr), kind)
+        a = args[0]
+        return Typed(fn((_wide(a) if a.kind == NUM else _num(a)) if cast else a.expr), kind)   # ABS(Int8 -128) = 128
     return f
 
 
@@ -493,9 +505,18 @@ def _f_log(c: Compiler, args: list[Typed]) -> Typed:
     return Typed(_num(args[0]).log10(), NUM)
 
 
+def excel_round(e: pl.Expr, digits: int = 0) -> pl.Expr:
+    """Round as Excel does: halves away from zero (2.5 -> 3, -2.5 -> -3), and a value that is a half in
+    decimal but not quite in binary counts as a half (1.005 -> 1.01). ``digits`` may be negative (-2 rounds
+    to hundreds)."""
+    scale = 10.0 ** digits
+    scaled = (e.cast(pl.Float64) * scale).round(9)          # 100.49999999999999 -> 100.5: the half the person typed
+    return scaled.round(0, mode="half_away_from_zero") / scale + 0.0      # + 0.0: no "-0"
+
+
 def _f_round(c: Compiler, args: list[Typed]) -> Typed:
     d = _int_lit(args[1], "ROUND digits") if len(args) == 2 else 0
-    return Typed(_num(args[0]).round(d), NUM)
+    return Typed(excel_round(_num(args[0]), d), NUM)
 
 
 def _f_if(c: Compiler, args: list[Typed]) -> Typed:
@@ -598,7 +619,8 @@ def _f_elapsed(c: Compiler, args: list[Typed]) -> Typed:
     if div is None:
         raise FormulaError("ELAPSED unit must be one of ms, s, min, h, d")
     e = args[0].expr
-    return Typed((e - e.min()).dt.total_microseconds().cast(pl.Float64) / div, NUM)
+    first = e.drop_nulls().first()                  # the first row with a time, as documented (not the earliest)
+    return Typed((e - first).dt.total_microseconds().cast(pl.Float64) / div, NUM)
 
 
 def _f_seconds_between(c: Compiler, args: list[Typed]) -> Typed:
@@ -633,8 +655,12 @@ def _rolling(method: str) -> Callable:
         n = _int_lit(args[1], "window size")
         if n < 1:
             raise FormulaError("window size must be at least 1")
-        center = bool(args[2].literal) if len(args) == 3 else False
-        e = _num(args[0])
+        center = False
+        if len(args) == 3:
+            if not isinstance(args[2].literal, bool):
+                raise FormulaError("The third argument says whether to centre the window: TRUE or FALSE")
+            center = args[2].literal
+        e = _wide(args[0]) if args[0].kind == NUM else _num(args[0])
         return Typed(getattr(e, f"rolling_{method}")(window_size=n, min_samples=1, center=center), NUM)
     return f
 
@@ -654,7 +680,7 @@ def _f_percentile(c: Compiler, args: list[Typed]) -> Typed:
         q = q / 100.0
     if not 0 <= q <= 1:
         raise FormulaError(f"PERCENTILE must be between 0 and 1 (or 0 and 100), not {lit}")
-    return Typed(_num(args[0]).quantile(q), NUM)
+    return Typed(_num(args[0]).quantile(q, interpolation="linear"), NUM)     # as Excel's PERCENTILE.INC
 
 
 def _f_clip(c: Compiler, args: list[Typed]) -> Typed:

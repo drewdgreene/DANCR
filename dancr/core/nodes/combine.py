@@ -10,7 +10,7 @@ from ..registry import NodeType, InputSpec, Ctx, NodeResult, registry
 from ..timeutil import parse_duration
 from ._common import schema_of, require_column, temporal_columns
 from ..expr import TIME, NUM, STR, _kind_of_dtype
-from ..dtypes import align_time_column, temp_name
+from ..dtypes import align_time_column, temp_name, is_date
 
 
 def _combine(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, Any]) -> NodeResult:
@@ -83,7 +83,13 @@ def _combine(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, 
         if ls[a] != rs[b]:
             ka, kb = _kind_of_dtype(ls[a]), _kind_of_dtype(rs[b])
             if ka == TIME and kb == TIME:
-                right = right.with_columns(align_time_column(pl.col(b), rs[b], ls[a]).alias(b))
+                # a date against a date/time: both become date/times (midnight), then the key keeps the first table's type
+                target = pl.Datetime("us") if is_date(ls[a]) else ls[a]
+                if target != ls[a]:
+                    left = left.with_columns(align_time_column(pl.col(a), ls[a], target).alias(a))
+                    if how in ("left", "inner"):
+                        restore[a] = ls[a]
+                right = right.with_columns(align_time_column(pl.col(b), rs[b], target).alias(b))
             elif ka != kb:
                 raise ValueError(f"Cannot match {a!r} ({ka}) with {b!r} ({kb}). Use 'Change type' so both are the same kind.")
             else:
@@ -97,6 +103,12 @@ def _combine(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, 
                     maintain_order="left" if how in ("left", "inner") else ("right" if how == "right" else "none"))
     if restore:
         out = out.with_columns([pl.col(c).cast(dt) for c, dt in restore.items()])
+    if not ctx.preview:
+        # like VLOOKUP people expect one match per row; say so when a key repeats in the second table
+        dup = int(right.select(pl.struct(right_on).is_duplicated().sum()).collect(engine="streaming")[0, 0])
+        if dup:
+            msgs.append(f"{dup:,} rows of the second table share their key with another row, so the rows of the first "
+                        "table with those keys appear once per match. Use 'Remove duplicates' on the second table to keep one.")
     return NodeResult(out, messages=msgs)
 
 

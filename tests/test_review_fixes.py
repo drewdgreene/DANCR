@@ -139,9 +139,8 @@ def test_formula_unicode_escape_and_recursion():
     df = pl.DataFrame({"Größe": [1.0], "s": ["a"]})
     e, k, _ = compile_formula("Größe * 2", df.schema)
     assert df.select(e)[0, 0] == 2.0
-    e, k, _ = compile_formula('"Größe\\n"', df.schema)
-    assert df.select(e)[0, 0] == "Größe\n"
-    assert "escape" in (check_formula('"\\N{DASH}"', df.schema) or "") or check_formula('"\\N{DASH}"', df.schema) is None
+    e, k, _ = compile_formula('"Größe\\n"', df.schema)            # as in Excel, a backslash is just a character
+    assert df.select(e)[0, 0] == "Größe\\n"
     assert "too long" in check_formula("(" * 400 + "1" + ")" * 400, df.schema)
     assert "too long" in check_formula(" + ".join(["Größe"] * 3000), df.schema)
 
@@ -174,7 +173,7 @@ def test_conditions_tz_categorical_thousands():
     assert tz.filter(m).height == 1
     m = rule_mask(tz.schema, {"column": "c", "op": "empty"})
     assert tz.filter(m).height == 2
-    m = rule_mask(tz.schema, {"column": "n", "op": "in", "value": "1,000 2,500"})
+    m = rule_mask(tz.schema, {"column": "n", "op": "in", "value": "1,000; 2,500"})
     assert tz.filter(m).height == 2
     m = rule_mask(tz.schema, {"column": "n", "op": "in", "value": "1000, 7"})
     assert tz.filter(m).height == 2
@@ -333,9 +332,8 @@ def test_summary_quartiles_are_exact(pipe):
     row = df.filter(pl.col("column") == "pressure_psi").row(0, named=True)
     assert row["median"] is not None and row["q25"] < row["median"] < row["q75"]
     vals = np.sort(lf.select("pressure_psi").collect()["pressure_psi"].drop_nulls().to_numpy())
-    n = len(vals)
     for key, q in (("q25", 0.25), ("median", 0.5), ("q75", 0.75)):
-        assert row[key] == vals[int(round(q * (n - 1)))]        # nearest-rank, computed over every row
+        assert row[key] == pytest.approx(float(np.quantile(vals, q)))   # interpolated (QUARTILE.INC) over every row
 
 
 def test_envelope_contains_extremes_and_streams(pipe):

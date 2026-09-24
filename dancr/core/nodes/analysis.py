@@ -7,12 +7,23 @@ import polars as pl
 
 from ..params import Param
 from ..registry import NodeType, Ctx, NodeResult, registry
-from ._common import first_input, schema_of, require_column, build_aggregations, STAT_HELP
+from ._common import first_input, schema_of, require_column, build_aggregations, number_param, STAT_HELP
 from ..expr import NUM
-from ..dtypes import temp_name
+from ..dtypes import temp_name, resolve_number
 
 
 # ---------------------------------------------------------- remove outliers
+def _range(params: dict[str, Any], ctx: Ctx) -> tuple[float | None, float | None]:
+    """The fixed range's ends: numbers ('1,000' works) or input names, as in 'Check against limits'."""
+    lo = resolve_number(params.get("min"), ctx.inputs, "Minimum")
+    hi = resolve_number(params.get("max"), ctx.inputs, "Maximum")
+    if lo is None and hi is None:
+        raise ValueError("Enter a minimum and/or maximum")
+    if lo is not None and hi is not None and lo > hi:
+        raise ValueError(f"The minimum ({lo:g}) is above the maximum ({hi:g})")
+    return lo, hi
+
+
 def _outliers(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, Any]) -> NodeResult:
     lf = first_input(inputs)
     schema = schema_of(lf)
@@ -31,20 +42,20 @@ def _outliers(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str,
     for c in cols:
         e = pl.col(c).cast(pl.Float64)
         if method == "zscore":
-            k = float(params.get("threshold") or 3)
+            k = number_param(params, "threshold", 3, "The threshold", above=0)
             bad = ((e - e.mean()) / e.std()).abs() > k
             msgs.append(f"{c}: more than {k:g} standard deviations from the mean")
         elif method == "iqr":
-            k = float(params.get("iqr_factor") or 1.5)
-            q1, q3 = e.quantile(0.25), e.quantile(0.75)
+            k = number_param(params, "iqr_factor", 1.5, "The range factor", at_least=0)
+            q1, q3 = e.quantile(0.25, interpolation="linear"), e.quantile(0.75, interpolation="linear")   # QUARTILE.INC
             iqr = q3 - q1
             bad = (e < q1 - k * iqr) | (e > q3 + k * iqr)
             msgs.append(f"{c}: outside {k:g}× the interquartile range")
         elif method == "rolling":
-            n = int(params.get("window") or 51)
+            n = int(number_param(params, "window", 51, "The rolling window", whole=True))
             if n < 3:
                 raise ValueError("The rolling window must be at least 3 rows")
-            k = float(params.get("threshold") or 5)
+            k = number_param(params, "threshold", 5, "The threshold", above=0)
             med = e.rolling_median(window_size=n, min_samples=1, center=True)
             dev = (e - med).abs()
             if params.get("local_spread"):
@@ -55,15 +66,13 @@ def _outliers(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str,
                 msgs.append(f"{c}: more than {k:g}× the typical noise from the rolling median over {n} rows")
             bad = dev > k * pl.max_horizontal(scale, pl.lit(1e-12))
         elif method == "range":
-            lo, hi = params.get("min"), params.get("max")
-            if lo in (None, "") and hi in (None, ""):
-                raise ValueError("Enter a minimum and/or maximum")
+            lo, hi = _range(params, ctx)
             bad = pl.lit(False)
-            if lo not in (None, ""):
-                bad = bad | (e < float(lo))
-            if hi not in (None, ""):
-                bad = bad | (e > float(hi))
-            msgs.append(f"{c}: outside {lo} .. {hi}")
+            if lo is not None:
+                bad = bad | (e < lo)
+            if hi is not None:
+                bad = bad | (e > hi)
+            msgs.append(f"{c}: outside {params.get('min') or '…'} .. {params.get('max') or '…'}")
         else:
             raise ValueError(f"Unknown method {method!r}")
         flags.append(bad.fill_null(False).alias(bad_col[c]))
@@ -79,8 +88,8 @@ def _outliers(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str,
     elif action == "clip":
         if method != "range":
             raise ValueError("'Clip to range' only works with the 'Outside a fixed range' method")
-        lo, hi = params.get("min"), params.get("max")
-        out = lf.with_columns([pl.col(c).clip(float(lo) if lo not in (None, "") else None, float(hi) if hi not in (None, "") else None).alias(c) for c in cols])
+        lo, hi = _range(params, ctx)
+        out = lf.with_columns([pl.col(c).clip(lo, hi).alias(c) for c in cols])
     else:
         raise ValueError(f"Unknown action {action!r}")
     return NodeResult(out, messages=msgs)

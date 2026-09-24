@@ -37,7 +37,7 @@ def ev(df, src):
     ("LAG([Pressure A])", [None, 1.0, 2.0, 3.0]),
     ("ROLLING_MEAN([Pressure A], 2)", [1.0, 1.5, 2.5, 3.5]),
     ("CUMSUM([Pressure A])", [1.0, 3.0, 6.0, 10.0]),
-    ("UPPER(name) & \"!\"", ["A!", "B!", "C!", None]),
+    ("UPPER(name) & \"!\"", ["A!", "B!", "C!", "!"]),
     ("LEN(name)", [1, 1, 1, None]),
     ("ISBLANK(name)", [False, False, False, True]),
     ("COALESCE(name, \"?\")", ["a", "b", "c", "?"]),

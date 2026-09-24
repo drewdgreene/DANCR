@@ -75,11 +75,11 @@ def test_check_limits_with_inputs(tmp_path):
     c = p.add_node("check_limits", params={"column": "tp", "max": "permit limit"}); p.connect("src", c.id)
     st = Executor(p).run()[c.id]
     assert st.status == "done", st.error
-    assert st.report["outside"] == 3 and st.report["verdict"] == "FAIL"
-    assert pl.read_parquet(st.output)["tp_ok"].to_list() == [True, False, True, False, False]
+    assert st.report["outside"] == 2 and st.report["blank"] == 1 and st.report["verdict"] == "FAIL"
+    assert pl.read_parquet(st.output)["tp_ok"].to_list() == [True, False, True, False, None]   # a blank is not checked
     p.set_input("permit limit", 5.0)
     st2 = Executor(p).run()[c.id]
-    assert not st2.from_cache and st2.report["outside"] == 1        # the input changed -> recomputed
+    assert not st2.from_cache and st2.report["outside"] == 0 and st2.report["verdict"] == "PASS"   # the input changed -> recomputed
     p.set_params(c.id, action="remove")
     assert run_one(p, c.id).height == 4
 
