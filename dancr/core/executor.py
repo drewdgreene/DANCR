@@ -35,15 +35,30 @@ log = logging.getLogger("dancr.executor")
 IMPL_VERSION = "4"     # bump to invalidate every cache
 
 
+# engine modules that never shape a step's output (help text, the wizard's planning, sample data):
+# editing them must not throw every cached result away
+NOT_SEMANTIC = {"examples.py", "profile.py", "planner.py", "samples.py"}
+
+
+def _version_of(package: str) -> str:
+    from importlib.metadata import version, PackageNotFoundError
+    try:
+        return version(package)
+    except PackageNotFoundError:
+        return "none"
+
+
 def _code_fingerprint() -> str:
     """Hash of the code that can shape a step's output, so cached outputs are invalidated when it changes.
 
     Every engine module and every renderer (report/workbook/export steps write charts and tables),
     plus the Polars version. Listing files by hand is how a module gets forgotten, so nothing is listed."""
+    import numpy
     here = Path(__file__).parent
     h = hashlib.sha1(IMPL_VERSION.encode())
-    h.update(pl.__version__.encode())
-    semantic = [*here.rglob("*.py"), *(here.parent / "views").rglob("*.py")]
+    for lib in (pl.__version__, numpy.__version__, _version_of("fastexcel")):   # the libraries that compute and read
+        h.update(lib.encode())
+    semantic = [f for f in [*here.rglob("*.py"), *(here.parent / "views").rglob("*.py")] if f.name not in NOT_SEMANTIC]
     for f in sorted(semantic):
         try:
             h.update(f.relative_to(here.parent).as_posix().encode())
@@ -177,7 +192,10 @@ def _file_stamp(path: Path) -> list[int] | None:
     return [st.st_size, st.st_mtime_ns]
 
 
-LIVE_DIR = ".live"      # per-process lists of the results each DANCR process is using (see Executor.hold)
+BLANK_NOTE = "Blank or unreadable cells — "      # a source's note about blanks; reports leave it out
+LIVE_DIR = ".live"
+LEASE_FOREIGN_MAX_AGE = 7 * 86400
+_HOST = __import__("socket").gethostname()      # per-process lists of the results each DANCR process is using (see Executor.hold)
 
 
 class Executor:
@@ -196,7 +214,7 @@ class Executor:
         for p in node_type.params:
             if p.kind == "path" and params.get(p.name):
                 try:
-                    path = self.pipeline.directory / os.path.expanduser(str(params[p.name]))
+                    path = resolve_path(self.pipeline.directory, str(params[p.name]))
                     st = path.stat()
                     fp.append([str(path.resolve()), st.st_size, st.st_mtime_ns])
                 except (OSError, ValueError, TypeError):
@@ -288,8 +306,8 @@ class Executor:
                     if _file_stamp(Path(f)) != stamp:
                         return NodeState(node_id, status="stale", hash=h)
                 return st
-            except Exception:
-                pass
+            except Exception as e:  # noqa: BLE001 - a damaged record means the step runs again
+                log.warning("result record %s is unreadable (%s); the step will run again", meta, e)
         failed = self._failed_path(node_id, h)
         if failed.exists():
             try:
@@ -313,15 +331,18 @@ class Executor:
     # ------------------------------------------------------------ frames
     PREVIEW_ROWS = 50_000
 
-    def frame(self, node_id: str, sample_rows: int | None = None, _visiting: set[str] | None = None) -> pl.LazyFrame:
+    def frame(self, node_id: str, sample_rows: int | None = None, _visiting: set[str] | None = None,
+              memo: dict[str, str] | None = None) -> pl.LazyFrame:
         """A LazyFrame for this node's output.
 
         Cached outputs are scanned from Parquet. Anything not computed yet is composed from
         *samples* of its inputs (``sample_rows`` rows, default PREVIEW_ROWS), never from the
         whole upstream data, so schema lookups and previews stay cheap no matter how deep the
-        pipeline is. The real run never uses this path.
+        pipeline is. The real run never uses this path. ``memo`` shares plan hashes down the recursion, so a
+        deep pipeline is hashed once, not once per level.
         """
-        st = self.state(node_id)
+        memo = {} if memo is None else memo
+        st = self.state(node_id, memo)
         if st.status == "done" and st.output:
             return pl.scan_parquet(st.output)
         rows = sample_rows or self.PREVIEW_ROWS
@@ -333,9 +354,9 @@ class Executor:
         # A path set, not a global seen-set: two branches that share one not-yet-run ancestor
         # (a diamond) are not a loop, so each branch descends with its own copy of the path.
         _visiting = _visiting | {node_id}
-        inputs = {port: [self.sample_frame(s, rows, _visiting)[0] for s in srcs]
+        inputs = {port: [self.sample_frame(s, rows, _visiting, memo)[0] for s in srcs]
                   for port, srcs in self.pipeline.inputs_of(node_id).items()}
-        ctx = self._ctx(node_id, preview=True)
+        ctx = self._ctx(node_id, preview=True, memo=memo)
         res = nt.apply(ctx, inputs, node.params)
         lf = res.frame if isinstance(res, NodeResult) else res
         return lf.head(rows) if nt.kind == "source" else lf
@@ -355,18 +376,20 @@ class Executor:
                     out[port] = s
         return out
 
-    def sample_frame(self, node_id: str, rows: int, _visiting: set[str] | None = None) -> tuple[pl.LazyFrame, str]:
+    def sample_frame(self, node_id: str, rows: int, _visiting: set[str] | None = None,
+                     memo: dict[str, str] | None = None) -> tuple[pl.LazyFrame, str]:
         """A sample of a node's output for previews: (frame, kind) where kind is "spread"
         (every k-th row of a cached output), "all" (small cached output) or "head"
         (composed from the first rows of not-yet-run sources)."""
-        st = self.state(node_id)
+        memo = {} if memo is None else memo
+        st = self.state(node_id, memo)
         if st.status == "done" and st.output and st.rows is not None:
             lf = pl.scan_parquet(st.output)
             if st.rows <= rows:
                 return lf, "all"
-            k = max(1, st.rows // rows)
+            k = -(-st.rows // rows)                  # rounded up: never more than `rows` rows
             return lf.gather_every(k), "spread"
-        return self.frame(node_id, rows, _visiting).head(rows), "head"
+        return self.frame(node_id, rows, _visiting, memo).head(rows), "head"
 
     def preview(self, node_id: str, rows: int = PREVIEW_ROWS) -> tuple[pl.DataFrame, NodeResult | None, str]:
         """Compute this node on a sample of each input. Returns (df, result, sample_kind).
@@ -375,6 +398,7 @@ class Executor:
         plain-English message, never a raw traceback, because a preview failing does not mean the
         real run will fail."""
         try:
+            memo: dict[str, str] = {}
             node = self.pipeline.nodes[node_id]
             nt = registry.get(node.type)
             inputs: dict[str, list[pl.LazyFrame]] = {}
@@ -382,11 +406,11 @@ class Executor:
             for port, srcs in self.pipeline.inputs_of(node_id).items():
                 frames = []
                 for s in srcs:
-                    lf, kind = self.sample_frame(s, rows)
+                    lf, kind = self.sample_frame(s, rows, memo=memo)
                     frames.append(lf)
                     kinds.add(kind)
                 inputs[port] = frames
-            ctx = self._ctx(node_id, preview=True)
+            ctx = self._ctx(node_id, preview=True, memo=memo)
             res = nt.apply(ctx, inputs, node.params)
             lf = res.frame if isinstance(res, NodeResult) else res
             kind = "head" if "head" in kinds else ("spread" if "spread" in kinds else ("all" if kinds else "head"))
@@ -409,7 +433,7 @@ class Executor:
                 up_node = self.pipeline.nodes[s]
                 up_state = (results or {}).get(s) or self.state(s, memo)
                 lst.append({"node": s, "title": up_node.title, "node_type": up_node.type, "params": up_node.params,
-                            "messages": [m for m in up_state.messages if not m.startswith("Blank")], "report": up_state.report,
+                            "messages": [m for m in up_state.messages if not m.startswith(BLANK_NOTE)], "report": up_state.report,
                             "status": up_state.status})
             meta[port] = lst
         ctx.upstream_meta = meta
@@ -423,6 +447,7 @@ class Executor:
         order = self.pipeline.topological_order(targets)
         memo: dict[str, str] = {}
         results: dict[str, NodeState] = {}
+        self._claim_cache_dir()          # owner.pid before anything else: a starting window's sweep must see an owner
         run_lease = f"{self._lease}-run"
         self._write_lease(run_lease, {nid: self._safe_hash(nid, memo) for nid in order})
         try:
@@ -453,7 +478,7 @@ class Executor:
                 emit({"type": "node_cached", "node": nid, "state": st, "index": i, "total": len(order)})
                 continue
             ups = [s for srcs in self.pipeline.inputs_of(nid).values() for s in srcs]
-            bad = [u for u in ups if results.get(u, self.state(u, memo)).status != "done"]
+            bad = [u for u in ups if (results[u] if u in results else self.state(u, memo)).status != "done"]
             if bad:
                 st = NodeState(nid, status="failed", hash=h, error=f"Waiting on {', '.join(self.pipeline.nodes[b].title for b in bad)}")
                 results[nid] = st
@@ -613,7 +638,7 @@ class Executor:
         parts = [f"{c}: {n:,}" for c, n in counts.items() if n]
         if not parts:
             return []
-        note = "Blank or unreadable cells — " + ", ".join(parts[:6]) + (" …" if len(parts) > 6 else "")
+        note = BLANK_NOTE + ", ".join(parts[:6]) + (" …" if len(parts) > 6 else "")
         time_cols = [c for c, dt in schema.items() if isinstance(dt, (pl.Datetime, pl.Date)) and counts.get(c)]
         if time_cols:
             note += f". Rows with a blank {time_cols[0]} are skipped by time-based steps."
@@ -633,7 +658,8 @@ class Executor:
         try:
             d = self.cache_dir / LIVE_DIR
             d.mkdir(parents=True, exist_ok=True)
-            self._write_json(d / f"{name}.json", {"pid": os.getpid(), "hashes": {k: v for k, v in hashes.items() if v}})
+            self._write_json(d / f"{name}.json", {"pid": os.getpid(), "host": _HOST,
+                                                  "hashes": {k: v for k, v in hashes.items() if v}})
         except OSError as e:
             log.warning("could not record the results in use in %s: %s", self.cache_dir, e)
 
@@ -655,9 +681,16 @@ class Executor:
             try:
                 data = json.loads(f.read_text())
                 pid = int(data["pid"])
+                age = time.time() - f.stat().st_mtime
             except (OSError, ValueError, KeyError, TypeError):
                 continue                             # being written right now, or unreadable: ignore this pass
-            if not _pid_alive(pid):
+            if data.get("host", _HOST) != _HOST:
+                # another machine sharing the folder: its processes cannot be checked from here, so its lease
+                # is trusted until it is a week old (a live window rewrites it whenever what it shows changes)
+                if age > LEASE_FOREIGN_MAX_AGE:
+                    f.unlink(missing_ok=True)
+                    continue
+            elif not _pid_alive(pid):
                 f.unlink(missing_ok=True)
                 continue
             for nid, h in (data.get("hashes") or {}).items():
@@ -680,34 +713,32 @@ class Executor:
                 live = {self.plan_hash(nid, memo)} | held.get(nid, set())
             except Exception:
                 continue
+            # a result is a record ({hash}.json) with, for steps that keep a table, {hash}.parquet
+            now = time.time()
+            results: dict[str, float] = {}
             try:
-                files = list(nd.glob("*.parquet"))
+                for f in nd.iterdir():
+                    name, mtime = f.name, f.stat().st_mtime
+                    if ".tmp." in name:
+                        if now - mtime > 3600:          # left by a writer that died
+                            f.unlink(missing_ok=True)
+                    elif name.endswith((".parquet", ".json")) and not name.endswith(".failed.json"):
+                        stem = name.split(".")[0]
+                        results[stem] = max(results.get(stem, 0.0), mtime)
             except OSError:
                 continue
-            aged: list[tuple[float, Path]] = []
-            for p in files:
-                try:
-                    aged.append((p.stat().st_mtime, p))
-                except OSError:
-                    continue
-            aged.sort(reverse=True)
             kept = 0
-            now = time.time()
-            for mtime, p in aged:
-                try:
-                    if p.stem in live:
-                        continue
-                    if p.name.endswith(".tmp.parquet"):
-                        if now - mtime > 3600:
-                            p.unlink(missing_ok=True)
-                        continue
-                    if kept < keep_per_node and now - mtime < grace_seconds:
-                        kept += 1
-                        continue
-                    p.unlink(missing_ok=True)
-                    (nd / f"{p.stem}.json").unlink(missing_ok=True)
-                except OSError:
+            for mtime, stem in sorted(((m, st) for st, m in results.items()), reverse=True):
+                if stem in live:
                     continue
+                if kept < keep_per_node and now - mtime < grace_seconds:
+                    kept += 1
+                    continue
+                for f in (nd / f"{stem}.parquet", nd / f"{stem}.json"):
+                    try:
+                        f.unlink(missing_ok=True)
+                    except OSError:
+                        pass
             try:
                 for j in nd.glob("*.failed.json"):
                     if j.name.split(".")[0] not in live:
@@ -753,7 +784,8 @@ def column_stats(scan: pl.LazyFrame) -> dict[str, dict[str, Any]]:
             c, key = k.split("\x00")
             out.setdefault(c, {})["nulls" if key == "n" else key] = json_safe(v)
         return out
-    except Exception:
+    except Exception as e:  # noqa: BLE001 - facts for badges and tooltips; the result itself is fine
+        log.warning("column statistics could not be computed: %s", e)
         return {}
 
 

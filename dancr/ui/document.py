@@ -17,8 +17,9 @@ import logging
 import os
 import re
 import shutil
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from PySide6.QtCore import QObject, Signal, QTimer, QFileSystemWatcher
 from PySide6.QtGui import QUndoStack
@@ -26,7 +27,7 @@ from PySide6.QtWidgets import QApplication
 
 from ..core import Pipeline, PipelineError, registry
 from ..core.model import Edge, Answer, rebase_params
-from ..core.planner import signature, signatures_of, plan_layout
+from ..core.planner import resolve_plan
 from ..core.executor import Executor, NodeState, _pid_alive
 from .workers import RunThread, Task, view_pool
 from . import commands as cmd
@@ -34,6 +35,13 @@ from . import commands as cmd
 log = logging.getLogger("dancr.ui")
 AUTOSAVE_SECS = 60
 UNDO_LIMIT = 200
+
+
+ANSWER_CARD_OFFSET = (300.0, 40.0)     # where an answer card sits relative to the step it points at
+
+
+def _card_position(node) -> tuple[float, float]:
+    return node.x + ANSWER_CARD_OFFSET[0], node.y + ANSWER_CARD_OFFSET[1]
 
 
 def recovery_path(pid: int | None = None) -> Path:
@@ -557,18 +565,33 @@ class Document(QObject):
         if edge.key() in {e.key() for e in self.pipeline.edges}:
             self.undo.push(cmd.Disconnect(self, edge))
 
+    @contextmanager
+    def macro(self, text: str) -> Iterator[None]:
+        """Group the edits made inside into one undo step. If one of them fails, the ones already made are
+        undone and the error goes on: nothing is left half done. A group that changed nothing leaves no
+        undo step and does not mark the project as changed."""
+        start = self.undo.index()
+        self.undo.beginMacro(text)
+        try:
+            yield
+        except BaseException:
+            self.undo.endMacro()
+            if self.undo.index() > start:
+                self.undo.undo()
+            raise
+        self.undo.endMacro()
+        if self.undo.index() > start and self.undo.command(self.undo.index() - 1).childCount() == 0:
+            self.undo.undo()                             # empty: step back over it (the next edit drops it)
+
     def move_edge(self, edge: Edge, target: str, port: str | None) -> None:
         """Move a connection to another input as one undo step. Checked first on a copy, so a move that is
         not allowed (the input is taken, it would make a loop) changes nothing and raises PipelineError."""
         probe = Pipeline.from_dict(self.pipeline.to_dict())
         probe.disconnect(edge.source, edge.target, edge.port)
         probe.connect(edge.source, target, port)
-        self.undo.beginMacro("Move connection")
-        try:
+        with self.macro("Move connection"):
             self.disconnect(edge)
             self.connect(edge.source, target, port)
-        finally:
-            self.undo.endMacro()
 
     def add_note(self, text: str, x: float, y: float) -> str:
         note = self.pipeline.add_note(text, x, y)
@@ -590,15 +613,12 @@ class Document(QObject):
 
     def duplicate_nodes(self, ids: list[str]) -> list[str]:
         new_ids = []
-        self.undo.beginMacro("Duplicate")
-        try:
+        with self.macro("Duplicate"):
             for nid in ids:
                 if nid not in self.pipeline.nodes:
                     continue
                 n = self.pipeline.nodes[nid]
                 new_ids.append(self.add_node(n.type, n.x + 40, n.y + 90, params=json.loads(json.dumps(n.params)), title=n.title))
-        finally:
-            self.undo.endMacro()
         return new_ids
 
     # ------------------------------------------------------------ answers (guided build)
@@ -607,16 +627,12 @@ class Document(QObject):
 
         The whole build is one undo entry. The Answer is *not* connected to the dataflow; it points
         at the step whose output answers the question."""
-        self.undo.beginMacro("Build answer")
-        try:
+        with self.macro("Build answer"):
             resolved = self._apply_steps(plan)
             terminal = resolved[plan.terminal]
-            node = self.pipeline.nodes[terminal]
-            answer = Answer(self.pipeline._new_answer_id(), plan.title, node.x + 300.0, node.y + 40.0,
-                            terminal, plan.view, dict(plan.config))
+            x, y = _card_position(self.pipeline.nodes[terminal])
+            answer = Answer(self.pipeline._new_answer_id(), plan.title, x, y, terminal, plan.view, dict(plan.config))
             self.undo.push(cmd.AddAnswer(self, answer))
-        finally:
-            self.undo.endMacro()
         self.refresh_states()
         return answer.id
 
@@ -627,19 +643,15 @@ class Document(QObject):
         if answer is None:
             return answer_id
         exclusive = self.answer_exclusive_nodes(answer)
-        self.undo.beginMacro("Change answer")
-        try:
+        with self.macro("Change answer"):
             if exclusive:
                 self.remove_nodes(exclusive)
             resolved = self._apply_steps(plan)
             terminal = resolved[plan.terminal]
-            node = self.pipeline.nodes[terminal]
+            x, y = _card_position(self.pipeline.nodes[terminal])
             before = answer.to_dict()
-            after = {"title": plan.title, "terminal": terminal, "view": plan.view,
-                     "config": dict(plan.config), "x": node.x + 300.0, "y": node.y + 40.0}
+            after = {"title": plan.title, "terminal": terminal, "view": plan.view, "config": dict(plan.config), "x": x, "y": y}
             self.undo.push(cmd.EditAnswer(self, answer_id, {k: before.get(k) for k in after}, after, "Change answer"))
-        finally:
-            self.undo.endMacro()
         self.refresh_states()
         return answer_id
 
@@ -650,13 +662,10 @@ class Document(QObject):
         if answer is None:
             return
         exclusive = self.answer_exclusive_nodes(answer) if remove_steps else []
-        self.undo.beginMacro("Delete answer")
-        try:
+        with self.macro("Delete answer"):
             if exclusive:
                 self.remove_nodes(exclusive)
             self.undo.push(cmd.RemoveAnswer(self, answer))
-        finally:
-            self.undo.endMacro()
         self.refresh_states()
 
     def answer_exclusive_nodes(self, answer: Answer) -> list[str]:
@@ -687,51 +696,15 @@ class Document(QObject):
             self.undo.push(cmd.EditAnswer(self, answer_id, {"title": answer.title}, {"title": title}, "Rename answer"))
 
     def _apply_steps(self, plan) -> dict[str, str]:
-        """Resolve a plan to node ids, creating only the steps that do not already exist. Returns
-        {plan key: node id}. Shared steps (same type, settings and upstream) are reused."""
-        sigs = signatures_of(self.pipeline)
-        resolved: dict[str, str] = {}
-        positions = plan_layout(plan)
-        for step in plan.steps:
-            ins = {port: [resolved[k] for k in keys] for port, keys in step.inputs.items()}
-            if step.type == "load_file":
-                existing = self._find_load(step.params.get("path"))
-                if existing:
-                    resolved[step.key] = existing
-                    continue
-            sig = signature(step.type, step.params, ins)
-            existing = sigs.get(sig)
-            if existing and existing in self.pipeline.nodes:
-                resolved[step.key] = existing
-                continue
-            x, y = positions.get(step.key, (60.0, 200.0))
+        """Resolve a plan to node ids with the same reuse rules as planner.instantiate, creating the missing
+        steps as undoable edits (inside the caller's undo macro)."""
+        def create(step, ins: dict[str, list[str]], x: float, y: float) -> str:
             nid = self.add_node(step.type, x, y, params=step.params, title=step.title)
             for port, srcs in ins.items():
                 for s in srcs:
-                    try:
-                        self.connect(s, nid, port)
-                    except PipelineError:
-                        pass
-            resolved[step.key] = nid
-            sigs[sig] = nid
-        return resolved
-
-    def _find_load(self, path) -> str | None:
-        """An existing load step for the same file, so a guided build over files already on the map
-        reads them once instead of adding a second loader."""
-        if not path:
-            return None
-        directory = self.pipeline.directory
-
-        def resolve(p):
-            q = Path(str(p)).expanduser()
-            return q if q.is_absolute() else (directory / q)
-
-        target = resolve(path)
-        for nid, node in self.pipeline.nodes.items():
-            if node.type == "load_file" and node.params.get("path") and resolve(node.params["path"]) == target:
-                return nid
-        return None
+                    self.connect(s, nid, port)
+            return nid
+        return resolve_plan(self.pipeline, plan, create)
 
     # ------------------------------------------------------------ running
     @property

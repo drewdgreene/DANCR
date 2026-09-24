@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Callable
 
@@ -52,8 +53,9 @@ class VersionsDialog(QDialog):
         lab = QLabel("DANCR keeps a copy of the project every time it is saved. Pick one to go back to it (your current version is kept too)."); lab.setWordWrap(True)
         self.list = QListWidget()
         for p in doc.versions():
-            base = p.name.split(".")[0]
-            stamp = base[:10] + "  " + base[11:].replace("-", ":") + ("   ·   autosave" if p.name.endswith(".auto.json") else "")
+            m = re.match(r"(\d{4}-\d{2}-\d{2})_(\d{2})-(\d{2})-(\d{2})", p.name)
+            when = f"{m.group(1)}  {m.group(2)}:{m.group(3)}:{m.group(4)}" if m else p.stem
+            stamp = when + ("   ·   autosave" if p.name.endswith(".auto.json") else "")
             try:
                 n = len(json.loads(p.read_text(encoding="utf-8")).get("nodes") or [])
             except Exception:  # noqa: BLE001

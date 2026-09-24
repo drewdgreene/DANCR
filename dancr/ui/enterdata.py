@@ -108,9 +108,7 @@ class EnterDataView(QWidget):
         if not ok or not name.strip():
             return
         cols = list(self._params().get("columns") or []) + [{"name": name.strip(), "type": "text"}]
-        self._commit()
-        self.doc.set_params(self.nid, {"columns": cols})
-        self.refill()
+        self._set_columns(cols, "Add column")
 
     def _rename_column(self, idx: int) -> None:
         cols = [dict(c) for c in (self._params().get("columns") or [])]
@@ -119,7 +117,7 @@ class EnterDataView(QWidget):
         name, ok = QInputDialog.getText(self, "Rename column", "Column name:", text=cols[idx].get("name", ""))
         if ok and name.strip():
             cols[idx]["name"] = name.strip()
-            self._commit(); self.doc.set_params(self.nid, {"columns": cols}); self.refill()
+            self._set_columns(cols, "Rename column")
 
     def _header_menu(self, pos) -> None:
         idx = self.table.horizontalHeader().logicalIndexAt(pos)
@@ -141,7 +139,14 @@ class EnterDataView(QWidget):
         if idx >= len(cols):
             return
         cols[idx]["type"] = kind
-        self._commit(); self.doc.set_params(self.nid, {"columns": cols}); self.refill()
+        self._set_columns(cols, "Change column type")
+
+    def _set_columns(self, cols: list[dict], text: str) -> None:
+        """Typed cells and the new columns go in as one undo step."""
+        with self.doc.macro(text):
+            self._commit()
+            self.doc.set_params(self.nid, {"columns": cols})
+        self.refill()
 
     def _remove_column(self, idx: int) -> None:
         cols = [dict(c) for c in (self._params().get("columns") or [])]
@@ -164,6 +169,10 @@ class EnterDataView(QWidget):
         text = QGuiApplication.clipboard().text()
         if not text.strip() or self.nid is None:
             return
+        with self.doc.macro("Paste"):                    # the columns and the cells are one undo step
+            self._paste(text)
+
+    def _paste(self, text: str) -> None:
         lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
         while lines and lines[0].strip() == "":
             lines.pop(0)
@@ -200,7 +209,5 @@ class EnterDataView(QWidget):
 
     @staticmethod
     def _numberish(v: str) -> bool:
-        try:
-            float(v.strip().replace(",", "")); return True
-        except ValueError:
-            return False
+        from ..core.dtypes import typed_value
+        return typed_value(v) is not None

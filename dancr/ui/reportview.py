@@ -162,9 +162,10 @@ class ReportView(QWidget):
         if self.notes.toPlainText() != (p.get("notes") or ""):
             changes["notes"] = self.notes.toPlainText()
         if changes:
-            self._set(changes)
-            if "title" in changes and changes["title"].strip():
-                self.doc.rename(self.nid, changes["title"].strip())
+            with self.doc.macro("Edit report"):         # the settings and the step's name: one undo step
+                self._set(changes)
+                if "title" in changes and changes["title"].strip():
+                    self.doc.rename(self.nid, changes["title"].strip())
 
     def _blocks_from_list(self) -> list[dict]:
         return [self.blocks.item(i).data(Qt.UserRole) for i in range(self.blocks.count())]

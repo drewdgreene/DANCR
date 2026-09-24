@@ -10,13 +10,26 @@ import polars as pl
 SAMPLE_NAME = "sample_data.csv"
 
 
+SAMPLE_COLUMNS = ["time", "value A", "value B", "temperature", "location"]
+MIN_SAMPLE_ROWS = 2_000         # enough for the spike, the gap and a daily cycle to show
+
+
 def write_sample(directory: Path | str, rows: int = 60_000) -> Path:
-    """Two values recorded every 5 seconds for a few days, with drift, a spike, a gap and a daily cycle."""
+    """Two values recorded every 5 seconds for a few days, with drift, a spike, a gap and a daily cycle.
+    An existing sample file of the same size is reused; a file of that name that is not DANCR's sample (or
+    has another size) is never overwritten or used: the sample gets a numbered name instead."""
+    if rows < MIN_SAMPLE_ROWS:
+        raise ValueError(f"A sample needs at least {MIN_SAMPLE_ROWS:,} rows")
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
-    out = directory / SAMPLE_NAME
-    if out.exists():
-        return out
+    n = 1
+    while True:
+        out = directory / (SAMPLE_NAME if n == 1 else SAMPLE_NAME.replace(".csv", f"_{n}.csv"))
+        if not out.exists():
+            break
+        if _is_sample(out, rows):
+            return out
+        n += 1
     rng = np.random.default_rng(7)
     t0 = datetime(2024, 6, 3, 8, 0, 0)
     secs = np.arange(rows) * 5.0
@@ -39,6 +52,21 @@ def write_sample(directory: Path | str, rows: int = 60_000) -> Path:
     df = pl.concat([df[:gap0], df[gap1:]])
     df.write_csv(out)
     return out
+
+
+def _sample_rows(rows: int) -> int:
+    return rows - (min(rows, rows // 2 + 900) - rows // 2)
+
+
+def _is_sample(path: Path, rows: int) -> bool:
+    """True when `path` is the sample DANCR writes for `rows` rows (its header and its number of lines)."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            header = f.readline().strip().split(",")
+            lines = sum(1 for _ in f)
+    except (OSError, UnicodeDecodeError):
+        return False
+    return header == SAMPLE_COLUMNS and lines == _sample_rows(rows)
 
 
 TEMPLATES = [
@@ -71,7 +99,7 @@ def build_template(key: str, pipe, data_path: Path) -> None:
     load = add("load_file", {"path": portable_path(Path(data_path).resolve(), pipe.directory)}, Path(data_path).stem)
     schema = Executor(pipe).schema(load) or {}
     nums = [c for c, dt in schema.items() if dt.is_numeric()]
-    time_col = next((c for c, dt in schema.items() if isinstance(dt, (pl.Datetime, pl.Date)) or dt in (pl.Datetime, pl.Date)), None)
+    time_col = next((c for c, dt in schema.items() if isinstance(dt, (pl.Datetime, pl.Date))), None)
     a, b = (nums + [None, None])[:2]
     if key == "compare":
         smooth = add("rolling", {"columns": [c for c in (a, b) if c], "window": "5m", "stat": "mean", "time_column": time_col or ""}, "Smoothed", after=load)

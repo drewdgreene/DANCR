@@ -5,6 +5,7 @@ import json
 import os
 import re
 import uuid
+from collections import deque
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any, Iterator
@@ -308,14 +309,17 @@ class Pipeline:
         return [e.target for e in self.edges if e.source == node_id]
 
     def upstream_closure(self, node_id: str) -> set[str]:
+        into: dict[str, list[str]] = {}                      # one pass over the edges, not one per step visited
+        for e in self.edges:
+            into.setdefault(e.target, []).append(e.source)
         seen: set[str] = set()
-        stack = [s for ins in self.inputs_of(node_id).values() for s in ins]
+        stack = list(into.get(node_id, []))
         while stack:
             n = stack.pop()
             if n in seen:
                 continue
             seen.add(n)
-            stack.extend(s for ins in self.inputs_of(n).values() for s in ins)
+            stack.extend(into.get(n, []))
         return seen
 
     def downstream_closure(self, node_id: str) -> set[str]:
@@ -340,19 +344,20 @@ class Pipeline:
             for t in targets:
                 wanted |= self.upstream_closure(t)
         indeg = {n: 0 for n in self.nodes if wanted is None or n in wanted}
+        out: dict[str, list[str]] = {}                       # one pass over the edges, not one per node
         for e in self.edges:
             if e.target in indeg and e.source in indeg:
                 indeg[e.target] += 1
-        ready = [n for n in self.nodes if n in indeg and indeg[n] == 0]  # insertion order = stable
+                out.setdefault(e.source, []).append(e.target)
+        ready = deque(n for n in self.nodes if n in indeg and indeg[n] == 0)  # insertion order = stable
         order: list[str] = []
         while ready:
-            n = ready.pop(0)
+            n = ready.popleft()
             order.append(n)
-            for e in self.edges:
-                if e.source == n and e.target in indeg:
-                    indeg[e.target] -= 1
-                    if indeg[e.target] == 0:
-                        ready.append(e.target)
+            for t in out.get(n, []):
+                indeg[t] -= 1
+                if indeg[t] == 0:
+                    ready.append(t)
         if len(order) != len(indeg):
             raise PipelineError("The pipeline contains a loop")
         return order
@@ -545,12 +550,17 @@ class Pipeline:
         import shutil
         vdir = cls.versions_dir(target)
         vdir.mkdir(parents=True, exist_ok=True)
-        stamp = datetime.fromtimestamp(target.stat().st_mtime).strftime("%Y-%m-%d_%H-%M-%S")
+        # to the microsecond, and never over an existing copy: several saves in one second each keep a version
+        stamp = datetime.fromtimestamp(target.stat().st_mtime).strftime("%Y-%m-%d_%H-%M-%S_%f")
         try:
             auto = bool((json.loads(target.read_text(encoding="utf-8")).get("meta") or {}).get("autosaved"))
         except (OSError, ValueError, AttributeError):
             auto = False
-        dest = vdir / f"{stamp}{'.auto' if auto else ''}.json"
+        n = 0
+        while (dest := vdir / f"{stamp}{f'-{n}' if n else ''}{'.auto' if auto else ''}.json").exists():
+            if dest.read_bytes() == target.read_bytes():
+                break                               # this very copy is already kept
+            n += 1
         if not dest.exists():
             shutil.copy2(target, dest)
         autos = sorted(vdir.glob("*.auto.json"))

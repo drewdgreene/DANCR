@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import faulthandler
 import logging
-import logging.handlers
 import os
 import sys
 from pathlib import Path
@@ -31,11 +30,16 @@ def log_path() -> Path:
 
 
 def untitled_cache_root() -> Path:
-    """Where results of projects that have not been saved yet are kept: a real disk, never the temp folder."""
+    """Where results of projects that have not been saved yet are kept: the platform's cache folder on a real
+    disk (never the temp folder, which may be memory), apart from the logs."""
     home = os.environ.get("DANCR_HOME")
     if home:
         return Path(home).expanduser() / "untitled"
-    return log_dir().parent / "untitled" if sys.platform == "win32" else log_dir() / "untitled"
+    if sys.platform == "win32":
+        return log_dir().parent / "untitled"
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Caches" / "DANCR" / "untitled"
+    return log_dir() / "untitled"
 
 
 def rotate_if_large(path: Path, limit: int = LOG_LIMIT) -> None:
@@ -61,8 +65,11 @@ def configure(level: int = logging.INFO, stderr_level: int = logging.INFO) -> Pa
     _configured = True
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        fh = logging.handlers.RotatingFileHandler(path, maxBytes=5_000_000, backupCount=3, encoding="utf-8")
-        fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+        # the window, the CLI and the MCP server share this file, so it is only rotated here, at start, never
+        # while another process may be writing; every line names its process
+        rotate_if_large(path, 5_000_000)
+        fh = logging.FileHandler(path, mode="a", encoding="utf-8")
+        fh.setFormatter(logging.Formatter("%(asctime)s %(process)d %(levelname)s %(name)s: %(message)s"))
         logging.getLogger().addHandler(fh)
         faults = path.parent / "faults.log"
         rotate_if_large(faults)
@@ -82,6 +89,13 @@ def configure(level: int = logging.INFO, stderr_level: int = logging.INFO) -> Pa
         logging.getLogger("dancr").error("Unhandled exception", exc_info=(exc_type, exc, tb))
         sys.__excepthook__(exc_type, exc, tb)
     sys.excepthook = hook
+
+    def thread_hook(args) -> None:                      # a crash in a worker thread reaches the log too
+        if args.exc_type is not SystemExit:
+            logging.getLogger("dancr").error("Unhandled exception in thread %s", getattr(args.thread, "name", "?"),
+                                             exc_info=(args.exc_type, args.exc_value, args.exc_traceback))
+    import threading
+    threading.excepthook = thread_hook
     logging.getLogger("dancr").info("started %s", " ".join(sys.argv))
     return path
 

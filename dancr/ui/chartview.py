@@ -220,10 +220,15 @@ class ChartView(QWidget):
             return
         text = self.title.text().strip()
         node = self.doc.pipeline.nodes[self.nid]
-        if text != (node.params.get("title") or "") and text != node.title:
-            self._set({"title": text})
-        if text and text != node.title:
-            self.doc.rename(self.nid, text)
+        if not text or (text == (node.params.get("title") or "") and text == node.title):
+            return
+        # the chart's title (drawn on it) and the step's name follow what was typed, as one undo step;
+        # typing the step's own name back works too
+        with self.doc.macro("Chart title"):
+            if text != (node.params.get("title") or ""):
+                self._set({"title": text})
+            if text != node.title:
+                self.doc.rename(self.nid, text)
 
     def _maybe_refresh(self) -> None:
         if self.nid and self.src:

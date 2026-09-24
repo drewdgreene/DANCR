@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .profile import TableProfile
 
@@ -148,15 +148,21 @@ def _default_title(intent: str, config: dict[str, Any]) -> str:
 
 
 # ------------------------------------------------------------------- reuse
-def signature(node_type: str, params: dict[str, Any], inputs: dict[str, list[str]]) -> str:
+def signature(node_type: str, params: dict[str, Any], inputs: dict[str, list[str]], directory: Path | None = None) -> str:
     """A structural fingerprint of a step, so the same computation is shared instead of duplicated.
 
     ``inputs`` keeps its order (a stack's table order matters), and the ids are the resolved node ids
     of the inputs, so identical steps that read the same upstream nodes share one node. Params are
-    normalised first (defaults filled in), so a minimal plan matches a node that already exists."""
+    normalised first (defaults filled in), so a minimal plan matches a node that already exists, and
+    file settings are compared as the files they name (``data.csv`` and ``/proj/data.csv`` are one file)."""
+    from .registry import registry, resolve_path
     try:
-        from .registry import registry
-        norm = registry.get(node_type).normalize_params(params, strict=False)
+        nt = registry.get(node_type)
+        norm = nt.normalize_params(params, strict=False)
+        if directory is not None:
+            for p in nt.params:
+                if p.kind == "path" and isinstance(norm.get(p.name), str) and norm[p.name].strip():
+                    norm[p.name] = str(resolve_path(directory, norm[p.name]).resolve())
     except Exception:  # noqa: BLE001 - an unknown type still gets a stable fingerprint
         norm = params
     return json.dumps({"t": node_type, "p": norm, "i": inputs}, sort_keys=True, default=str)
@@ -167,7 +173,7 @@ def signatures_of(pipe) -> dict[str, str]:
     out: dict[str, str] = {}
     for nid, node in pipe.nodes.items():
         ins = {port: list(srcs) for port, srcs in pipe.inputs_of(nid).items()}
-        out.setdefault(signature(node.type, node.params, ins), nid)
+        out.setdefault(signature(node.type, node.params, ins, pipe.directory), nid)
     return out
 
 
@@ -190,26 +196,55 @@ def plan_layout(plan: Plan) -> dict[str, tuple[float, float]]:
     return pos
 
 
-def instantiate(pipe, plan: Plan) -> dict[str, str]:
-    """Create (or reuse) every node in a plan in ``pipe`` and wire it. Returns {plan key: node id}.
+CreateFn = Callable[[PlanStep, dict[str, list[str]], float, float], str]
 
-    Shared steps — same type, settings and upstream nodes — are reused, so a second answer that reads
-    the same files branches off the first answer's data layer instead of duplicating it."""
+
+def resolve_plan(pipe, plan: Plan, create: CreateFn) -> dict[str, str]:
+    """Map every step of a plan to a node of ``pipe``, reusing what is already there and calling
+    ``create(step, inputs, x, y)`` for the rest (the window makes that undoable). Returns {plan key: node id}.
+
+    Reused: a loader of the same file (however its path is written), and any step with the same type,
+    settings and upstream nodes, so a second answer that reads the same files branches off the first
+    answer's data layer instead of duplicating it."""
     sigs = signatures_of(pipe)
     resolved: dict[str, str] = {}
     pos = plan_layout(plan)
     for step in plan.steps:
         ins = {port: [resolved[k] for k in keys] for port, keys in step.inputs.items()}
-        sig = signature(step.type, step.params, ins)
+        if step.type == "load_file":
+            existing = find_load(pipe, step.params.get("path"))
+            if existing:
+                resolved[step.key] = existing
+                continue
+        sig = signature(step.type, step.params, ins, pipe.directory)
         existing = sigs.get(sig)
         if existing and existing in pipe.nodes:
             resolved[step.key] = existing
             continue
         x, y = pos.get(step.key, (60.0, 200.0))
+        resolved[step.key] = sigs[sig] = create(step, ins, x, y)
+    return resolved
+
+
+def instantiate(pipe, plan: Plan) -> dict[str, str]:
+    """Apply a plan straight to a pipeline (no undo): see resolve_plan."""
+    def create(step: PlanStep, ins: dict[str, list[str]], x: float, y: float) -> str:
         node = pipe.add_node(step.type, title=step.title, params=step.params, x=x, y=y)
         for port, srcs in ins.items():
             for s in srcs:
                 pipe.connect(s, node.id, port)
-        resolved[step.key] = node.id
-        sigs[sig] = node.id
-    return resolved
+        return node.id
+    return resolve_plan(pipe, plan, create)
+
+
+def find_load(pipe, path: Any) -> str | None:
+    """An existing load step for the same file, so a guided build over files already on the map reads
+    them once instead of adding a second loader."""
+    if not path:
+        return None
+    from .registry import resolve_path
+    target = resolve_path(pipe.directory, str(path)).resolve()
+    for nid, node in pipe.nodes.items():
+        if node.type == "load_file" and node.params.get("path") and resolve_path(pipe.directory, str(node.params["path"])).resolve() == target:
+            return nid
+    return None

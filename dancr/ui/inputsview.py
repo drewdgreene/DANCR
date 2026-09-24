@@ -76,13 +76,10 @@ class InputsView(QWidget):
         note = self.table.item(r, 3).text().strip()
         try:
             if old_name and old_name != name:
-                self.doc.undo.beginMacro("Rename input")
-                try:
-                    self.doc.set_input(name, value, unit, note)   # may raise; the old input is kept until this succeeds
+                with self.doc.macro("Rename input"):            # a failed rename leaves nothing behind
+                    self.doc.set_input(name, value, unit, note)
                     if old_name.lower() != name.lower():
                         self.doc.remove_input(old_name)
-                finally:
-                    self.doc.undo.endMacro()                      # always close the macro, even on failure
             else:
                 self.doc.set_input(name, value, unit, note)
         except Exception as e:

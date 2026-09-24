@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushB
                                QCheckBox, QComboBox, QLineEdit, QFormLayout, QScrollArea, QFileDialog, QToolButton,
                                QSizePolicy, QDialog, QDialogButtonBox)
 
-from ..core.profile import profile_files, suggest_links, suggest_stacks, containment_percent, TableProfile, LinkSuggestion, StackSuggestion
+from ..core.profile import profile_files, suggest_links, suggest_stacks, match_percent, TableProfile, LinkSuggestion, StackSuggestion
 from ..core.planner import plan
 from ..core.nodes.load import CSV_EXT, EXCEL_EXT, PARQUET_EXT
 from .document import Document
@@ -277,7 +277,7 @@ class WizardPage(QWidget):
         rc = rp.column(right_col) if rp else None
         if not lc or not rc:
             return 0.0
-        return round(containment_percent(lc.values, rc.values), 1)
+        return round(match_percent(lc, rc), 1)
 
     def _add_link(self) -> None:
         chosen = self._ask_link()

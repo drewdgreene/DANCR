@@ -7,7 +7,7 @@ import pytest
 
 from dancr.core import Pipeline
 from dancr.core.executor import Executor
-from dancr.core.profile import profile_paths, suggest_links, suggest_stacks
+from dancr.core.profile import profile_files, suggest_links, suggest_stacks
 from dancr.core.planner import plan, instantiate
 
 
@@ -34,7 +34,7 @@ def demo_dir(tmp_path_factory) -> Path:
 
 # ------------------------------------------------------------------- profiler
 def test_profiler_describes_tables(demo_dir):
-    profs = profile_paths([demo_dir / "orders.csv", demo_dir / "customers.xlsx", demo_dir / "products.csv"])
+    profs, _ = profile_files([demo_dir / "orders.csv", demo_dir / "customers.xlsx", demo_dir / "products.csv"])
     orders, customers, products = profs
     assert orders.rows == 100 and orders.time_column == "order_date"
     assert "order_id" in orders.key_columns and "qty" in orders.measures
@@ -44,7 +44,7 @@ def test_profiler_describes_tables(demo_dir):
 
 
 def test_profiler_suggests_the_right_links_and_stacks(demo_dir):
-    profs = profile_paths([demo_dir / "orders.csv", demo_dir / "customers.xlsx", demo_dir / "products.csv",
+    profs, _ = profile_files([demo_dir / "orders.csv", demo_dir / "customers.xlsx", demo_dir / "products.csv",
                            demo_dir / "m1.csv", demo_dir / "m2.csv"])
     links = {(Path(l.left).name, l.left_col, Path(l.right).name, l.right_col) for l in suggest_links(profs)}
     assert ("orders.csv", "customer_id", "customers.xlsx", "customer_id") in links
@@ -82,7 +82,7 @@ def _config_total(demo_dir):
 
 
 def test_plan_builds_a_runnable_pipeline(demo_dir):
-    profs = profile_paths([demo_dir / "orders.csv", demo_dir / "customers.xlsx"])
+    profs, _ = profile_files([demo_dir / "orders.csv", demo_dir / "customers.xlsx"])
     p = plan(profs, _config_total(demo_dir))
     assert [s.type for s in p.steps] == ["load_file", "load_file", "combine", "group_summary", "chart"]
     assert "link on customer_id" in p.sentence() and "chart" in p.sentence()
@@ -97,7 +97,7 @@ def test_plan_builds_a_runnable_pipeline(demo_dir):
 
 
 def test_plan_over_time_buckets_and_charts(demo_dir):
-    profs = profile_paths([demo_dir / "orders.csv"])
+    profs, _ = profile_files([demo_dir / "orders.csv"])
     cfg = {"intent": "over_time", "measure": "qty", "time_column": "order_date", "every": "1d",
            "assembly": {"kind": "single", "path": str(demo_dir / "orders.csv")}}
     p = plan(profs, cfg)
@@ -109,7 +109,7 @@ def test_plan_over_time_buckets_and_charts(demo_dir):
 
 
 def test_plan_refuses_impossible_requests(demo_dir):
-    profs = profile_paths([demo_dir / "orders.csv"])
+    profs, _ = profile_files([demo_dir / "orders.csv"])
     with pytest.raises(ValueError, match="date or time"):
         plan(profs, {"intent": "over_time", "assembly": {"kind": "single", "path": profs[0].path}})
     with pytest.raises(ValueError, match="category"):
@@ -117,7 +117,7 @@ def test_plan_refuses_impossible_requests(demo_dir):
 
 
 def test_plan_describe_needs_no_measure_or_group(demo_dir):
-    profs = profile_paths([demo_dir / "orders.csv"])
+    profs, _ = profile_files([demo_dir / "orders.csv"])
     p = plan(profs, {"intent": "describe", "assembly": {"kind": "single", "path": profs[0].path}})
     assert [s.type for s in p.steps] == ["load_file", "summarize"] and p.view == "table"
     pipe = Pipeline("t"); pipe.path = demo_dir / "p_desc.json"
@@ -128,7 +128,7 @@ def test_plan_describe_needs_no_measure_or_group(demo_dir):
 
 def test_shared_steps_are_reused_across_answers(demo_dir):
     """Two questions on the same files must share one data layer, not duplicate it."""
-    profs = profile_paths([demo_dir / "orders.csv", demo_dir / "customers.xlsx"])
+    profs, _ = profile_files([demo_dir / "orders.csv", demo_dir / "customers.xlsx"])
     pipe = Pipeline("t"); pipe.path = demo_dir / "p3.json"
     first = instantiate(pipe, plan(profs, _config_total(demo_dir)))
     total_steps = len(pipe.nodes)

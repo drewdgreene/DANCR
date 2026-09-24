@@ -811,8 +811,9 @@ class CanvasScene(QGraphicsScene):
         elif r == dup:
             self.doc.duplicate_nodes(self.selected_node_ids() or [nid])
         elif r == disc:
-            for e in [e for e in self.doc.pipeline.edges if e.source == nid or e.target == nid]:
-                self.doc.disconnect(e)
+            with self.doc.macro("Disconnect all"):
+                for e in [e for e in self.doc.pipeline.edges if e.source == nid or e.target == nid]:
+                    self.doc.disconnect(e)
         elif r == delete:
             self.doc.remove_nodes(self.selected_node_ids() or [nid])
 
@@ -826,15 +827,14 @@ class CanvasScene(QGraphicsScene):
         edges = [i.edge for i in self.selectedItems() if isinstance(i, EdgeItem)]
         notes = [i.note_id for i in self.selectedItems() if isinstance(i, NoteItem)]
         if ids or edges or notes:
-            self.doc.undo.beginMacro("Delete")
-            for e in edges:
-                if e.source not in ids and e.target not in ids:
-                    self.doc.disconnect(e)
-            if ids:
-                self.doc.remove_nodes(ids)
-            for n in notes:
-                self.doc.remove_note(n)
-            self.doc.undo.endMacro()
+            with self.doc.macro("Delete"):
+                for e in edges:
+                    if e.source not in ids and e.target not in ids:
+                        self.doc.disconnect(e)
+                if ids:
+                    self.doc.remove_nodes(ids)
+                for n in notes:
+                    self.doc.remove_note(n)
 
     def drawBackground(self, painter: QPainter, rect: QRectF) -> None:
         painter.fillRect(rect, QColor(T.canvas))
