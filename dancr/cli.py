@@ -614,8 +614,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> None:
-    ap = build_parser()
     argv = list(sys.argv[1:] if argv is None else argv)
+    if argv[:1] == ["pdf-helper"]:                      # internal: a report's PDF written in its own process
+        from .views.pdf import _main
+        sys.exit(_main(argv[1:]))
+    ap = build_parser()
     if "--json" in argv[1:]:                            # --json is accepted after the command too
         argv = ["--json", *[x for x in argv if x != "--json"]]
     a = ap.parse_args(argv)

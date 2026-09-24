@@ -30,6 +30,7 @@ class ChartData:
     scatter: lod.ScatterData | None = None
     groups: list[tuple[str, Any]] | None = None   # colour-by: (value, LineData | ScatterData)
     fits: list[tuple[Any, np.ndarray | None, np.ndarray | None]] = field(default_factory=list)   # (Fit, xs, ys) or (message, None, None)
+    note: str = ""                          # what is not shown (colour-by values beyond the most common ones)
     mean: float | None = None
     hist: lod.HistData | None = None
     bar: lod.BarData | None = None
@@ -45,14 +46,26 @@ class ChartData:
     def summary(self) -> str:
         if self.kind == "line":
             datas = [g for _, g in self.groups] if self.groups else ([self.line] if self.line else [])
-            rows_in = sum(d.rows_in_range for d in datas); total = sum(d.total_rows for d in datas)
+            rows_in = sum(d.rows_in_range for d in datas)
+            total = max((d.total_rows for d in datas), default=0) if self.groups else sum(d.total_rows for d in datas)   # every group sees the whole table's count
             mode = "envelope" if any(d.mode == "envelope" for d in datas) else "raw"
-            return f"{rows_in:,} of {total:,} rows in view · {'min/max per pixel' if mode == 'envelope' else 'every point'}"
+            return (f"{rows_in:,} of {total:,} rows in view · {'min/max per pixel' if mode == 'envelope' else 'every point'}"
+                    + (f" · {self.note}" if self.note else ""))
         if self.kind == "scatter":
             return f"{self.scatter.rows:,} points" + (" as density" if self.scatter.mode == "density" else "")
         if self.kind == "hist":
             return f"{self.hist.rows:,} values · {len(self.hist.counts)} bins"
         return f"{len(self.bar.labels)} categories"
+
+
+def _group_label(value: Any) -> str:
+    return "(blank)" if value is None else str(value)
+
+
+def _others_note(column: str, others: int, rows: int) -> str:
+    if not others:
+        return ""
+    return f"{others:,} less common value{'s' if others != 1 else ''} of {column} not shown ({rows:,} rows)"
 
 
 def limit_values(params: dict[str, Any], inputs: dict[str, Any] | None) -> list[tuple[float, str]]:
@@ -118,8 +131,10 @@ def query_one(lf: pl.LazyFrame, schema: dict[str, pl.DataType], spec: dict[str, 
             bounds[key] = lod.x_bounds(whole, x)
         cd = ChartData("line", x, ys)
         if color_by:
-            cd.groups = [(str(g), lod.line_data(_filter_group(lf, color_by, g), x, ys[:1], x_range=x_range, width_px=width_px, bounds=bounds[key]))
-                         for g in lod.group_values(lf, color_by)]
+            values, others, other_rows = lod.group_values_info(lf, color_by)
+            cd.groups = [(_group_label(g), lod.line_data(_filter_group(lf, color_by, g), x, ys[:1], x_range=x_range, width_px=width_px, bounds=bounds[key]))
+                         for g in values]
+            cd.note = _others_note(color_by, others, other_rows)
         else:
             cd.line = lod.line_data(lf, x, ys, x_range=x_range, width_px=width_px, bounds=bounds[key])
             if spec.get("mean_line"):
@@ -133,8 +148,10 @@ def query_one(lf: pl.LazyFrame, schema: dict[str, pl.DataType], spec: dict[str, 
         cd = ChartData("scatter", x, ys[:1])
         cd.scatter = lod.scatter_data(lf, x, ys[0], x_range=x_range, width_px=w, height_px=h)
         if color_by:
-            cd.groups = [(str(g), lod.scatter_data(_filter_group(lf, color_by, g), x, ys[0], x_range=x_range, width_px=w, height_px=h, max_raw=20000))
-                         for g in lod.group_values(lf, color_by)]
+            values, others, other_rows = lod.group_values_info(lf, color_by)
+            cd.groups = [(_group_label(g), lod.scatter_data(_filter_group(lf, color_by, g), x, ys[0], x_range=x_range, width_px=w, height_px=h, max_raw=20000))
+                         for g in values]
+            cd.note = _others_note(color_by, others, other_rows)
         if spec.get("fit") and cd.scatter.x_kind != "time":
             from ..core.fits import fit_frame, curve_points
             try:
@@ -170,4 +187,4 @@ def query_panels(lf: pl.LazyFrame, schema: dict[str, pl.DataType], spec: dict[st
     groups = lod.group_values(lf, split_by, limit=max_panels) if split_by else []
     if not groups:
         return [(None, query_one(lf, schema, spec, **kw))]
-    return [(str(g), query_one(_filter_group(lf, split_by, g), schema, spec, **kw)) for g in groups]
+    return [(_group_label(g), query_one(_filter_group(lf, split_by, g), schema, spec, **kw)) for g in groups]

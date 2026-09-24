@@ -75,7 +75,7 @@ class MainWindow(QMainWindow):
         self.top_split.setStretchFactor(0, 0); self.top_split.setStretchFactor(1, 1); self.top_split.setStretchFactor(2, 0)
         self.top_split.setSizes([250, 820, 370]); self.top_split.setCollapsible(1, False)
         # the map drawer, full width
-        self.map_box = QWidget(); ml = QVBoxLayout(self.map_box); ml.setContentsMargins(0, 0, 0, 0); ml.setSpacing(0)
+        self.map_box = QWidget(); self.map_box.setMinimumHeight(140); ml = QVBoxLayout(self.map_box); ml.setContentsMargins(0, 0, 0, 0); ml.setSpacing(0)
         map_head = QFrame(); map_head.setStyleSheet(f"QFrame {{ background: {T.bg}; border-top: 1px solid {T.border}; border-bottom: 1px solid {T.border}; }}")
         mh = QHBoxLayout(map_head); mh.setContentsMargins(10, 3, 6, 3)
         ml_lab = QLabel("Map — every step in this project, in order. Drag a step to move it; click one to see it."); ml_lab.setObjectName("muted"); ml_lab.setWordWrap(True)

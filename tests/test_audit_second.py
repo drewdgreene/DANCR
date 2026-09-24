@@ -212,3 +212,23 @@ def test_saving_never_silently_overwrites_another_programs_change(app, tmp_path)
     doc.save(overwrite=True)
     assert "agents" not in Pipeline.load(pj).nodes and doc.versions()      # theirs is kept as an earlier version
     doc.shutdown()
+
+
+def test_colour_by_counts_rows_once_and_says_what_it_leaves_out():
+    from dancr.views.chartquery import query_one
+    n = 2000
+    lf = pl.LazyFrame({"x": [float(i) for i in range(n)], "y": [1.0] * n,
+                       "g": [None if i % 50 == 0 else f"g{i % 15}" for i in range(n)]})
+    cd = query_one(lf, dict(lf.collect_schema()), {"kind": "line", "x": "x", "series": [{"column": "y"}], "color_by": "g"})
+    labels = [g for g, _ in cd.groups]
+    assert len(labels) == 12 and f"of {n:,} rows" in cd.summary()
+    assert "not shown" in cd.note
+
+
+def test_a_pdf_written_from_a_worker_thread_without_a_window(tmp_path):
+    import threading
+    from dancr.views.pdf import html_to_pdf
+    out, got = tmp_path / "r.pdf", []
+    t = threading.Thread(target=lambda: got.append(html_to_pdf("<h1>Report</h1>", out)))
+    t.start(); t.join()
+    assert got and out.stat().st_size > 500

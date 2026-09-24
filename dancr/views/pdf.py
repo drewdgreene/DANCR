@@ -2,15 +2,27 @@
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
+import threading
 from pathlib import Path
 
 
 def html_to_pdf(doc: str, out: Path) -> Path:
+    """Lay out ``doc`` on A4 pages and write them to ``out``. Qt needs its application object, which may only be
+    created on a program's main thread: a process that has none and is not on its main thread (the MCP server
+    runs tools on worker threads) writes the PDF in a short-lived helper process instead."""
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     from PySide6.QtWidgets import QApplication
+    if QApplication.instance() is None and threading.current_thread() is not threading.main_thread():
+        return _in_helper(doc, Path(out))
+    QApplication.instance() or QApplication([])               # a QApplication must exist to lay out text
+    return _write(doc, Path(out))
+
+
+def _write(doc: str, out: Path) -> Path:
     from PySide6.QtGui import QTextDocument, QPdfWriter, QPageSize
     from PySide6.QtCore import QMarginsF
-    QApplication.instance() or QApplication([])               # a QApplication must exist to lay out text
     td = QTextDocument()
     td.setHtml(doc)
     writer = QPdfWriter(str(out))
@@ -18,3 +30,25 @@ def html_to_pdf(doc: str, out: Path) -> Path:
     writer.setPageMargins(QMarginsF(15, 15, 15, 15))
     td.print_(writer)
     return out
+
+
+def _in_helper(doc: str, out: Path) -> Path:
+    env = dict(os.environ, QT_QPA_PLATFORM="offscreen")
+    cmd = [sys.executable, "-m", "dancr.views.pdf", str(out)]
+    if getattr(sys, "frozen", False):                          # the packaged app: its own binary runs the helper
+        cmd = [sys.executable, "pdf-helper", str(out)]
+    r = subprocess.run(cmd, input=doc, text=True, encoding="utf-8", capture_output=True, env=env, timeout=300)
+    if r.returncode != 0 or not out.exists():
+        raise RuntimeError((r.stderr or "the PDF helper failed").strip().splitlines()[-1])
+    return out
+
+
+def _main(argv: list[str]) -> int:
+    from PySide6.QtWidgets import QApplication
+    app = QApplication([])                                      # noqa: F841 - this process's main thread
+    _write(sys.stdin.read(), Path(argv[0]))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(_main(sys.argv[1:]))

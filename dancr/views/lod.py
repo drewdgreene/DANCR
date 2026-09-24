@@ -276,6 +276,16 @@ def bar_data(lf: pl.LazyFrame, category: str, value: str | None, stat: str = "me
 
 
 def group_values(lf: pl.LazyFrame, column: str, limit: int = 12) -> list[Any]:
-    """Distinct values of a colour-by column, most frequent first (at most `limit`)."""
-    df = _collect(lf.group_by(column).agg(pl.len().alias("n")).sort("n", descending=True).head(limit))
-    return [v for v in df[column].to_list() if v is not None]
+    """Distinct values of a colour-by column, most frequent first (at most `limit`); blank is a value too."""
+    return group_values_info(lf, column, limit)[0]
+
+
+def group_values_info(lf: pl.LazyFrame, column: str, limit: int = 12) -> tuple[list[Any], int, int]:
+    """(the values shown, most frequent first, blank included; how many other values are not shown; their rows).
+    Ties in frequency are broken by the value, so the same data always shows the same groups."""
+    df = _collect(lf.group_by(column).agg(pl.len().alias("n"))
+                  .with_columns(pl.col(column).cast(pl.Utf8).alias("__k"))
+                  .sort(["n", "__k"], descending=[True, False], nulls_last=True))
+    shown = df.head(limit)
+    rest = df.slice(limit)
+    return shown[column].to_list(), rest.height, int(rest["n"].sum() or 0)
