@@ -173,15 +173,18 @@ def add_files(p: Pipeline, files: list[str] | None) -> list[str]:
         target = resolve_path(p.directory, str(f)).resolve()
         if not target.exists():
             raise ValueError(f"File not found: {target}")
-        existing = next((nid for nid, n in p.nodes.items() if n.type == "load_file" and n.params.get("path")
-                         and resolve_path(p.directory, str(n.params["path"])).resolve() == target), None)
-        if existing is None:
-            try:
-                rel = str(target.relative_to(p.directory.resolve()))
-            except ValueError:
-                rel = str(target)
-            existing = add_step(p, "load_file", {"path": rel}, title=target.stem).id
-        out.append(existing)
+        from .core.nodes.load import tables_in
+        try:
+            rel = str(target.relative_to(p.directory.resolve()))
+        except ValueError:
+            rel = str(target)
+        for title, extra in tables_in(target):
+            existing = next((nid for nid, n in p.nodes.items() if n.type == "load_file" and n.params.get("path")
+                             and resolve_path(p.directory, str(n.params["path"])).resolve() == target
+                             and str(n.params.get("sheet") or "") == str(extra.get("sheet") or "")), None)
+            if existing is None:
+                existing = add_step(p, "load_file", {"path": rel, **extra}, title=title).id
+            out.append(existing)
     return out
 
 

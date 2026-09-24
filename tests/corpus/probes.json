@@ -31,15 +31,15 @@
   "relationship: temperature against pressure (bar)",
   "gaps: Gaps in logger_site_A",
   "stacked: A, B in one table",
-  "outliers: Unusual pressure (bar) in logger_site_A",
+  "outliers: Unusual pressure (bar)",
   "distribution: Spread of pressure (bar)",
   "describe: What is in logger_site_A"
  ],
  "questions": {
   "compare logger_site_A and logger_site_B": "pressure (bar): logger_site_B minus logger_site_A",
   "average pressure per minute": "Average pressure (bar) per minute",
-  "temperature against pressure": "temperature against pressure (bar) in logger_site_A",
+  "temperature against pressure": "temperature against pressure (bar)",
   "gaps in logger_site_B": "Gaps in logger_site_B",
-  "spikes in pressure": "Unusual pressure (bar) in logger_site_A"
+  "spikes in pressure": "Unusual pressure (bar)"
  }
 }

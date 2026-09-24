@@ -37,15 +37,16 @@ EVERY_WORDS = {"1s": "second", "10s": "10 seconds", "30s": "30 seconds", "1m": "
 TOP_CHOICES = [5, 10, 20, 50]
 
 # the recipes, in the order that breaks ties
-RECIPES = ["compare", "trend", "breakdown", "top", "relationship", "gaps", "outliers", "single", "distribution",
+RECIPES = ["compare", "trend", "breakdown", "top", "toprows", "relationship", "gaps", "outliers", "single", "distribution",
            "linked", "stacked", "rows", "describe"]
 RECIPE_LABELS = {"compare": "Compare two series", "trend": "Change over time", "breakdown": "Totals by group",
                  "top": "Top items", "relationship": "How two numbers relate", "gaps": "Gaps in the data",
                  "outliers": "Unusual readings", "single": "One number", "distribution": "Spread of values",
                  "linked": "Tables linked together", "stacked": "Tables stacked together", "rows": "Matching rows",
+                 "toprows": "Biggest rows",
                  "describe": "Describe the table"}
 WEIGHT = {"compare": 100, "trend": 95, "breakdown": 90, "top": 75, "relationship": 60, "gaps": 65, "outliers": 55,
-          "single": 30, "distribution": 45, "linked": 50, "stacked": 60, "rows": 25, "describe": 20}
+          "single": 30, "distribution": 45, "linked": 50, "stacked": 60, "rows": 25, "toprows": 40, "describe": 20}
 GROUP_MAX = 12              # a group with more values than this is a "top N" question rather than a breakdown
 MAX_SUGGESTIONS = 8
 
@@ -74,6 +75,15 @@ def _col(model: DataModel, ref: list | None) -> Column | None:
         return None
     t = model.table(ref[0])
     return t.column(ref[1]) if t else None
+
+
+def stat_title(stat: str, what: str) -> str:
+    """'Average' + 'Avg Time on Page (s)' reads 'Average time on page (s)', not 'Average Avg Time on Page (s)'."""
+    import re
+    word = STAT_WORDS.get(stat, stat.title())
+    if stat == "mean":
+        what = re.sub(r"^(avg|average|mean)[\s_.:-]+", "", what, flags=re.IGNORECASE) or what
+    return f"{word} {what}"
 
 
 def label(model: DataModel, ref: list | None) -> str:
@@ -156,20 +166,29 @@ def _path(model: DataModel, starts: list[str], goal: str, avoid: set[str]) -> li
 
 
 def _ordered_measures(t: Table) -> list[Column]:
-    """Measures with a unit first (they are what was measured), then in column order."""
-    return sorted(t.measures, key=lambda c: (0 if c.unit else 1, t.columns.index(c)))
+    """The numbers most worth answering about first: amounts (sales, visits, quantity), then numbers with a unit
+    (what a logger measures), then the rest, each in column order."""
+    from .understand import _words
+
+    def rank(c: Column) -> tuple:
+        words = set(_words(c.name)) | set(_words(c.label or ""))
+        money = (c.unit or "").strip().lower() in CURRENCY_UNITS or words & MONEY_WORDS
+        return (0 if money else 1 if words & AMOUNT_WORDS else (2 if c.unit else 3), t.columns.index(c))
+    return sorted(t.measures, key=rank)
 
 
 AMOUNT_WORDS = {"sales", "sale", "revenue", "amount", "amounts", "cost", "costs", "spend", "spent", "profit", "income",
                 "qty", "quantity", "quantities", "units", "unit", "count", "counts", "total", "sum", "volume", "orders",
                 "items", "visits", "hours", "minutes", "calls", "tickets", "turnover", "paid", "payment", "payments",
                 "sold", "bookings", "downloads", "clicks", "views", "impressions", "rainfall", "precipitation", "energy"}
-READING_WORDS = {"temperature", "temp", "pressure", "humidity", "speed", "velocity", "level", "depth", "height",
+READING_WORDS = {"salary", "salaries", "wage", "wages", "pay", "battery", "bounce", "duration", "time", "temperature", "temp", "pressure", "humidity", "speed", "velocity", "level", "depth", "height",
                  "voltage", "current", "rate", "ratio", "percent", "pct", "percentage", "price", "score", "age", "ph",
                  "conductivity", "salinity", "concentration", "density", "flow", "rating", "latitude", "longitude",
                  "lat", "lon", "lng", "altitude", "elevation", "weight", "mass", "size", "length", "width", "psi",
                  "psia", "bar", "tension", "load", "signal", "strength", "frequency", "value", "reading", "average",
                  "mean", "median", "index", "margin", "utilisation", "utilization", "occupancy", "efficiency"}
+MONEY_WORDS = {"amount", "sales", "revenue", "turnover", "income", "cost", "costs", "spend", "profit", "paid",
+               "payment", "payments", "debit", "credit", "balance", "value", "total"}
 CURRENCY_UNITS = {"$", "€", "£", "¥", "usd", "eur", "gbp", "jpy", "chf", "aud", "cad", "nok", "sek", "dkk", "k$", "m$"}
 
 
@@ -288,7 +307,7 @@ def _candidates(model: DataModel, t: Table) -> list[dict]:
         p = t.pairs[0]
         if abs(p["r"]) >= 0.3:
             out.append({"recipe": "relationship", "table": t.node, "x": [t.node, p["x"]], "y": [t.node, p["y"]], "_r": p["r"]})
-    if t.time:
+    if t.time and t.shape == SERIES:                      # gaps mean something in a log, not in a list of orders
         out.append({"recipe": "gaps", "table": t.node})
     if t.shape == SERIES and m0:
         out.append({"recipe": "outliers", "table": t.node, "measure": m0})
@@ -332,6 +351,55 @@ class _Builder:
             self.steps.append(PlanStep(key, "@", _tlabel(self.m, node), {"node": node}))
         return key
 
+    def table(self, node: str) -> str:
+        """A table ready to answer from: without its empty rows or the total row at the bottom, and with values that
+        differ only in capitals or spaces spelled one way — each said, each one click to undo."""
+        key = self.use(node)
+        t = self.m.table(node)
+        if t is None:
+            return key
+        keys = {s.key for s in self.steps}
+        if t.blank_rows and not self.spec.get("keep_blank_rows"):
+            k = f"blank:{node}"
+            if k not in keys:
+                self.add(k, "fix_missing", f"{t.title} without empty rows", {"method": "drop_all"}, {"in": [key]})
+                self.assume(f"blank:{node}", f"Left out {t.blank_rows:,} empty row{'s' if t.blank_rows != 1 else ''} of {t.title}",
+                            [{"label": "Keep them", "set": {"keep_blank_rows": True}}])
+            key = k
+        if t.total_row and not self.spec.get("keep_total_row"):
+            k = f"total:{node}"
+            if k not in keys:
+                c, v = t.total_row["column"], t.total_row["value"]
+                if t.total_row.get("blank"):          # named by nothing but its sum: blank labels, that exact total
+                    rules = [{"column": t.total_row["blank"], "op": "empty"}, {"column": c, "op": "eq", "value": v}]
+                    what = f"total row (its {c} is {v:,.10g}, the sum of the rows above)"
+                else:
+                    rules = [{"column": c, "op": "eq", "value": v, "case_sensitive": True}]
+                    what = f"“{v}” row"
+                self.add(k, "keep_rows", f"{t.title} without its total row",
+                         {"mode": "remove", "conditions": {"match": "all", "rules": rules}}, {"in": [key]})
+                self.assume(f"total:{node}", f"Left out the {what} at the bottom of {t.title}: it adds up the others",
+                            [{"label": "Keep it", "set": {"keep_total_row": True}}])
+            key = k
+        if not self.spec.get("keep_spellings"):
+            fixes = [(c.name, c.spellings) for c in t.columns if c.spellings and _safe_spellings(c.spellings)]
+            if fixes:
+                k = f"spell:{node}"
+                if k not in keys:
+                    self.add(k, "calculate", f"{t.title} with one spelling per value",
+                             {"formulas": [{"name": c, "expr": _spelling_formula(c, sp)} for c, sp in fixes]}, {"in": [key]})
+                    groups: dict[str, list[str]] = {}
+                    for _, sp in fixes:
+                        for variant, target in sorted(sp.items()):
+                            groups.setdefault(target, []).append(variant)
+                    shown = "; ".join(f"{', '.join(repr(v) for v in vs[:3])} as {target!r}" for target, vs in list(groups.items())[:3])
+                    if len(groups) > 3:
+                        shown += f"; and {len(groups) - 3} more"
+                    self.assume(f"spell:{node}", f"Treated values that differ only in capitals or spaces as one ({shown})",
+                                [{"label": "Keep every spelling apart", "set": {"keep_spellings": True}}])
+                key = k
+        return key
+
     def add(self, key: str, type_: str, title: str, params: dict, inputs: dict[str, list[str]]) -> str:
         self.steps.append(PlanStep(key, type_, title, params, inputs))
         return key
@@ -350,11 +418,10 @@ class _Builder:
         use_stack = st is not None and (spec.get("together", True) if together is None else together)
         if use_stack:
             label_col = _free_name("source", [c.name for c in t.columns])
-            for node in st.tables:
-                self.use(node)
+            members = [self.table(node) for node in st.tables]
             self.current = self.add("stack", "stack", f"All {len(st.tables)} tables together",
                                     {"label_column": label_col, "labels": list(st.labels)},
-                                    {"tables": [f"node:{n}" for n in st.tables]})
+                                    {"tables": members})
             self.cols = [c.name for c in t.columns] + [label_col]
             for node in st.tables:
                 for c in m.table(node).columns:
@@ -363,7 +430,7 @@ class _Builder:
             self.assume("together", f"Put {', '.join(st.labels)} together; each row keeps which one it came from ({st.why})",
                         [{"label": f"Only {t.title}", "set": {"together": False}}])
         else:
-            self.current = self.use(table)
+            self.current = self.table(table)
             self.cols = [c.name for c in t.columns]
             for c in t.columns:
                 self.names[(table, c.name)] = c.name
@@ -400,7 +467,7 @@ class _Builder:
         if left_key is None:
             raise PlanError(f"{r.left_on} is not available to link {right.title}")
         suffix = "_" + (norm(right.title)[:20] or "2")
-        rkey = self.use(right.node)
+        rkey = self.table(right.node)
         self.current = self.add(f"link:{r.id}", "combine", f"Add {right.title} details",
                                 {"method": "match", "on": [left_key], "right_on": [r.right_on], "how": "left", "suffix": suffix},
                                 {"left": [self.current], "right": [rkey]})
@@ -426,16 +493,39 @@ class _Builder:
         return n
 
     def filters(self) -> None:
-        rules = []
+        rules, formulas = [], []
+        ops = {"gt": ">", "lt": "<", "ge": ">=", "le": "<=", "eq": "=", "ne": "!="}
         for f in self.spec.get("filters") or []:
-            self.need(f["column"])
+            self.need(f["column"], f.get("column2"))
+            if f.get("column2"):                       # one column against another: stock level below reorder level
+                formulas.append(f"[{self.name(f['column'])}] {ops[f['op']]} [{self.name(f['column2'])}]")
+                continue
             rule = {"column": self.name(f["column"]), "op": f["op"], "value": f.get("value", "")}
             if f.get("value2") not in (None, ""):
                 rule["value2"] = f["value2"]
             rules.append(rule)
+        text = "Keep " + filter_text(self.m, self.spec.get("filters") or [])
         if rules:
-            self.current = self.add("filter", "keep_rows", "Keep " + filter_text(self.m, self.spec["filters"]),
+            self.current = self.add("filter", "keep_rows", text,
                                     {"mode": "keep", "conditions": {"match": "all", "rules": rules}}, {"in": [self.current]})
+        if formulas:
+            self.current = self.add("compare_columns", "keep_rows", text, {"mode": "keep", "formula": " AND ".join(formulas)},
+                                    {"in": [self.current]})
+
+
+def _safe_spellings(sp: dict[str, str]) -> bool:
+    return all('"' not in x and "\\" not in x for pair in sp.items() for x in pair)
+
+
+def _spelling_formula(col: str, sp: dict[str, str]) -> str:
+    """IF(TRIM(LOWER([c])) = "north", "North", …, [c]): each group of variants written the way most rows write it."""
+    canon: dict[str, str] = {}
+    for v, target in sp.items():
+        canon[target.strip().lower()] = target
+    expr = f"[{col}]"
+    for key in sorted(canon, reverse=True):
+        expr = f'IF(LOWER(TRIM([{col}])) = "{key}", "{canon[key]}", {expr})'
+    return expr
 
 
 def _free_name(base: str, taken: list[str]) -> str:
@@ -448,11 +538,17 @@ def _free_name(base: str, taken: list[str]) -> str:
 def filter_text(model: DataModel, filters: list[dict]) -> str:
     words = {"eq": "is", "ne": "is not", "gt": "above", "lt": "below", "ge": "at least", "le": "at most",
              "between": "between", "contains": "contains", "in": "is one of"}
+    words.update({"year": "in", "month": "in"})
     parts = []
     for f in filters:
+        if f.get("text"):                              # as the person typed it: "in March", "after 2024-06-01"
+            parts.append(f"{label(model, f['column'])} {f['text']}")
+            continue
         v = f.get("value", "")
         if f["op"] == "between":
             v = f"{v} and {f.get('value2', '')}"
+        if f.get("column2"):
+            v = label(model, f["column2"])
         parts.append(f"{label(model, f['column'])} {words.get(f['op'], f['op'])} {v}".strip())
     return ", ".join(parts)
 
@@ -472,7 +568,7 @@ def plan(model: DataModel, spec: dict) -> Plan:
         title += " where " + filter_text(model, spec["filters"])
     st = model.stack_of(spec["table"])
     if st is not None and recipe not in ("compare", "stacked", "gaps", "describe") and (
-            not spec.get("together", True) or recipe == "outliers"):
+            not spec.get("together", True)):
         title += f" in {model.tables[spec['table']].title}"      # one of several tables with the same columns
     title = (spec.get("title") or "").strip() or title
     return Plan(steps=b.steps, terminal=terminal, title=title, config=spec, view=view,
@@ -503,7 +599,7 @@ def _plan_trend(b: _Builder):
         label_col = _free_name("source", [c.name for c in t.columns])
         keys = []
         for node in st.tables:
-            cur = b.use(node)
+            cur = b.table(node)
             rules = [_rule(f, f["column"][1]) for f in spec.get("filters") or []]
             if rules:
                 cur = b.add(f"filter:{node}", "keep_rows", f"Keep {filter_text(m, spec['filters'])}",
@@ -534,7 +630,7 @@ def _plan_trend(b: _Builder):
         chart = b.add("chart", "chart", "", {"kind": "line", "x": tname, "series": [{"column": y} for y in ys], **extra,
                                              "y_label": _y_label(m, measures[0] if measures else None, stat)}, {"in": [b.current]})
     what = ", ".join(label(m, r) for r in measures) if measures else "rows"
-    title = f"{STAT_WORDS.get(stat, stat.title())} {what} per {per}" if stat != "count" else f"Rows per {per}"
+    title = f"{stat_title(stat, what)} per {per}" if stat != "count" else f"Rows per {per}"
     if by:
         title += f", by {group_label(m, by)}"
     b.steps[-1].title = title
@@ -571,7 +667,8 @@ def _y_label(m: DataModel, ref: list | None, stat: str) -> str:
         return "rows"
     c = _col(m, ref)
     unit = c.unit if c is not None else ""
-    return f"{label(m, ref)} ({unit})" if unit else label(m, ref)
+    name = label(m, ref)
+    return f"{name} ({unit})" if unit and f"({unit})" not in name and f"[{unit}]" not in name else name
 
 
 def _span_text(secs: float | None) -> str:
@@ -584,7 +681,11 @@ def group_label(model: DataModel, ref: list | None) -> str:
     if not ref:
         return ""
     if ref[0].startswith("stack:"):
-        return "table"
+        rel = model.relation(ref[0])
+        from .understand import _words
+        common = [w for w in _words(model.tables[rel.tables[0]].title)
+                  if all(w in _words(model.tables[n].title) for n in rel.tables)] if rel else []
+        return common[0] if common else "table"          # device_1, device_2: "by device"
     t = model.table(ref[0])
     c = _col(model, ref)
     if t is not None and t.shape == LOOKUP and c is not None and c.role in (ID, TEXT) and c.kind == "text":
@@ -622,7 +723,7 @@ def _plan_breakdown(b: _Builder, top: int | None = None):
         title = (f"{'Bottom' if bottom else 'Top'} {top} {gl} by " +
                  ("number of rows" if stat == "count" else f"{STAT_WORDS.get(stat, stat).lower()} {what}"))
     else:
-        title = f"{STAT_WORDS.get(stat, stat)} {what} by {gl}" if stat != "count" else f"Rows by {gl}"
+        title = f"{stat_title(stat, what)} by {gl}" if stat != "count" else f"Rows by {gl}"
     chart = b.add("chart", "chart", title, {"kind": "bar", "category": g, "value": value, "stat": "sum" if stat != "mean" else "mean",
                                             "title": title, "y_label": _y_label(m, measure, stat)}, {"in": [b.current]})
     if not spec.get("stat") and measure:
@@ -634,6 +735,26 @@ def _plan_breakdown(b: _Builder, top: int | None = None):
 def _plan_top(b: _Builder):
     n = int(b.spec.get("n") or 10)
     return _plan_breakdown(b, top=n)
+
+
+def _plan_toprows(b: _Builder):
+    """The rows with the largest (or smallest) values: the biggest orders, the best-paid employees."""
+    m, spec = b.m, b.spec
+    t = m.table(spec["table"])
+    measure = spec.get("measure")
+    if not measure:
+        raise PlanError("Say which number to rank the rows by, for example “biggest orders by amount”")
+    n = int(spec.get("n") or 10)
+    bottom = bool(spec.get("bottom"))
+    b.base()
+    b.need(measure)
+    b.filters()
+    col = b.name(measure)
+    b.current = b.add("order", "sort", "Smallest first" if bottom else "Largest first", {"columns": [col], "descending": not bottom},
+                      {"in": [b.current]})
+    title = f"{'Smallest' if bottom else 'Biggest'} {n} {spec.get('noun') or t.title} by {label(m, measure)}"
+    key = b.add("top", "take_sample", title, {"mode": "first", "rows": n}, {"in": [b.current]})
+    return key, "table", title, f"{t.title} ranked by {label(m, measure)}"
 
 
 def _plan_single(b: _Builder):
@@ -648,7 +769,7 @@ def _plan_single(b: _Builder):
         title = "Number of rows"
     else:
         params = {"by": [], "columns": [b.name(measure)], "default_stats": [stat]}
-        title = f"{STAT_WORDS.get(stat, stat)} {label(m, measure)}"
+        title = stat_title(stat, label(m, measure))
     if spec.get("filters"):
         title += f" where {filter_text(m, spec['filters'])}"
     key = b.add("number", "group_summary", title, params, {"in": [b.current]})
@@ -665,7 +786,7 @@ def _plan_compare(b: _Builder):
         raise PlanError("Choose a quantity both tables record")
     ta, tb = m.table(a), m.table(other)
     col = measure[1]
-    ka, kb = b.use(a), b.use(other)
+    ka, kb = b.table(a), b.table(other)
     tol = spec.get("tolerance") or rel.tolerance
     b.add("pair", "combine", f"Pair {ta.title} with {tb.title}",
           {"method": "nearest_time", "left_time": ta.time, "right_time": tb.time, "direction": "nearest",
@@ -709,20 +830,35 @@ def _plan_outliers(b: _Builder):
     measure = spec.get("measure")
     if not measure:
         raise PlanError("Choose a number to check")
-    b.base(together=False)
-    b.need(measure)
-    col = b.name(measure)
-    flag = _free_name("unusual", b.cols)
     series = t.shape == SERIES
-    params = {"columns": [col], "method": "rolling" if series else "iqr", "action": "flag", "flag_column": flag}
+    st = m.stack_of(t.node)
+    flag = _free_name("unusual", [c.name for c in t.columns])
+    params = {"columns": [measure[1]], "method": "rolling" if series else "iqr", "action": "flag", "flag_column": flag}
     if series:
         params.update({"window": 51, "threshold": 5.0})
-    b.add("flag", "remove_outliers", f"Mark unusual {label(m, measure)}", params, {"in": [b.current]})
+    keep = {"mode": "keep", "conditions": {"match": "all", "rules": [{"column": flag, "op": "true"}]}}
+    title = f"Unusual {label(m, measure)}"
+    if st is not None and spec.get("together", True) and measure[0] in st.tables:
+        # each table checked against its own readings (a spike is local to its log), then the finds put together
+        found = []
+        for node in st.tables:
+            fk = b.add(f"flag:{node}", "remove_outliers", f"Mark unusual {label(m, measure)} in {_tlabel(m, node)}", params,
+                       {"in": [b.table(node)]})
+            found.append(b.add(f"unusual:{node}", "keep_rows", f"Unusual in {_tlabel(m, node)}", keep, {"in": [fk]}))
+        label_col = _free_name("source", [c.name for c in t.columns])
+        key = b.add("stack", "stack", title, {"label_column": label_col, "labels": list(st.labels)}, {"tables": found})
+        b.assume("together", f"Checked each of {', '.join(st.labels)} against its own readings, then listed them together",
+                 [{"label": f"Only {t.title}", "set": {"together": False}}])
+    else:
+        b.base(together=False)
+        b.need(measure)
+        params["columns"] = [b.name(measure)]
+        flag = _free_name("unusual", b.cols); params["flag_column"] = flag
+        keep = {"mode": "keep", "conditions": {"match": "all", "rules": [{"column": flag, "op": "true"}]}}
+        b.add("flag", "remove_outliers", f"Mark unusual {label(m, measure)}", params, {"in": [b.current]})
+        key = b.add("unusual", "keep_rows", title, keep, {"in": ["flag"]})
     b.assume("outliers", ("A reading is unusual when it is more than 5 typical spreads from the readings around it"
                           if series else "A value is unusual when it lies far outside the middle half of the values"))
-    title = f"Unusual {label(m, measure)}"
-    key = b.add("unusual", "keep_rows", title, {"mode": "keep", "conditions": {"match": "all", "rules": [{"column": flag, "op": "true"}]}},
-                {"in": ["flag"]})
     return key, "table", title, f"{label(m, measure)} is recorded steadily"
 
 
@@ -832,7 +968,7 @@ def chips(model: DataModel, spec: dict) -> list[dict[str, Any]]:
         every = spec.get("every") or auto_every(model, t)
         out.append({"key": "every", "text": f"per {EVERY_WORDS.get(every, every)}", "value": every,
                     "choices": [{"label": f"per {EVERY_WORDS.get(e, e)}", "value": e} for e in EVERY_CHOICES]})
-    if r in ("breakdown", "top", "single", "outliers", "distribution"):
+    if r in ("breakdown", "top", "single", "outliers", "distribution", "toprows"):
         measure = spec.get("measure")
         choices = cols(measures)
         if r in ("breakdown", "top", "single"):
@@ -842,7 +978,7 @@ def chips(model: DataModel, spec: dict) -> list[dict[str, Any]]:
         by = spec.get("by")
         out.append({"key": "by", "text": f"by {_group_ref_label(model, by, t.node)}" if by else "by …", "value": by,
                     "choices": [{"label": f"by {_group_ref_label(model, g, t.node)}", "value": g} for g in groupables(model, t.node)]})
-    if r == "top":
+    if r in ("top", "toprows"):
         n = int(spec.get("n") or 10)
         out.append({"key": "n", "text": f"top {n}", "value": n, "choices": [{"label": f"top {k}", "value": k} for k in TOP_CHOICES]})
     if r == "relationship":

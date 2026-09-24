@@ -65,6 +65,7 @@ class Column:
     maximum: Any = None
     cadence: float | None = None    # time: the typical seconds between one row and the next
     regular: bool = False           # time: most steps are that typical step
+    spellings: dict[str, str] = field(default_factory=dict)   # category: a variant -> the spelling most rows use
     _keys: set[str] = field(default_factory=set, repr=False)       # capped distinct values, for link overlap
     _key_cut: int | None = field(default=None, repr=False)
 
@@ -93,6 +94,8 @@ class Table:
     span_seconds: float | None = None
     columns: list[Column] = field(default_factory=list)
     pairs: list[dict[str, Any]] = field(default_factory=list)   # measure pairs that move together (sample): {x, y, r}
+    total_row: dict[str, Any] | None = None   # a last row that adds up the others: {"column", "value"} naming it
+    blank_rows: int = 0             # rows with nothing in them (a blank line in a CSV)
     deep: bool = False              # deepen() has read every row
 
     def column(self, name: str) -> Column | None:
@@ -212,6 +215,9 @@ def _read_table(pipe, executor, nid: str) -> Table:
         t.complete = nt.kind == "source" and sample.height < SAMPLE_ROWS
     if t.complete and t.rows is None:
         t.rows, t.rows_exact = sample.height, True
+    t.total_row = _total_row(sample.tail(3), sample) if t.complete else None
+    t.blank_rows = int(sample.select(pl.all_horizontal(pl.all().is_null()).sum()).item()) if sample.width else 0
+    sample = _without_extra_rows(sample, t)
     t.columns = [_describe_column(sample[c], pipe) for c in sample.columns]
     if t.complete:
         for c in t.columns:
@@ -220,6 +226,56 @@ def _read_table(pipe, executor, nid: str) -> Table:
     t.shape = _shape_of(t)
     t.pairs = _pairs(sample, t.measures)
     return t
+
+
+TOTAL_WORDS = {"total", "totals", "grand total", "sum", "all", "overall", "subtotal", "total:", "totals:"}
+
+
+def _total_row(tail: pl.DataFrame, whole: pl.DataFrame | None = None) -> dict[str, Any] | None:
+    """A row at the bottom that sums the others, named by a word like 'Total' in one of its text cells. With the
+    whole table at hand, one of its numbers must also be the sum of that column's other rows (so a real region
+    called 'All' is not taken for a total); without it, only the unmistakable words count."""
+    for i in range(tail.height - 1, -1, -1):
+        row = tail.row(i, named=True)
+        for c, v in row.items():
+            if not (isinstance(v, str) and v.strip().lower() in TOTAL_WORDS):
+                continue
+            if whole is None:
+                if v.strip().lower() in ("total", "totals", "grand total"):
+                    return {"column": c, "value": v}
+                continue
+            rest = whole.filter(pl.col(c).is_null() | (pl.col(c).cast(pl.Utf8) != v))
+            for n, x in row.items():
+                if isinstance(x, (int, float)) and not isinstance(x, bool) and whole[n].dtype.is_numeric():
+                    s = rest[n].sum()
+                    if s is not None and abs(float(s) - float(x)) <= 0.005 * max(1.0, abs(float(s))):
+                        return {"column": c, "value": v}
+        if whole is not None and any(v is not None for v in row.values()):
+            # no word, but every label blank and a number that is the sum of the rows above: a total row all the same
+            labels = [c for c, v in row.items() if not (isinstance(v, (int, float)) and not isinstance(v, bool))]
+            nums = [(c, v) for c, v in row.items() if isinstance(v, (int, float)) and not isinstance(v, bool)]
+            if labels and nums and all(row[c] is None for c in labels) and whole.height > 3:
+                rest = whole.slice(0, whole.height - (tail.height - i))
+                for c, v in nums:
+                    tot = rest[c].sum()
+                    if tot is not None and abs(float(tot) - float(v)) <= 0.005 * max(1.0, abs(float(tot))) and abs(float(v)) > 0:
+                        return {"column": c, "value": v, "blank": labels[0]}
+            return None
+        if any(v is not None for v in row.values()):
+            return None
+    return None
+
+
+def _without_extra_rows(df: pl.DataFrame, t: Table) -> pl.DataFrame:
+    if t.total_row is not None:
+        c, v = t.total_row["column"], t.total_row["value"]
+        if t.total_row.get("blank"):
+            df = df.filter(~(pl.col(t.total_row["blank"]).is_null() & (pl.col(c) == v)))
+        else:
+            df = df.filter(pl.col(c).is_null() | (pl.col(c).cast(pl.Utf8) != v))
+    if t.blank_rows and df.width:
+        df = df.filter(~pl.all_horizontal(pl.all().is_null()))
+    return df
 
 
 def _pairs(sample: pl.DataFrame, measures: list[Column], limit: int = 8) -> list[dict[str, Any]]:
@@ -259,6 +315,8 @@ def _describe_column(s: pl.Series, pipe) -> Column:
     c.role = _role_of(c, filled, n)
     if c.role == CATEGORY:
         c.values = _category_values(filled)
+        if kind == STR:
+            c.spellings = _spellings(filled)
     if c.link_candidate:
         c._keys, c._key_cut = _capped_values(filled)
     return c
@@ -280,8 +338,8 @@ def _role_of(c: Column, filled: pl.Series, n: int) -> str:
             return ID
         if integer and words and words[-1] in CALENDAR_WORDS and c.distinct <= 400:
             return CATEGORY                                  # year, month, week: a group, not a quantity
-        if integer and c.unique and filled.len() >= 5 and _is_sequence(filled):
-            return ID                                        # 1, 2, 3 … row numbers or ids
+        if integer and c.unique and filled.len() >= 5 and _is_sequence(filled) and (filled.min() or 0) <= 1:
+            return ID                                        # 1, 2, 3 … (or 0, 1, 2 …): row numbers
         return MEASURE
     if c.kind == STR:
         if looks_like_key(c.name) or (c.unique and filled.len() >= 5 and _short_text(filled)):
@@ -313,13 +371,29 @@ def _category_values(s: pl.Series) -> list[Any]:
     return [_clean(v) for v in vc[name].to_list()]
 
 
+def _spellings(s: pl.Series) -> dict[str, str]:
+    """Values that differ only in capitals or surrounding spaces (North, north, 'North '): each variant maps to
+    the spelling most rows use (ties: the first in text order)."""
+    vc = s.cast(pl.Utf8).value_counts(sort=False)
+    name = vc.columns[0]
+    vc = vc.with_columns(pl.col(name).str.strip_chars().str.to_lowercase().alias("_k")).sort(["count", name], descending=[True, False])
+    out: dict[str, str] = {}
+    for key in vc["_k"].unique(maintain_order=True).to_list():
+        variants = vc.filter(pl.col("_k") == key)[name].to_list()
+        target = variants[0].strip()                     # the spelling most rows use, without stray spaces
+        for v in variants:
+            if v != target:
+                out[v] = target
+    return out
+
+
 def _settle_time(t: Table, sample: pl.DataFrame, consecutive: pl.DataFrame) -> None:
     """The main time column (the first date/time column that varies) and how regularly rows arrive, measured on
     ``consecutive`` rows."""
     times = t.by_role(TIME_ROLE)
     if not times:
         return
-    main = times[0]
+    main = max(times, key=lambda c: (c.distinct, -t.columns.index(c)))     # the finest: Date Time rather than Date
     t.time = main.name
     s = consecutive[main.name].drop_nulls() if main.name in consecutive.columns else sample[main.name].drop_nulls()
     if s.len() >= 3:
@@ -600,8 +674,15 @@ def _deepen_table(t: Table, lf: pl.LazyFrame) -> None:
         if c.name in schema and c.role in (ID, CATEGORY, TEXT):
             aggs.append(pl.col(c.name).drop_nulls().approx_n_unique().alias(f"__u_{c.name}"))
             aggs.append(pl.col(c.name).drop_nulls().len().alias(f"__n_{c.name}"))
+    aggs.append(pl.all_horizontal(pl.all().is_null()).sum().alias("__blank"))
     row = lf.select(aggs).collect(engine="streaming").row(0, named=True)
     t.rows, t.rows_exact, t.deep = int(row["__rows"]), True, True
+    t.blank_rows = int(row["__blank"] or 0)
+    if t.total_row is None and not t.complete:
+        try:
+            t.total_row = _total_row(lf.tail(3).collect(engine="streaming"))
+        except Exception:  # noqa: BLE001
+            pass
     t.complete = t.rows <= t.sampled
     if "__tmin" in row:
         t.start, t.end = _clean(row["__tmin"]), _clean(row["__tmax"])
@@ -620,7 +701,8 @@ def _deepen_table(t: Table, lf: pl.LazyFrame) -> None:
         if f"__u_{c.name}" not in row:
             continue
         est, filled = int(row[f"__u_{c.name}"]), int(row[f"__n_{c.name}"])
-        c.distinct = max(c.distinct, est)
+        if not t.complete:
+            c.distinct = min(max(c.distinct, est), filled)       # an estimate: never more values than filled cells
         if c.name in exact_counts:
             exact = int(exact_counts[c.name])
             c.unique, c.unique_exact, c.distinct = exact == filled, True, exact
@@ -720,9 +802,13 @@ def distinct_labels(names: list[str], fallback: list[str]) -> list[str]:
     split = [[w for w in re.split(r"[_\s.]+", Path(str(n)).stem) if w] for n in names]
     common = set(split[0]).intersection(*map(set, split[1:])) if split else set()
     out = []
+    lead = next((w for w in split[0] if w in common), "") if split else ""
     for words, fb in zip(split, fallback):
         rest = [w for w in words if w not in common]
-        out.append("_".join(rest) if rest else fb)
+        label = "_".join(rest) if rest else fb
+        if label.isdigit() and lead:
+            label = f"{lead} {label}"                  # device_1, device_2 -> "device 1", not just "1"
+        out.append(label)
     if len(set(out)) < len(out):
         return list(fallback) if len(set(fallback)) == len(fallback) else [f"{fb} {i + 1}" for i, fb in enumerate(fallback)]
     return out

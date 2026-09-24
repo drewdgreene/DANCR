@@ -14,6 +14,7 @@ Pure core, no Qt.
 from __future__ import annotations
 
 import difflib
+from datetime import datetime, timedelta
 import re
 from dataclasses import dataclass, field
 from typing import Any
@@ -50,13 +51,21 @@ OPS = {"above": "gt", "over": "gt", "more than": "gt", "greater than": "gt", ">"
        "exceeding": "gt", "higher than": "gt", "below": "lt", "under": "lt", "less than": "lt", "<": "lt",
        "lower than": "lt", "at least": "ge", ">=": "ge", "at most": "le", "<=": "le", "between": "between",
        "is": "eq", "=": "eq", "equals": "eq", "equal to": "eq", "is not": "ne", "not": "ne", "!=": "ne",
-       "except": "ne", "excluding": "ne", "without": "ne"}
+       "except": "ne", "excluding": "ne", "without": "ne", "after": "gt", "before": "lt", "since": "ge", "until": "le",
+       "from": "ge", "later than": "gt", "earlier than": "lt"}
 STOP = {"show", "me", "the", "a", "an", "of", "what", "whats", "what's", "are", "was", "were", "how", "does",
         "do", "did", "i", "want", "see", "give", "find", "please", "chart", "plot", "graph", "list", "my",
         "for", "in", "where", "when", "with", "to", "on", "from", "data", "and", "all", "it", "its", "that",
         "which", "who", "there", "any", "can", "you", "get", "tell", "about", "has", "have", "had", "only",
         "rows", "row", "values", "readings", "reading", "records", "time", "at", "?", "this", "these", "then",
-        "table", "tables", "file", "files", "their", "them", "look", "into", "during", "within", "thing", "things"}
+        "table", "tables", "file", "files", "their", "them", "look", "into", "during", "within", "thing", "things",
+        "most", "least", "gets", "got", "goes", "went", "been", "be", "being", "biggest", "largest",
+        "our", "we", "us", "each", "every", "some", "much", "many", "there's", "theres", "was", "per"}
+MONTH_WORDS = {name: i for i, name in enumerate(["january", "february", "march", "april", "may", "june", "july", "august",
+                                                 "september", "october", "november", "december"], start=1)}
+MONTH_WORDS.update({k[:3]: v for k, v in list(MONTH_WORDS.items())})
+MONTH_WORDS["sept"] = 9
+BIG_WORDS = {"biggest": False, "largest": False, "highest": False, "smallest": True, "lowest": True}
 TOP_WORDS = {"top": False, "best": False, "bottom": True, "worst": True}
 
 
@@ -90,8 +99,11 @@ class Asked:
 
 
 # =================================================================== vocabulary
+_DATE = r"\d{4}-\d{1,2}-\d{1,2}(?:[ t]\d{1,2}:\d{2}(?::\d{2})?)?|\d{1,2}/\d{1,2}/\d{2,4}"
+
+
 def _tokens(text: str) -> list[str]:
-    return re.findall(r">=|<=|!=|[<>=]|-?\d+(?:[.,]\d+)*|[\w'%/]+(?:[.\-][\w]+)*", text.lower())
+    return re.findall(_DATE + r"|>=|<=|!=|[<>=]|-?\d+(?:[.,]\d+)*|[\w'%/]+(?:[.\-][\w]+)*", text.lower())
 
 
 def vocabulary(model: DataModel) -> dict[tuple[str, ...], list[Meaning]]:
@@ -117,6 +129,8 @@ def vocabulary(model: DataModel) -> dict[tuple[str, ...], list[Meaning]]:
         add(w, Meaning("unit", u))
     for w, rev in TOP_WORDS.items():
         add(w, Meaning("top", rev))
+    for w, n in MONTH_WORDS.items():
+        add(w, Meaning("month", n))
     add("and", Meaning("and"))
     table_words: set[str] = set()
     for t in model.tables.values():
@@ -141,6 +155,9 @@ def vocabulary(model: DataModel) -> dict[tuple[str, ...], list[Meaning]]:
                     _add_ref(voc, tuple(_tokens(form)), ref, alias=short)
                 for n in names:                                  # "product name", "customers region"
                     _add_ref(voc, tuple(_tokens(f"{n} {phrase}")), ref)
+            if c.role in (MEASURE, TIME_ROLE):                  # "revenue" for Amount, "pays" for salary, "started" for start_date
+                for syn in sorted(_synonyms(words + _words(c.label or ""))):
+                    _add_ref(voc, tuple(_tokens(syn)), ref, alias=True)
             if c.role == CATEGORY and c.kind == STR:
                 for v in c.values:
                     # a value spelled as a number is read as that number ("per 15 minutes"), never as a value
@@ -150,7 +167,42 @@ def vocabulary(model: DataModel) -> dict[tuple[str, ...], list[Meaning]]:
         if r.kind == "stack":
             for node, lab in zip(r.tables, r.labels):
                 add(lab, Meaning("table", node))
+            # "per device", "by file": which of the stacked tables a row came from
+            common = set.intersection(*[set(_words(model.tables[n].title)) for n in r.tables]) if r.tables else set()
+            for w in sorted(common | {"table", "file", "source", "log"}):
+                for form in _plural_forms(w):
+                    _add_ref(voc, tuple(_tokens(form)), [r.id, "source"], alias=True)
     return voc
+
+
+SYNONYMS = [
+    {"amount", "sales", "sale", "revenue", "revenues", "turnover", "income", "takings", "value", "total"},
+    {"cost", "costs", "spend", "spending", "spent", "expense", "expenses"},
+    {"qty", "quantity", "quantities", "units", "count"},
+    {"salary", "salaries", "pay", "wage", "wages", "earnings", "compensation"},
+    {"price", "prices", "rate"},
+    {"visits", "views", "sessions", "hits", "traffic"},
+    {"start", "started", "hired", "joined", "hire"},
+    {"stock", "inventory", "on hand"},
+]
+
+
+def _synonyms(words: list[str]) -> set[str]:
+    out: set[str] = set()
+    for w in words:
+        for group in SYNONYMS:
+            if w in group:
+                out |= group - {w}
+    return out
+
+
+def _stem_word(tok: str) -> list[str]:
+    """Everyday endings taken off a word that is not known as it is: pays -> pay, started -> start, earns -> earn."""
+    out = []
+    for end, back in (("ies", "y"), ("ing", ""), ("ed", ""), ("es", ""), ("s", ""), ("d", "")):
+        if tok.endswith(end) and len(tok) > len(end) + 2:
+            out.append(tok[: len(tok) - len(end)] + back)
+    return out
 
 
 def _plural_forms(phrase: str) -> list[str]:
@@ -190,6 +242,7 @@ def _column_phrases(name: str, label: str) -> list[tuple[str, bool]]:
     """(phrase, shortened?): pressure_psia -> 'pressure_psia', 'pressure psia', and 'pressure' (shortened);
     'Pressure (bar)' -> 'pressure (bar)', 'pressure'."""
     full = {name, name.replace("_", " "), label, re.sub(r"\s*[\(\[].*?[\)\]]\s*$", "", label)}
+    full |= {re.sub(r"^(avg|average|mean|total|sum of|number of|no of|count of)[\s_.:]+", "", f, flags=re.IGNORECASE) for f in list(full)}
     words = _words(name)
     if words:
         full.add(" ".join(words))
@@ -237,12 +290,19 @@ def ask(model: DataModel, text: str) -> Asked:
             i += len(key); continue
         tok = toks[i]
         num = _number(tok)
-        if num is not None:
+        if re.fullmatch(_DATE, tok):
+            items.append((tok, Meaning("date", _iso_date(tok))))
+        elif num is not None:
             items.append((tok, Meaning("num", num)))
         elif tok in STOP:
             items.append((tok, Meaning("stop")))
         else:
-            out.unknown.append(tok)
+            stemmed = next((voc[(w,)] for w in _stem_word(tok) if (w,) in voc), None)
+            if stemmed is not None:
+                prev = next((m.kind for _, m in reversed(items) if m.kind != "stop"), None)
+                items.append((tok, _pick(stemmed, tok, prev, kinds_at(i + 1))))
+            else:
+                out.unknown.append(tok)
         i += 1
     if out.unknown:
         phrases = [" ".join(k) for k in voc]
@@ -265,7 +325,13 @@ def ask(model: DataModel, text: str) -> Asked:
     return out
 
 
-FIXED = {"stat", "every", "recipe", "by", "op", "unit", "top", "and"}
+FIXED = {"stat", "every", "recipe", "by", "op", "unit", "top", "and", "month"}
+
+
+def _iso_date(tok: str) -> str:
+    """'2024-3-1' -> '2024-03-01'; '03/01/2024' stays as typed (the filter reads it month first, like every typed date)."""
+    m = re.fullmatch(r"(\d{4})-(\d{1,2})-(\d{1,2})(.*)", tok)
+    return f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}{m.group(4)}" if m else tok
 
 
 def _pick(ms: list[Meaning], words: str, prev: str | None, nxt: set[str]) -> Meaning:
@@ -294,6 +360,9 @@ def _pick(ms: list[Meaning], words: str, prev: str | None, nxt: set[str]) -> Mea
     if all(m.kind == "value" for m in proj) and words in STOP:
         return Meaning("stop")
     tables = [m for m in proj if m.kind == "table"]
+    real = [m for m in proj if m.kind == "col" and not m.alias]
+    if prev == "by" and real:
+        return real[0]                                    # "by product": the column called product, if there is one
     if tables and all(m.alias for m in proj if m.kind == "col"):
         return tables[0]                                  # "customers" is the table, not customer_id shortened
     if prev in ("by", "top"):
@@ -314,88 +383,175 @@ def _number(tok: str) -> float | int | None:
 
 
 def _assemble(model: DataModel, items: list[tuple[str, Meaning]], out: Asked) -> dict[str, Any]:
-    kinds = [m.kind for _, m in items]
-    stat = next((m.value for _, m in items if m.kind == "stat"), None)
-    recipes = [m.value for _, m in items if m.kind == "recipe"]
-    tables = [m.value for _, m in items if m.kind == "table"]
-    every = next((m.value for _, m in items if m.kind == "every"), None)
-    top, bottom = None, False
+    """Words -> spec. Every word that carries meaning must end up in the spec: one that could not be used makes the
+    question fail with that word named, rather than build something that quietly ignores it."""
+    used: set[int] = set()
+    stat = None
+    recipes: list[str] = []
+    tables: list[str] = []
+    every = None
+    top, bottom, big = None, False, None
     by_table, by_table_words = None, ""
     filters: list[dict[str, Any]] = []
+    time_filters: list[dict[str, Any]] = []          # dates, months and years: resolved once the table is known
     by = None
-    cols: list[tuple[str, list[list]]] = []          # (words, candidate refs) in order, for measures
+    cols: list[tuple[int, str, list[list]]] = []     # (item index, words, candidate refs) for measures
+    rows_named: list[int] = []                       # words that name the rows (orders, items) rather than a column
+    rows_tables: list[str] = []
     i = 0
     while i < len(items):
         words, m = items[i]
         nxt = items[i + 1][1] if i + 1 < len(items) else None
+        if m.kind in ("stop", "and"):
+            used.add(i); i += 1; continue
+        if m.kind == "stat":
+            stat = stat or m.value; used.add(i)
+            if words in BIG_WORDS and big is None:
+                big = BIG_WORDS[words]
+            i += 1; continue
+        if m.kind == "recipe":
+            recipes.append(m.value); used.add(i); i += 1; continue
+        if m.kind == "table":
+            tables.append(m.value); used.add(i); i += 1; continue
+        if m.kind == "every":
+            every = m.value; used.add(i); i += 1; continue
         if m.kind == "top":
-            n = items[i + 1][1].value if nxt is not None and nxt.kind == "num" else 10
+            n = nxt.value if nxt is not None and nxt.kind == "num" else 10
             top, bottom = int(n), bool(m.value)
+            used |= {i, i + 1} if nxt is not None and nxt.kind == "num" else {i}
             i += 2 if nxt is not None and nxt.kind == "num" else 1
             continue
-        if m.kind in ("by", "stop") and nxt is not None and nxt.kind == "unit":
-            every = f"1{nxt.value}"; i += 2; continue
-        if m.kind in ("by", "stop") and nxt is not None and nxt.kind == "num" and i + 2 < len(items) and items[i + 2][1].kind == "unit":
-            every = f"{int(nxt.value)}{items[i + 2][1].value}"; i += 3; continue
+        if m.kind == "by" and nxt is not None and nxt.kind == "unit":
+            every = f"1{nxt.value}"; used |= {i, i + 1}; i += 2; continue
+        if m.kind == "by" and nxt is not None and nxt.kind == "num" and i + 2 < len(items) and items[i + 2][1].kind == "unit":
+            every = f"{int(nxt.value)}{items[i + 2][1].value}"; used |= {i, i + 1, i + 2}; i += 3; continue
         if m.kind == "by" and nxt is not None and nxt.kind == "col":
-            by = (items[i + 1][0], nxt.refs); i += 2; continue
+            by = (items[i + 1][0], nxt.refs); used |= {i, i + 1}; i += 2; continue
         if m.kind == "by" and nxt is not None and nxt.kind == "table":
-            by_table, by_table_words = nxt.value, items[i + 1][0]; i += 2; continue
+            by_table, by_table_words = nxt.value, items[i + 1][0]; used |= {i, i + 1}; i += 2; continue
+        if m.kind == "by" and nxt is not None and nxt.kind == "month":
+            every = "1mo"; used |= {i, i + 1}; i += 2; continue     # "by month"
+        if m.kind == "by":
+            used.add(i); i += 1; continue
+        if m.kind == "unit":
+            every = f"1{m.value}"; used.add(i); i += 1; continue
+        if m.kind in ("month", "date") or (m.kind == "num" and _is_year(m.value) and _time_context(items, i)):
+            f, n_used = _time_filter(items, i)
+            time_filters.append(f); used |= set(range(i, i + n_used)); i += n_used; continue
+        if m.kind == "op" and nxt is not None and nxt.kind in ("date", "month") or (
+                m.kind == "op" and nxt is not None and nxt.kind == "num" and _is_year(nxt.value) and m.value in ("gt", "lt", "ge", "le")):
+            f, n_used = _time_filter(items, i + 1, op=m.value)
+            time_filters.append(f); used |= set(range(i, i + 1 + n_used)); i += 1 + n_used; continue
         if m.kind == "col":
-            # a column followed by a comparison is a filter
             if nxt is not None and nxt.kind == "op":
-                f, used = _filter(items, i)
+                j = i + 1
+                if j + 1 < len(items) and items[j + 1][1].kind in ("date", "month"):
+                    cols.append((i, words, m.refs)); used.add(i)       # "sales after 2024-01-01": the date is for the time column
+                    i += 1; continue
+                f, n_used = _filter(items, i)
                 if f is not None:
-                    filters.append(f); i += used; continue
-            cols.append((words, m.refs)); i += 1; continue
+                    filters.append(f); used |= set(range(i, i + n_used)); i += n_used; continue
+            if m.alias and any(_role(model, r) == ID for r in m.refs) and not (nxt is not None and nxt.kind == "op"):
+                rows_named.append(i); rows_tables.extend(r[0] for r in m.refs if _role(model, r) == ID)
+                i += 1; continue                             # "orders", "items", "employees": the rows themselves
+            cols.append((i, words, m.refs)); i += 1; continue
         if m.kind == "value":
             negate = i > 0 and items[i - 1][1].kind == "op" and items[i - 1][1].value == "ne"
-            filters.append({"column": m.refs[0], "op": "ne" if negate else "eq", "value": m.value, "_words": words})
-            i += 1; continue
-        if m.kind == "unit":
-            every = f"1{m.value}"; i += 1; continue
+            if negate:
+                used.add(i - 1)
+            filters.append({"column": m.refs[0], "op": "ne" if negate else "eq", "value": m.value})
+            used.add(i); i += 1; continue
         i += 1
-    # which table: the one named, else the one most of the columns live in
-    base = _base_table(model, tables, cols, by, filters, out)
+    lookups_named = [t for t in tables if model.tables[t].shape == "lookup"]
+    if rows_tables and lookups_named and rows_tables[0] not in tables:
+        tables = [rows_tables[0]] + tables           # "which supplier has the most items": items per supplier
+    base = _base_table(model, tables, [(w, r) for _, w, r in cols], by, filters, out)
+    t0 = model.tables[base]
     resolve = lambda w, refs: _resolve(model, w, refs, base, out)   # noqa: E731
-    measures = [resolve(w, r) for w, r in cols]
-    measures = [r for r in measures if r is not None]
+    measures = []
+    for idx, w, r in cols:
+        ref = resolve(w, r)
+        if ref is not None:
+            measures.append((idx, ref))
     by_ref = resolve(*by) if by else None
-    for f in filters:
-        f.pop("_words", None)
-    time_ref = next((r for r in measures if _role(model, r) == TIME_ROLE), None)
+    time_ref = next((r for _, r in measures if _role(model, r) == TIME_ROLE), None)
+    measures = [(k, r) for k, r in measures if r != time_ref]
     if time_ref is not None:
-        measures.remove(time_ref)
+        used |= {idx for idx, w, r in cols if resolve(w, r) == time_ref}
     if by_ref is not None and _role(model, by_ref) == TIME_ROLE:
         time_ref, by_ref = by_ref, None
-        every = every or None
     if by_ref is not None and _role(model, by_ref) == MEASURE:
-        measures.insert(0, by_ref); by_ref = None       # "customers by qty": qty is what is ranked, not a group
-    numbers = [r for r in measures if _role(model, r) == MEASURE or (_role(model, r) == CONSTANT and _is_number(model, r))]
-    groups = [r for r in measures if _role(model, r) in (CATEGORY, ID, TEXT, FLAG)]
+        measures.insert(0, (-1, by_ref)); by_ref = None       # "customers by qty": qty is what is ranked, not a group
+    numbers = [(k, r) for k, r in measures if _role(model, r) == MEASURE or (_role(model, r) == CONSTANT and _is_number(model, r))]
+    groups = [(k, r) for k, r in measures if _role(model, r) in (CATEGORY, ID, TEXT, FLAG)]
+    texts = [(k, r) for k, r in groups if _col_kind(model, r) == "text"]
+    if stat in ("sum", "mean", "median", "min", "max") and not numbers and texts and by_ref is not None:
+        g = texts[0][1]
+        raise PlanError(f"{g[1]} holds text (for example {_example(model, g)}), so it cannot be "
+                        f"{'added up' if stat == 'sum' else 'averaged' if stat == 'mean' else 'ranked as a number'}")
     if by_ref is None and groups and (numbers or stat == "count" or top):
-        by_ref = groups[0]                              # "customers by qty": the group named first
+        by_ref = groups[0][1]; used.add(groups[0][0])
     if by_table is not None and by_ref is None:
         by_ref = _group_for_table(model, base, by_table)
         if by_ref is None and by_table == base:
-            by_ref = _own_key(model, base, by_table_words)       # "per sensor" in a table called sensors: its sensor_id
+            by_ref = _own_key(model, base, by_table_words)
         if by_ref is None:
-            raise PlanError(f"{model.tables[by_table].title} is not linked to {model.tables[base].title}, so its rows cannot be counted per it")
+            if by_table == base:
+                raise PlanError(f"{t0.title} is the table being asked about; say which of its columns to group by")
+            raise PlanError(f"{model.tables[by_table].title} is not linked to {t0.title}, so its rows cannot be counted per it")
     named_lookups = [t for t in tables if t != base and model.tables[t].shape == "lookup"]
-    if by_ref is None and named_lookups and (numbers or stat or top):
-        by_ref = _name_column(model, named_lookups[0], base)   # "top 3 customers by qty": customers by their name
-    tables = [t for t in tables if t not in named_lookups]
+    if by_ref is None and named_lookups and (numbers or stat or top or rows_named) and not (top is not None and base in tables and not named_lookups):
+        by_ref = _name_column(model, named_lookups[0], base)
+    others = [t for t in tables if t not in named_lookups]
+    # dates, months and years apply to the time column named, else the table's own
+    tcol = time_ref if time_ref is not None else ([base, t0.time] if t0.time else None)
+    for f in time_filters:
+        if tcol is None:
+            raise PlanError(f"{t0.title} has no date or time column to take “{f['_words']}” from")
+        f.pop("_words", None)
+        filters.append({**f, "column": tcol})
+    for f in filters:
+        _check_filter(model, f)
     spec: dict[str, Any] = {"table": base}
     stack = model.stack_of(base)
     if stack is not None:
-        spec["together"] = not any(t in stack.tables for t in tables) or len({t for t in tables if t in stack.tables}) > 1
+        spec["together"] = not any(t in stack.tables for t in others) or len({t for t in others if t in stack.tables}) > 1
     if filters:
         spec["filters"] = filters
+    nums = [r for _, r in numbers]
     recipe = recipes[0] if recipes else None
-    if recipe == "compare" and len({tuple(r) for r in numbers}) >= 2 and len(set(tables)) < 2:
-        recipe = "relationship"                        # "temperature against pressure": two numbers, not two tables
+    if rows_named:
+        used |= set(rows_named)
+        spec["_rows_named"] = True
+        spec["noun"] = items[rows_named[0]][0]
+        if top is not None and by_ref is not None and by_ref[0] == base and _role(model, by_ref) == ID:
+            by_ref = None                          # "top 5 orders by amount": the orders themselves, not their ids
+    spec = _choose_recipe(model, spec, recipe, nums, by_ref, stat, every, top, bottom, big, time_ref, others, tables,
+                          stack, base, items)
+    # every word must have been used
+    in_spec = _refs_in(spec)
+    for idx, w, r in cols:
+        ref = resolve(w, r)
+        if ref is not None and tuple(ref) in in_spec:
+            used.add(idx)
+    for k, r in numbers + groups:
+        if tuple(r) in in_spec and k >= 0:
+            used.add(k)
+    left = [items[k][0] for k in range(len(items)) if k not in used and items[k][1].kind not in ("op",)]
+    left += [items[k][0] for k in range(len(items)) if k not in used and items[k][1].kind == "op"]
+    if left:
+        raise PlanError("I could not fit " + ", ".join(f"“{w}”" for w in dict.fromkeys(left)) + " into the question. "
+                        "Try naming one number, a group (“by region”) and a time step (“per month”)")
+    return spec
+
+
+def _choose_recipe(model, spec, recipe, numbers, by_ref, stat, every, top, bottom, big, time_ref, others, tables, stack,
+                   base, items) -> dict[str, Any]:
+    t0 = model.tables[base]
+    if recipe == "compare" and len({tuple(r) for r in numbers}) >= 2 and len(set(others)) < 2:
+        recipe = "relationship"
     if recipe == "compare":
-        pair = [t for t in tables]
+        pair = [t for t in others]
         if stack is not None and len(pair) < 2:
             pair = list(stack.tables[:2])
         if len(pair) >= 2:
@@ -405,18 +561,15 @@ def _assemble(model: DataModel, items: list[tuple[str, Meaning]], out: Asked) ->
                 raise PlanError(f"{model.tables[a].title} and {model.tables[b].title} do not record the same thing over time")
             if rel.tables[0] != a:
                 a, b = rel.tables
-            m = next((r[1] for r in numbers if r[1] in rel.shared), rel.shared[0])
-            spec.update({"recipe": "compare", "table": a, "other": b, "measure": [a, m]})
+            col = next((r[1] for r in numbers if r[1] in rel.shared), rel.shared[0])
+            spec.update({"recipe": "compare", "table": a, "other": b, "measure": [a, col]})
             spec.pop("together", None)
             return spec
-        recipe = "relationship" if len(numbers) >= 2 else None
-        if recipe is None:
-            raise PlanError("Compare what? Name two tables (“compare A and B”) or two numbers (“y against x”)")
+        raise PlanError("Compare what? Name two tables (“compare A and B”) or two numbers (“y against x”)")
     if recipe == "relationship" or (recipe is None and len(numbers) == 2 and any(w in ("against", "vs", "versus") for w, _ in items)):
         if len(numbers) < 2:
             raise PlanError("Name the two numbers, for example “temperature against pressure”")
         spec.update({"recipe": "relationship", "x": numbers[1], "y": numbers[0]})
-        spec["together"] = False if stack is not None else spec.get("together")
         return _tidy(spec)
     if recipe in ("gaps", "describe", "stacked", "linked"):
         spec["recipe"] = recipe
@@ -426,43 +579,41 @@ def _assemble(model: DataModel, items: list[tuple[str, Meaning]], out: Asked) ->
             raise PlanError(f"Name the number to look at, for example “{recipe} in {_first_measure(model, base)}”")
         spec.update({"recipe": recipe, "measure": numbers[0]})
         return _tidy(spec)
+    rows_named = spec.pop("_rows_named", False)
+    ranking_rows = (top is not None and by_ref is None) or (top is not None and (base in tables or rows_named)) or \
+                   (big is not None and by_ref is None and (base in tables or rows_named) and not every)
+    if ranking_rows:                                  # "top 5 orders by amount", "the biggest orders"
+        measure = numbers[0] if numbers else _first_measure_ref(model, base)
+        if measure is None:
+            raise PlanError(f"{t0.title} has no number to rank its rows by")
+        spec.update({"recipe": "toprows", "n": top or 10, "measure": measure, "bottom": (bottom if top is not None else big) or None})
+        if not rows_named:
+            spec.pop("noun", None)
+        return _tidy(spec)
     if top is not None:
-        if by_ref is None:
-            raise PlanError(f"Top {top} what? Say what to rank, for example “top {top} customers by sales”")
         spec.update({"recipe": "top", "n": top, "by": by_ref, "bottom": bottom or None, "measure": numbers[0] if numbers else None,
                      "stat": stat or ("count" if not numbers else "sum")})
         return _tidy(spec)
-    t0 = model.tables[base]
-    if by_ref is not None and (every or recipe == "trend" or time_ref is not None) and (t0.time or time_ref):
-        spec.update({"recipe": "trend", "measures": numbers[:3], "by": by_ref})    # "sales per day by region"
-        if every:
-            spec["every"] = every
-        if stat:
-            spec["stat"] = stat
-        if time_ref is not None:
-            spec["time"] = time_ref
+    trendy = every or recipe == "trend" or time_ref is not None
+    if by_ref is not None and trendy and (t0.time or time_ref):
+        spec.update({"recipe": "trend", "measures": numbers[:3], "by": by_ref})
+        _time_bits(spec, every, stat, time_ref)
         return _tidy(spec)
     if by_ref is not None:
         spec.update({"recipe": "breakdown", "by": by_ref, "measure": numbers[0] if numbers else None})
         if stat:
             spec["stat"] = stat
         return _tidy(spec)
-    t = model.tables[base]
-    if recipe == "trend" or every or time_ref is not None or (numbers and t.time and not stat) or (stat == "count" and t.time and not numbers):
-        if not t.time and time_ref is None:
-            raise PlanError(f"{t.title} has no date or time column, so it cannot be shown over time")
+    if trendy or (numbers and t0.time and not stat):
+        if not t0.time and time_ref is None:
+            raise PlanError(f"{t0.title} has no date or time column, so it cannot be shown over time")
         spec.update({"recipe": "trend", "measures": numbers[:3]})
-        if every:
-            spec["every"] = every
-        if stat:
-            spec["stat"] = stat
-        if time_ref is not None:
-            spec["time"] = time_ref
+        _time_bits(spec, every, stat, time_ref)
         return _tidy(spec)
-    if numbers or stat:
+    if numbers or stat:                               # "how many employees", "average salary"
         spec.update({"recipe": "single", "measure": numbers[0] if numbers else None, "stat": stat or "sum"})
         return _tidy(spec)
-    if filters:
+    if spec.get("filters"):
         spec["recipe"] = "rows"
         return _tidy(spec)
     if tables:
@@ -471,13 +622,117 @@ def _assemble(model: DataModel, items: list[tuple[str, Meaning]], out: Asked) ->
     raise PlanError("Say what you would like to know: a number to add up or average, a group, or a time step")
 
 
+def _time_bits(spec, every, stat, time_ref) -> None:
+    if every:
+        spec["every"] = every
+    if stat:
+        spec["stat"] = stat
+    if time_ref is not None:
+        spec["time"] = time_ref
+
+
+def _refs_in(spec: dict) -> set[tuple]:
+    out = set()
+    for k in ("measure", "by", "x", "y", "time"):
+        if spec.get(k):
+            out.add(tuple(spec[k]))
+    for r in spec.get("measures") or []:
+        out.add(tuple(r))
+    for f in spec.get("filters") or []:
+        out.add(tuple(f["column"]))
+    return out
+
+
+def _col_kind(model: DataModel, ref: list) -> str:
+    t = model.table(ref[0]) if not ref[0].startswith("stack:") else None
+    c = t.column(ref[1]) if t else None
+    return c.kind if c is not None else ""
+
+
+def _is_year(v: Any) -> bool:
+    return isinstance(v, int) and 1900 <= v <= 2100
+
+
+def _time_context(items, i: int) -> bool:
+    """A year is a year when it follows 'in', 'for', 'during' or a month, not when it is a quantity ('above 2000')."""
+    prev = items[i - 1] if i > 0 else None
+    if prev is None:
+        return False
+    return (prev[1].kind == "stop" and prev[0] in ("in", "for", "during", "of")) or prev[1].kind == "month"
+
+
+def _time_filter(items, i: int, op: str | None = None) -> tuple[dict[str, Any], int]:
+    """A date, a month, a year, or 'March 2024', as a filter on the time column (the column is set later)."""
+    words, m = items[i]
+    if m.kind == "month":
+        nxt = items[i + 1][1] if i + 1 < len(items) else None
+        if nxt is not None and nxt.kind == "num" and _is_year(nxt.value):
+            y, mo = int(nxt.value), int(m.value)
+            last = (datetime(y + (mo == 12), mo % 12 + 1, 1) - timedelta(days=1)).day
+            return {"op": "between", "value": f"{y}-{mo:02d}-01", "value2": f"{y}-{mo:02d}-{last:02d} 23:59:59.999999",
+                    "_words": f"{words} {items[i + 1][0]}", "text": f"in {words.title()} {items[i + 1][0]}"}, 2
+        return {"op": "month", "value": int(m.value), "_words": words, "text": f"in {words.title()}"}, 1
+    if m.kind == "num":
+        y = int(m.value)
+        if op in ("gt", "lt", "ge", "le"):
+            edge = f"{y}-12-31 23:59:59.999999" if op in ("gt", "le") else f"{y}-01-01"
+            return {"op": op, "value": edge, "_words": words, "text": f"{_OP_WORD[op]} {y}"}, 1
+        return {"op": "year", "value": y, "_words": words, "text": f"in {y}"}, 1
+    d = str(m.value)
+    if op == "between":
+        if i + 2 < len(items) and items[i + 1][1].kind == "and" and items[i + 2][1].kind == "date":
+            d2 = str(items[i + 2][1].value)
+            if len(d2) <= 10:
+                d2 += " 23:59:59.999999"
+            return {"op": "between", "value": d, "value2": d2, "_words": f"{words} and {items[i + 2][0]}",
+                    "text": f"from {words} to {items[i + 2][0]}"}, 3
+        return {"op": "ge", "value": d, "_words": words, "text": f"from {words}"}, 1
+    if op:
+        if len(d) <= 10 and op in ("gt", "le"):
+            d = d + " 23:59:59.999999"                 # "after 2024-03-01" means after that day
+        return {"op": op, "value": d, "_words": words, "text": f"{_OP_WORD[op]} {words}"}, 1
+    if len(d) <= 10:                                   # "on 2024-03-01": that whole day
+        return {"op": "between", "value": d, "value2": d + " 23:59:59.999999", "_words": words, "text": f"on {words}"}, 1
+    return {"op": "eq", "value": d, "_words": words, "text": f"at {words}"}, 1
+
+
+_OP_WORD = {"gt": "after", "lt": "before", "ge": "from", "le": "up to", "eq": "on", "ne": "not on"}
+
+
+def _check_filter(model: DataModel, f: dict) -> None:
+    ref = f["column"]
+    if ref[0].startswith("stack:"):
+        return
+    t = model.table(ref[0])
+    c = t.column(ref[1]) if t else None
+    if c is None:
+        return
+    if f["op"] in ("gt", "lt", "ge", "le", "between") and c.kind == "text":
+        raise PlanError(f"{c.name} holds text (for example {_example(model, ref)}), so it cannot be compared as a number; "
+                        f"check the file's {c.name} column (a few notes among the numbers are read as blanks)")
+
+
+def _example(model: DataModel, ref: list) -> str:
+    t = model.table(ref[0])
+    c = t.column(ref[1]) if t else None
+    vals = [v for v in (c.values if c is not None and c.values else []) if v is not None]
+    return f"“{vals[0]}”" if vals else "words"
+
+
+def _first_measure_ref(model: DataModel, base: str) -> list | None:
+    from .recipes import _ordered_measures
+    ms = _ordered_measures(model.tables[base])
+    return [base, ms[0].name] if ms else None
+
+
 def _name_column(model: DataModel, table: str, base: str) -> list | None:
     """The column that names a lookup table's rows (a customer's name), else its key."""
     g = [r for r in groupables(model, base) if r[0] == table]
     t = model.tables[table]
     texts = [r for r in g if _role(model, r) in (ID, TEXT)]
-    if texts:
-        return texts[0]
+    named = [r for r in texts if set(_words(r[1])) & {"name", "title", "label", "description", "product", "customer"}]
+    if named or texts:
+        return (named or texts)[0]
     if g:
         return g[0]
     key = next((c for c in t.columns if c.role == ID), None)
@@ -543,6 +798,8 @@ def _filter(items: list[tuple[str, Meaning]], i: int) -> tuple[dict | None, int]
     if val.kind == "value" and op in ("eq", "ne"):
         # the column named wins ("where billing country is France"), when that value can be in it
         return {"column": col.refs[0], "op": op, "value": val.value}, j + 1 - i
+    if val.kind == "col" and op in ("gt", "lt", "ge", "le", "eq", "ne"):
+        return {"column": col.refs[0], "op": op, "column2": val.refs[0]}, j + 1 - i   # stock below reorder level
     return None, 1
 
 

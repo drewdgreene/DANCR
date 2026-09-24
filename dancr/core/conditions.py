@@ -27,7 +27,12 @@ OPS: dict[str, tuple[str, bool, bool, tuple[str, ...]]] = {
     "not_empty": ("is not empty", False, False, (NUM, STR, TIME, BOOL, DUR)),
     "true": ("is true", False, False, (BOOL,)),
     "false": ("is false", False, False, (BOOL,)),
+    "year": ("is in the year", True, False, (TIME,)),
+    "month": ("is in the month", True, False, (TIME,)),
 }
+
+MONTHS = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october",
+          "november", "december"]
 
 
 def ops_for_kind(kind: str) -> list[tuple[str, str]]:
@@ -87,6 +92,11 @@ def rule_mask(schema: dict[str, pl.DataType], rule: dict[str, Any], inputs: dict
         return e
     if op == "not_empty":
         return ~rule_mask(schema, {**rule, "op": "empty"})
+    if op in ("year", "month"):
+        n = _month_number(v) if op == "month" else int(number_from_text(v, what))
+        if op == "month" and not 1 <= n <= 12:
+            raise ValueError(f"{what}: {v!r} is not a month (1–12 or its name)")
+        return (c.dt.year() if op == "year" else c.dt.month()) == n
     if op == "true":
         return c.cast(pl.Boolean) == True  # noqa: E712
     if op == "false":
@@ -197,3 +207,14 @@ def describe(conditions: dict[str, Any]) -> str:
                 s += f" and {r.get('value2', '')}"
         parts.append(s)
     return joiner.join(parts)
+
+
+def _month_number(v: Any) -> int:
+    """3, '3', 'March' or 'mar' as 3."""
+    text = str(v).strip().lower()
+    if text.isdigit():
+        return int(text)
+    for i, name in enumerate(MONTHS, start=1):
+        if name == text or (len(text) >= 3 and name.startswith(text)):
+            return i
+    return 0

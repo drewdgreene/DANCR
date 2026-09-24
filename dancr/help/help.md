@@ -64,6 +64,10 @@ Or **ask in your own words** (Ctrl+J), using the names of your columns, tables a
 | `orders where qty above 2` · `sales between 100 and 200` | just the rows that match |
 | `sales by store for Leeds` | any question, limited to one value of a category |
 | `gaps in probe_A` · `spikes in pressure` · `spread of weight` · `describe customers` | gaps, unusual readings, a histogram, a summary |
+| `sales in March` · `revenue by region in 2024` · `amount after 2024-06-01` · `orders between 2024-03-01 and 2024-03-31` | any question, limited to a month, a year or dates |
+| `biggest orders` · `top 5 employees by salary` | the rows themselves, largest first |
+| `which supplier has the most items` · `max temperature by device` | rows counted per lookup, or per file |
+| `items where stock level below reorder level` | one column compared with another |
 
 How DANCR decides, so there are no surprises:
 
@@ -78,7 +82,16 @@ How DANCR decides, so there are no surprises:
   sales are totalled per month. A number that describes a lookup row (a product's unit
   cost) is averaged.
 - **Words it does not know are reported, never guessed** ("I don't know “colour”. Did you
-  mean …?").
+  mean …?"), and a word it knows but cannot fit into the question is named too — nothing is
+  quietly left out. Everyday words work: *revenue* or *sales* for an Amount column, *pays* for
+  salary, *started* for a start date.
+- **It tidies what spreadsheets get wrong**, and says so in the answer's assumptions (each one
+  click to undo): a TOTAL row at the bottom is left out, empty rows are left out, and North,
+  north and "North " are one region.
+
+When files are opened, text that is really numbers (`1,373.10`, `£1,200`, `31.5%`, `(120)`)
+is read as numbers, codes with leading zeros (`00042`) stay as typed, a Date column and a
+Time column become one date/time as well, and every sheet of a workbook becomes a table.
 
 When an answer is selected, the strip above the result shows its **choices as chips**
 (*Total*, *qty*, *by region*, *per hour*, a filter). Click a chip to change it — the answer's

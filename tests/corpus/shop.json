@@ -45,9 +45,9 @@
   "top: Top 10 customers by total quantity",
   "linked: orders with customers, products",
   "distribution: Spread of quantity",
-  "gaps: Gaps in orders",
   "describe: What is in orders",
-  "describe: What is in customers"
+  "describe: What is in customers",
+  "describe: What is in products"
  ],
  "questions": {
   "total quantity by region": "Total quantity by region",

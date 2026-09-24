@@ -242,7 +242,8 @@ def test_load_sheet_zero_header_dupes_and_dash_values(tmp_path):
     st = Executor(p).run()["src"]
     assert st.status == "done", st.error
     df = pl.read_parquet(st.output)
-    assert df.columns == ["a", "a_2", "when"] and df["a_2"].to_list()[:2] == ["-", "3"]
+    assert df.columns == ["a", "a_2", "when"] and df["a_2"].to_list()[:2] == [None, 3.0]      # "-" is a blank among numbers
+    assert any("Read 'a_2' as numbers" in m for m in st.messages)
     assert any("only differed by spaces" in m for m in st.messages)
     assert df.schema["when"] == pl.Datetime("us") and any("do not match and become blank" in m for m in st.messages)
     xl = tmp_path / "b.xlsx"; pl.DataFrame({"x": [1]}).write_excel(xl)

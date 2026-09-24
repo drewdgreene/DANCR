@@ -18,7 +18,7 @@ Two interfaces, same engine:
   `set_column_label`, `run_pipeline`, `node_status`, `get_schema`, `get_sample`,
   `get_stats`, `render_chart` (returns a PNG image), `export_node`, `open_in_gui`.
 - **CLI**: `dancr --json <command> …` prints JSON. `dancr ask p.json "total sales by region" --file a.csv`,
-  `dancr suggest p.json [--build N]`, `dancr answer p.json [ID] [--set stat=mean] [--choose N M] [--remove --steps]`
+  `dancr suggest p.json [--build N]` (`--file` on a workbook adds every sheet), `dancr answer p.json [ID] [--set stat=mean] [--choose N M] [--remove --steps]`
   and `dancr understand p.json` are the answer commands. `dancr nodes -v` documents
   every step type and setting; `dancr formulas` documents the formula language;
   `dancr template --list` lists starter projects. `KEY=VALUE` settings are
@@ -159,13 +159,13 @@ Here `log.csv` has the columns `time`, `value` and `temperature`.
 
 ## Settings cheat-sheet (full list: `dancr nodes -v` or `list_node_types`)
 
-- `load_file`: `path`, `sheet`, `has_header`, `skip_rows`, `separator` (auto), `parse_dates`, `date_format`, `day_first` (only for dates like 01/05/2024 that read either way; default month/day, and a run reads the whole column to choose), `decimal_comma`, `encoding` utf8|latin1, `infer_rows`, `ignore_errors`, `columns`.
+- `load_file`: `path`, `sheet`, `has_header`, `skip_rows`, `separator` (auto), `parse_dates` (also joins a Date and a time-of-day column into `<Date> <Time>`), `parse_numbers` (reads `1,234.50` `£99` `31.5%` `(120)`; codes with leading zeros stay text), `date_format`, `day_first` (only for dates like 01/05/2024 that read either way; default month/day, and a run reads the whole column to choose), `decimal_comma`, `encoding` utf8|latin1, `infer_rows`, `ignore_errors`, `columns`.
 - `choose_columns`: `mode` keep|drop, `columns`, `rename`. `sort`: `columns`, `descending`. `remove_duplicates`: `columns`, `keep` first|last|none.
 - `fix_missing`: `method` drop|drop_all|value|forward|backward|interpolate|mean|zero, `value`, `columns`. `change_type`: `columns`, `to` number|integer|text|datetime|bool, `date_format`, `epoch_unit`.
 - `take_sample`: `mode` first|last|every|random, `rows`, `every`, `fraction`, `seed`. `stack`: `label_column`, `labels`; connect tables to `tables`.
 - `enter_data`: `columns` = `[{"name","type": text|number|datetime|bool}]`, `rows` = list of lists.
 - `keep_rows`: `mode` keep|remove, `conditions` = `{"match":"all"|"any","rules":[{"column","op","value","value2"}]}`
-  with ops `eq ne gt lt ge le between contains not_contains starts ends in empty not_empty true false`; values may be input names; or `formula`. As in Excel, a blank cell counts as not equal to (and not containing) any value. `in` takes a list, or text separated by `;` or `,` (`"1,000; 2,500"` for numbers with thousands separators).
+  with ops `eq ne gt lt ge le between contains not_contains starts ends in empty not_empty true false year month` (`year`/`month` on date columns: `2024`, `3` or `March`); values may be input names; or `formula`. As in Excel, a blank cell counts as not equal to (and not containing) any value. `in` takes a list, or text separated by `;` or `,` (`"1,000; 2,500"` for numbers with thousands separators).
 - `calculate`: `formulas` = `[{"name": "diff", "expr": "[b] - [a]"}]`, `only_new`. Whole-number `+ - *` work in 64 bits.
 - `fix_values`: `fixes` = `[{"row": 1-based, "column", "value", "was", "note"}]`.
 - `combine`: `method` match|nearest_time|side_by_side; match: `on`, `right_on`, `how`; nearest_time: `left_time`, `right_time`, `direction`, `tolerance` (e.g. `500ms`); `suffix`.

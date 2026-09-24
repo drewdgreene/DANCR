@@ -89,6 +89,10 @@ def scan_file(ctx: Ctx, params: dict[str, Any]) -> tuple[pl.LazyFrame, list[str]
                       infer_schema_length=int(params.get("infer_rows") or 10000), try_parse_dates=False,
                       truncate_ragged_lines=True, ignore_errors=bool(params.get("ignore_errors", False)),
                       decimal_comma=bool(params.get("decimal_comma", False)), null_values=NULLS)
+        keep_text = _leading_zero_columns(path, sep, has_header, skip_rows, "utf8" if encoding == "utf8" else "latin-1")
+        if keep_text:
+            common["schema_overrides"] = {c: pl.Utf8 for c in keep_text}
+            messages.append("Kept as text, so their leading zeros stay: " + ", ".join(keep_text))
         try:
             if encoding == "utf8":
                 lf = pl.scan_csv(path, encoding="utf8", **common)
@@ -155,7 +159,121 @@ def scan_file(ctx: Ctx, params: dict[str, Any]) -> tuple[pl.LazyFrame, list[str]
                 lf = lf.with_columns(casts)
             if forced and not forced_hits:
                 messages.append(f"No column reads as dates with the date format {forced!r}; every column was kept as it is")
+        lf, schema = _date_and_time(lf, messages)
+    if params.get("parse_numbers", True) and ext not in PARQUET_EXT:
+        lf = _numbers_in_text(lf, lf.collect_schema(), messages, bool(params.get("decimal_comma", False)))
+    if ext in EXCEL_EXT and params.get("sheet") in (None, ""):
+        sheets = list_sheets(path)
+        if len(sheets) > 1:
+            messages.append(f"{path.name} has {len(sheets)} sheets ({', '.join(sheets[:6])}{'…' if len(sheets) > 6 else ''}); "
+                            f"this reads the first, {sheets[0]!r}. Choose another under Sheet")
     return lf, messages
+
+
+_LEADING_ZERO = r"^0\d+$"
+
+
+def _leading_zero_columns(path: Path, sep: str, has_header: bool, skip_rows: int, encoding: str) -> list[str]:
+    """Columns of whole numbers written with leading zeros (00123, 0042): codes and ids, which must stay text or
+    the zeros are lost."""
+    try:
+        raw = pl.read_csv(path, separator=sep, has_header=has_header, skip_rows=skip_rows, n_rows=SAMPLE_ROWS,
+                          infer_schema=False, truncate_ragged_lines=True, encoding=encoding, null_values=NULLS)
+    except Exception:  # noqa: BLE001 - the real read reports any problem with the file
+        return []
+    out = []
+    for c in raw.columns:
+        v = raw[c].drop_nulls().str.strip_chars()
+        v = v.filter(v != "")
+        if len(v) and v.str.contains(r"^\d+$").all() and v.str.contains(_LEADING_ZERO).any():
+            out.append(c.strip() or c)
+    return out
+
+
+_NUMBER_TEXT = r"^[(\-+]?\s*[$€£¥]?\s*[+-]?[\d.,' ]*\d[\d.,' ]*\s*%?\s*[)]?$"
+
+
+def _number_expr(col: str, decimal_comma: bool) -> pl.Expr:
+    """Text like '£1,234.50', '(1,234)', '31.5%', '1 234,5' as the number a person means (a percent stays 31.5)."""
+    from ..dtypes import text_to_number_expr
+    s = pl.col(col).cast(pl.Utf8).str.strip_chars()
+    negative = s.str.starts_with("(") & s.str.ends_with(")")
+    body = s.str.replace_all(r"[()$€£¥%\s']", "")
+    if decimal_comma:
+        body = body.str.replace_all(".", "", literal=True).str.replace(",", ".", literal=True)
+    n = text_to_number_expr(body)
+    return pl.when(negative).then(-n).otherwise(n)
+
+
+def _numbers_in_text(lf: pl.LazyFrame, schema, messages: list[str], decimal_comma: bool) -> pl.LazyFrame:
+    """Text columns that are really numbers — with thousands separators, currency signs or percent signs, or a few
+    notes like 'absent' among them — become numbers. At least nine in ten filled values must read as numbers;
+    codes with leading zeros stay text. What could not be read is said."""
+    text_cols = [c for c, dt in schema.items() if dt in (pl.Utf8, pl.String)]
+    if not text_cols:
+        return lf
+    sample = lf.select(text_cols).head(SAMPLE_ROWS).collect(engine="streaming")
+    casts = []
+    for c in text_cols:
+        v = sample[c].drop_nulls().str.strip_chars()
+        v = v.filter(v != "")
+        if len(v) < 3 or v.str.contains(_LEADING_ZERO).any():
+            continue
+        looks = v.str.contains(_NUMBER_TEXT)
+        parsed = pl.DataFrame({c: v}).select(_number_expr(c, decimal_comma))[c]
+        ok = looks & parsed.is_not_null()
+        share = float(ok.mean())
+        if share < 0.9:
+            continue
+        casts.append(_number_expr(c, decimal_comma).alias(c))
+        bad = v.filter(~ok)
+        note = ""
+        if len(bad):
+            examples = ", ".join(repr(x) for x in bad.unique(maintain_order=True).head(3).to_list())
+            note = f"; {len(bad):,} of the first {len(v):,} values are not numbers ({examples}) and are blank"
+        signs = "".join(sorted({ch for ch in "".join(v.head(200).to_list()) if ch in "$€£¥%,()"}))
+        messages.append(f"Read '{c}' as numbers" + (f" (ignoring {signs})" if signs else "") + note)
+    return lf.with_columns(casts) if casts else lf
+
+
+_TIME_OF_DAY = r"^\d{1,2}:\d{2}(:\d{2}(\.\d+)?)?(\s?[AaPp][Mm])?$"
+
+
+def _date_and_time(lf: pl.LazyFrame, messages: list[str]):
+    """A date column and a time-of-day column (Date 03/04/2024, Time 14:05:00) become one date/time column as
+    well, named after both, so readings can be placed in time to the second."""
+    schema = lf.collect_schema()
+    dates = [c for c, dt in schema.items() if dt == pl.Date or (isinstance(dt, pl.Datetime) and _all_midnight(lf, c))]
+    texts = [c for c, dt in schema.items() if dt in (pl.Utf8, pl.String)]
+    if len(dates) != 1 or not texts:
+        return lf, schema
+    sample = lf.select(texts).head(SAMPLE_ROWS).collect(engine="streaming")
+    times = []
+    for c in texts:
+        v = sample[c].drop_nulls().str.strip_chars()
+        v = v.filter(v != "")
+        if len(v) and float(v.str.contains(_TIME_OF_DAY).mean()) >= 0.9:
+            times.append(c)
+    if len(times) != 1:
+        return lf, schema
+    d, t = dates[0], times[0]
+    name = f"{d} {t}"
+    if name in schema:
+        return lf, schema
+    tod = pl.col(t).str.strip_chars().str.to_uppercase()
+    parsed = pl.coalesce([tod.str.to_time(f, strict=False) for f in ("%H:%M:%S%.f", "%H:%M:%S", "%H:%M", "%I:%M:%S %p", "%I:%M %p", "%I:%M%p")])
+    combined = pl.col(d).cast(pl.Date).cast(pl.Datetime("us")) + (parsed.cast(pl.Duration("ns")).cast(pl.Duration("us")))
+    lf = lf.with_columns(combined.alias(name))
+    messages.append(f"Combined '{d}' and '{t}' into '{name}' (a date and a time of day)")
+    return lf, lf.collect_schema()
+
+
+def _all_midnight(lf: pl.LazyFrame, c: str) -> bool:
+    try:
+        s = lf.select(pl.col(c)).head(SAMPLE_ROWS).collect(engine="streaming")[c].drop_nulls()
+        return len(s) > 0 and bool((s.dt.hour() == 0).all() and (s.dt.minute() == 0).all() and (s.dt.second() == 0).all())
+    except Exception:  # noqa: BLE001
+        return False
 
 
 SAMPLE_ROWS = 2000
@@ -229,7 +347,9 @@ registry.register(NodeType(
         Param("separator", "Column separator", "choice", default="auto", advanced=True,
               choices=[("auto", "detect automatically"), (",", "comma"), ("\t", "tab"), (";", "semicolon"), ("|", "pipe"), (" ", "space")]),
         Param("parse_dates", "Detect dates", "bool", default=True, advanced=True,
-              help="Turn text columns that look like dates into real date/times"),
+              help="Turn text columns that look like dates into real date/times (a date and a time-of-day column are also combined)"),
+        Param("parse_numbers", "Detect numbers written as text", "bool", default=True, advanced=True,
+              help="Read '1,234.50', '£99', '31.5%' and '(120)' as numbers"),
         Param("date_format", "Date format", "text", default="", advanced=True,
               help="Force a format like %d/%m/%Y %H:%M:%S when auto-detect gets it wrong"),
         Param("day_first", "Day comes before month (01/05 = 1 May)", "bool", default=False, advanced=True,
@@ -250,3 +370,14 @@ def list_sheets(path: str | Path) -> list[str]:
         return list(fastexcel.read_excel(str(path)).sheet_names)
     except Exception:
         return []
+
+
+def tables_in(path: str | Path) -> list[tuple[str, dict[str, Any]]]:
+    """The tables a file holds, as (title, load settings): one for a CSV or Parquet file, one per sheet of a
+    workbook with several (Orders, Customers …), so dropping a workbook brings in every table in it."""
+    p = Path(path)
+    if p.suffix.lower() in EXCEL_EXT:
+        sheets = list_sheets(p)
+        if len(sheets) > 1:
+            return [(sheet, {"sheet": sheet}) for sheet in sheets]
+    return [(p.stem, {})]

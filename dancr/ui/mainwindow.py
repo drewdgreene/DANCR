@@ -967,15 +967,18 @@ class MainWindow(QMainWindow):
         """Load each file (as one undo step), show the first, and let the tray offer answers about them all."""
         if not files:
             return
+        from ..core.nodes.load import tables_in
         with self.doc.macro("Open data" if len(files) == 1 else f"Open {len(files)} files"):
-            ids = [self._add_load_node(f, None, run=False, show=False) for f in files]
+            ids = [self._add_load_node(f, None, run=False, show=False, sheet=extra.get("sheet"), title=title)
+                   for f in files for title, extra in tables_in(f)]
         if not self.doc.auto_run and not self.doc.running:
             self.run(ids)
         self.show_node(ids[0])
         if len(ids) > 1:
             self.status.showMessage(f"Opened {len(ids)} files. The answers above cover all of them", 8000)
 
-    def _add_load_node(self, path: str, pos: QPointF | None, run: bool = True, show: bool = True) -> str:
+    def _add_load_node(self, path: str, pos: QPointF | None, run: bool = True, show: bool = True,
+                       sheet: str | None = None, title: str | None = None) -> str:
         p = Path(path)
         rel = p
         if self.doc.path:
@@ -986,7 +989,8 @@ class MainWindow(QMainWindow):
         self.scene.clearSelection()
         if pos is None:
             pos = self._source_position()
-        nid = self.add_node("load_file", pos, params={"path": str(rel)}, title=p.stem, connect_from=None, show=show)
+        params = {"path": str(rel), **({"sheet": sheet} if sheet else {})}
+        nid = self.add_node("load_file", pos, params=params, title=title or p.stem, connect_from=None, show=show)
         if run and not self.doc.auto_run and not self.doc.running:
             self.run([nid])
         elif self.doc.running:

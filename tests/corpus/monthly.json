@@ -39,7 +39,6 @@
   "breakdown: Total sales by store",
   "stacked: 2024-01, 2024-02, 2024-03 in one table",
   "distribution: Spread of sales",
-  "gaps: Gaps in sales_2024-01",
   "describe: What is in sales_2024-01"
  ],
  "questions": {
