@@ -256,7 +256,7 @@ def test_mcp_run_and_status_share_cli_field_names(probe_dir, tmp_path, mcp_root)
     assert "elapsed" in data and "cache_dir" in data and isinstance(data["failed"], list)
     assert data["nodes"]["a"]["node_id"] == "a" and "elapsed" in data["nodes"]["a"]
     st = json.loads(node_status(str(pj), "a"))
-    assert st["node_id"] == "a" and st["id"] == "a" and "elapsed" in st
+    assert st["node_id"] == "a" and "elapsed" in st and st["columns"][0].keys() == {"name", "dtype"}
 
 
 def test_cli_run_json_reports_failed_nodes(probe_dir, tmp_path):

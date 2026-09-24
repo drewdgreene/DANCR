@@ -21,8 +21,12 @@ Two interfaces, same engine:
   `dancr template --list` lists starter projects. `KEY=VALUE` settings are
   parsed as JSON when they look like JSON (`sheet=1` is the number 1).
 
-Both interfaces report a node the same way: `node_id`, `title`, `type`,
-`status`, `rows`, `columns`, `error`, `messages`, `report`, `elapsed`. The MCP
+Both interfaces report a step the same way: `node_id`, `title`, `type`,
+`status`, `rows`, `columns` (`[{name, dtype}]`), `error`, `messages`, `report`,
+`elapsed`, `from_cache`. A run reports `{ok, failed, nodes: {id: step}, problems,
+elapsed, cache_dir}` (`dancr --json run`, `run_pipeline`); `dancr --json status p.json
+id` and `node_status` report one step. CLI exit codes: 0 ok, 1 a step failed, 2 a
+usage or input error, 3 an internal error (details in `dancr log`). The MCP
 reading tools (`get_sample`, `get_stats`, `render_chart`, `export_node`) run the
 pipeline automatically when a node is not computed yet; their CLI equivalents
 (`dancr sample/stats/chart/export`) need `--run` to do the same.
@@ -112,12 +116,16 @@ For a quick demo on generated data: `dancr template compare demo.json` or
 dancr new samples.json
 dancr add samples.json load_file --id log --set path=log.csv
 dancr add samples.json enter_data --id samples --params '{"columns":[{"name":"sampled_at","type":"datetime"},{"name":"result","type":"number"}],"rows":[["2024-06-03 09:00",4.1],["2024-06-10 09:00",3.6]]}'
+# one statistic keeps the column names (value, temperature); several add a suffix (value_mean, value_max)
 dancr add samples.json summarise_around --id around --after samples --also-after log \
-      --params '{"window":"24h","side":"before","columns":["value","temperature"]}'
+      --params '{"window":"24h","side":"before","columns":["value","temperature"],"stats":["mean"]}'
 dancr inputs samples.json "area" 12.5 --unit m2 --note "from the drawing"
-dancr add samples.json calculate --id per_area --after around --params '{"formulas":[{"name":"result_per_area","expr":"[result] * [value_mean] / [area]"}]}'
-dancr add samples.json fit_curve --id fit --after per_area --params '{"x":"temperature_mean","y":"result_per_area","kind":"saturating"}'
+dancr add samples.json calculate --id per_area --after around --params '{"formulas":[{"name":"result_per_area","expr":"[result] * [value] / [area]"}]}'
+dancr add samples.json fit_curve --id fit --after per_area --params '{"x":"temperature","y":"result_per_area","kind":"linear"}'
+dancr --json run samples.json
 ```
+
+Here `log.csv` has the columns `time`, `value` and `temperature`.
 
 ## Settings cheat-sheet (full list: `dancr nodes -v` or `list_node_types`)
 
@@ -127,7 +135,7 @@ dancr add samples.json fit_curve --id fit --after per_area --params '{"x":"tempe
 - `take_sample`: `mode` first|last|every|random, `rows`, `every`, `fraction`, `seed`. `stack`: `label_column`, `labels`; connect tables to `tables`.
 - `enter_data`: `columns` = `[{"name","type": text|number|datetime|bool}]`, `rows` = list of lists.
 - `keep_rows`: `mode` keep|remove, `conditions` = `{"match":"all"|"any","rules":[{"column","op","value","value2"}]}`
-  with ops `eq ne gt lt ge le between contains not_contains starts ends in empty not_empty true false`; values may be input names; or `formula`. As in Excel, a blank cell counts as not equal to (and not containing) any value.
+  with ops `eq ne gt lt ge le between contains not_contains starts ends in empty not_empty true false`; values may be input names; or `formula`. As in Excel, a blank cell counts as not equal to (and not containing) any value. `in` takes a list, or text separated by `;` or `,` (`"1,000; 2,500"` for numbers with thousands separators).
 - `calculate`: `formulas` = `[{"name": "diff", "expr": "[b] - [a]"}]`, `only_new`. Whole-number `+ - *` work in 64 bits.
 - `fix_values`: `fixes` = `[{"row": 1-based, "column", "value", "was", "note"}]`.
 - `combine`: `method` match|nearest_time|side_by_side; match: `on`, `right_on`, `how`; nearest_time: `left_time`, `right_time`, `direction`, `tolerance` (e.g. `500ms`); `suffix`.

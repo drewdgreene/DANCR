@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import uuid
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any, Iterator
@@ -515,7 +516,7 @@ class Pipeline:
                         self._keep_version(target)
                 except OSError:
                     pass
-            tmp = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+            tmp = target.with_name(f".{target.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp")   # unique per writer
             try:
                 tmp.write_text(text, encoding="utf-8")
                 os.replace(tmp, target)

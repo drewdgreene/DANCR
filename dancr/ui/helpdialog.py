@@ -5,7 +5,8 @@ from pathlib import Path
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QDialog, QVBoxLayout, QTextBrowser
 
-DOCS = Path(__file__).resolve().parent.parent.parent / "docs"
+HELP = Path(__file__).resolve().parent.parent / "help"          # shipped inside the package (pip, Flatpak, PyInstaller)
+AGENTS = Path(__file__).resolve().parent.parent.parent / "AGENTS.md"   # next to the package in a checkout or a frozen build
 
 
 class HelpDialog(QDialog):
@@ -18,12 +19,15 @@ class HelpDialog(QDialog):
         lay = QVBoxLayout(self)
         tb = QTextBrowser(); tb.setOpenExternalLinks(True)
         lay.addWidget(tb)
-        name = {"formulas": "formulas.md", "agents": "AGENTS.md"}.get(section, "help.md")
-        path = DOCS / name if name != "AGENTS.md" else DOCS.parent / "AGENTS.md"
+        path = AGENTS if section == "agents" else HELP / ("formulas.md" if section == "formulas" else "help.md")
         try:
             tb.setMarkdown(path.read_text(encoding="utf-8"))
         except OSError:
-            tb.setPlainText(f"Help file not found: {path}")
+            if section == "agents":
+                tb.setMarkdown("The guide for AI agents is AGENTS.md in the DANCR source. `dancr --help`, "
+                               "`dancr nodes -v` and `dancr formulas` document every command, step and function.")
+            else:
+                tb.setPlainText(f"Help file not found: {path}")
 
 
 class TourDialog(QDialog):

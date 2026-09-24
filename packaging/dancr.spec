@@ -8,8 +8,7 @@ from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 root = Path(SPECPATH).parent
 version = re.search(r'__version__ = "([^"]+)"', (root / "dancr" / "__init__.py").read_text()).group(1)
-datas = [(str(root / "dancr" / "assets"), "dancr/assets"),
-         (str(root / "docs" / "help.md"), "docs"), (str(root / "docs" / "formulas.md"), "docs"),
+datas = [(str(root / "dancr" / "assets"), "dancr/assets"), (str(root / "dancr" / "help"), "dancr/help"),
          (str(root / "AGENTS.md"), ".")]
 datas += collect_data_files("pyqtgraph", includes=["**/*.ui", "**/*.png", "**/*.svg"])
 # Only the MCP server stack (mcp.cli needs the optional typer extra and must not be pulled in)

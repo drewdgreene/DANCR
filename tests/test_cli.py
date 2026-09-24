@@ -20,7 +20,7 @@ def test_cli_flow(probe_dir, tmp_path):
     code, out, _ = run("--json", "run", str(pj))
     assert code == 0, out
     data = json.loads(out)
-    assert data["ok"] and {n["node_id"] for n in data["nodes"]} == {"a", "tb"}
+    assert data["ok"] and set(data["nodes"]) == {"a", "tb"} and data["nodes"]["tb"]["node_id"] == "tb"
     code, out, _ = run("--json", "schema", str(pj), "tb")
     assert "pressure_psi" in out
     code, out, _ = run("--json", "sample", str(pj), "tb", "--rows", "2")
@@ -111,10 +111,21 @@ def test_mcp_steps_cannot_write_outside_the_project_folder(probe_dir, tmp_path, 
     pj = str(proj / "p.json")
     create_pipeline(pj)
     add_node(pj, "load_file", {"path": str(probe_dir / "probe_A.csv")}, node_id="a")
-    for i, bad in enumerate(("../escaped.csv", str(tmp_path / "escaped.csv"))):
-        add_node(pj, "export", {"path": bad}, node_id=f"ex{i}", after="a")
-    add_node(pj, "report", {"title": "R", "path": str(tmp_path / "r.html"), "pdf": False}, node_id="rep", after="a", port="items")
-    add_node(pj, "workbook", {"path": "../book.xlsx"}, node_id="wb", after="a")
+    # refused when the step is added or changed ...
+    for bad in ("../escaped.csv", str(tmp_path / "escaped.csv")):
+        with pytest.raises(ToolError, match="inside the project folder"):
+            add_node(pj, "export", {"path": bad}, after="a")
+    add_node(pj, "export", {"path": "fine.csv"}, node_id="ex0", after="a")
+    with pytest.raises(ToolError, match="inside the project folder"):
+        set_params(pj, "ex0", {"path": "../escaped.csv"})
+    # ... and when it runs, for a project file edited by other means
+    from dancr.core import Pipeline
+    p = Pipeline.load(pj)
+    p.set_params("ex0", path="../escaped.csv")
+    p.add_node("export", params={"path": str(tmp_path / "escaped.csv")}, id="ex1"); p.connect("a", "ex1")
+    p.add_node("report", params={"title": "R", "path": str(tmp_path / "r.html"), "pdf": False}, id="rep"); p.connect("a", "rep", "items")
+    p.add_node("workbook", params={"path": "../book.xlsx"}, id="wb"); p.connect("a", "wb")
+    p.save()
     out = json.loads(run_pipeline(pj))
     assert set(out["failed"]) == {"ex0", "ex1", "rep", "wb"}
     assert all("inside the project folder" in out["nodes"][n]["error"] for n in out["failed"])
@@ -171,5 +182,5 @@ def test_mcp_render_chart_overrides_and_validates(probe_dir, tmp_path, mcp_root)
     assert (tmp_path / "h.png").exists()
     with pytest.raises(ToolError, match="nosuch"):
         render_chart(pj, "a", x="time", y=["nosuch"])
-    with pytest.raises(ToolError, match="No node"):
+    with pytest.raises(ToolError, match="No step called"):
         get_schema(pj, "zzz")

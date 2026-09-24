@@ -38,7 +38,7 @@ version = { attr = "dancr.__version__" }
 include = ["dancr*"]
 
 [tool.setuptools.package-data]
-dancr = ["assets/*"]
+dancr = ["assets/*", "help/*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
