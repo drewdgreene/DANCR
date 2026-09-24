@@ -99,8 +99,8 @@ def rule_mask(schema: dict[str, pl.DataType], rule: dict[str, Any], inputs: dict
             needle = needle.lower()
         if op == "contains":
             return s.str.contains(needle, literal=True)
-        if op == "not_contains":
-            return ~s.str.contains(needle, literal=True)
+        if op == "not_contains":                    # a blank cell does not contain it (as in Excel)
+            return (~s.str.contains(needle, literal=True)).fill_null(True)
         if op == "starts":
             return s.str.starts_with(needle)
         return s.str.ends_with(needle)
@@ -126,7 +126,7 @@ def rule_mask(schema: dict[str, pl.DataType], rule: dict[str, Any], inputs: dict
         if not rule.get("case_sensitive", False):
             s = s.str.to_lowercase()
             needle = pl.lit(str(v if v is not None else "").lower())
-        return (s == needle) if op == "eq" else (s != needle)
+        return (s == needle) if op == "eq" else s.ne_missing(needle)     # a blank cell is not equal to it
     if v in (None, ""):
         raise ValueError(f"{what}: enter a value")
     lit = _literal(v, kind, what, dtype)
@@ -135,7 +135,7 @@ def rule_mask(schema: dict[str, pl.DataType], rule: dict[str, Any], inputs: dict
     if op == "eq":
         return c == lit
     if op == "ne":
-        return c != lit
+        return c.ne_missing(lit)
     if op == "gt":
         return c > lit
     if op == "lt":

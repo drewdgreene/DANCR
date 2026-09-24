@@ -77,6 +77,8 @@ def _combine(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, 
         raise ValueError("Pick the same number of key columns on both sides")
     on = [require_column(ls, c, "key column") for c in on]
     right_on = [require_column(rs, c, "key column of the second table") for c in right_on]
+    how = {"inner": "inner", "left": "left", "outer": "full", "right": "right"}.get(params.get("how") or "left", "left")
+    restore: dict[str, pl.DataType] = {}
     for a, b in zip(on, right_on):
         if ls[a] != rs[b]:
             ka, kb = _kind_of_dtype(ls[a]), _kind_of_dtype(rs[b])
@@ -85,14 +87,26 @@ def _combine(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, 
             elif ka != kb:
                 raise ValueError(f"Cannot match {a!r} ({ka}) with {b!r} ({kb}). Use 'Change type' so both are the same kind.")
             else:
-                # same kind, different storage (Int32 vs Float64, text vs category): compare in a common type, losing nothing
-                common = pl.Float64 if ka == NUM else (pl.Utf8 if ka == STR else ls[a])
+                # same kind, different storage (Int32 vs UInt64, text vs category): compare in a type that holds both
+                common = _common_key_type(ls[a], rs[b]) if ka == NUM else (pl.Utf8 if ka == STR else ls[a])
                 left = left.with_columns(pl.col(a).cast(common).alias(a))
                 right = right.with_columns(pl.col(b).cast(common).alias(b))
-    how = {"inner": "inner", "left": "left", "outer": "full", "right": "right"}.get(params.get("how") or "left", "left")
+                if how in ("left", "inner"):
+                    restore[a] = ls[a]           # every key comes from the first table, so its own type holds them
     out = left.join(right, left_on=on, right_on=right_on, how=how, suffix=suffix, coalesce=True,
                     maintain_order="left" if how in ("left", "inner") else ("right" if how == "right" else "none"))
+    if restore:
+        out = out.with_columns([pl.col(c).cast(dt) for c, dt in restore.items()])
     return NodeResult(out, messages=msgs)
+
+
+def _common_key_type(a: pl.DataType, b: pl.DataType) -> pl.DataType:
+    """A number type that holds every value of both key columns exactly, where one exists."""
+    if a.is_integer() and b.is_integer():
+        if a.is_signed_integer() == b.is_signed_integer():
+            return pl.Int64 if a.is_signed_integer() else pl.UInt64
+        return pl.Int128                     # signed with unsigned: Int128 holds all of Int64 and UInt64
+    return pl.Float64                        # a decimal key on either side: compare as decimals
 
 
 def _summary(p: dict[str, Any]) -> str:

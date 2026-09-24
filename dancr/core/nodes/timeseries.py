@@ -96,15 +96,17 @@ def _rolling(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, 
     t = _time_col(schema, params)
     every, secs = parse_duration(window)
     lf = _with_time(lf, schema, t).sort(t)
-    by = t
-    if centered:
-        # a window ending half a span later is centred on each row
-        by = temp_name("centre", schema)
-        lf = lf.with_columns((pl.col(t) + pl.duration(microseconds=int(secs * 1e6 / 2))).alias(by))
-    for c in cols:
-        exprs.append(getattr(pl.col(c), f"rolling_{stat}_by")(by=by, window_size=every, closed="right").alias(name(c)))
-    out = lf.with_columns(exprs)
-    return NodeResult(out.drop(by) if by != t else out)
+    if not centered:            # the span that ends at each row: (t - window, t]
+        for c in cols:
+            exprs.append(getattr(pl.col(c), f"rolling_{stat}_by")(by=t, window_size=every, closed="right").alias(name(c)))
+        return NodeResult(lf.with_columns(exprs))
+    # centred on each row: [t - window/2, t + window/2]. One output row per input row, in the same order.
+    half = f"-{int(round(secs * 1e6 / 2))}us"
+    win = lf.rolling(index_column=t, period=every, offset=half, closed="both").agg(
+        [getattr(pl.col(c), stat)().alias(name(c)) for c in cols])
+    base = lf.drop(cols) if replace else lf
+    out = pl.concat([base, win.drop(t)], how="horizontal", strict=True)
+    return NodeResult(out.select(list(schema)) if replace else out)
 
 
 registry.register(NodeType(

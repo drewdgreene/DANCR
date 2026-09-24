@@ -329,7 +329,7 @@ class Compiler:
         if n.op == "-":
             if v.kind in (STR, TIME, BOOL):
                 raise FormulaError(f"Cannot negate a {v.kind} value")
-            return Typed(-v.expr, NUM)
+            return Typed(-_wide(v), NUM)
         if n.op == "not":
             return Typed(~self.as_bool(v), BOOL)
         raise FormulaError(f"Unknown operator {n.op}")
@@ -383,16 +383,16 @@ class Compiler:
                 return Typed(pl.concat_str([a.expr, b.expr]), STR)
             if a.kind == TIME and b.kind == DUR or a.kind == DUR and b.kind == TIME:
                 return Typed(a.expr + b.expr, TIME)
-            return Typed(a.expr + b.expr, self._numkind(a, b))
+            return Typed(_wide(a) + _wide(b), self._numkind(a, b))
         if op == "-":
             if a.kind == TIME and b.kind == TIME:
                 a, b = self.coerce_time_literal(a, b)
                 return Typed(a.expr - b.expr, DUR)
             if a.kind == TIME and b.kind == DUR:
                 return Typed(a.expr - b.expr, TIME)
-            return Typed(a.expr - b.expr, self._numkind(a, b))
+            return Typed(_wide(a) - _wide(b), self._numkind(a, b))
         if op == "*":
-            return Typed(a.expr * b.expr, self._numkind(a, b))
+            return Typed(_wide(a) * _wide(b), self._numkind(a, b))
         if op == "/":
             return Typed(a.expr.cast(pl.Float64) / b.expr.cast(pl.Float64), NUM)
         if op == "%":
@@ -428,6 +428,22 @@ class Compiler:
 
 
 # ----------------------------------------------------------------- functions
+def _wide(t: Typed) -> pl.Expr:
+    """A number for + - * and negation, in at least 64 bits. Small and unsigned integers (Parquet files,
+    MONTH(), LEN()) would otherwise wrap around: UInt32 1 - 3 is 4294967294, Int8 100 + 100 is -56.
+    UInt64 becomes a decimal, since its large values do not fit Int64. Floats and literals are unchanged."""
+    if t.kind != NUM or t.literal is not None:
+        return t.expr
+    dt = t.dtype
+    if dt is None:                                  # a computed value: the Int64 supertype widens only what needs it
+        return t.expr + pl.lit(0, pl.Int64)
+    if dt == pl.UInt64:
+        return t.expr.cast(pl.Float64)
+    if dt.is_integer() and dt != pl.Int64:
+        return t.expr.cast(pl.Int64)
+    return t.expr
+
+
 def _num(t: Typed) -> pl.Expr:
     if t.kind in (STR, TIME):
         raise FormulaError(f"Expected a number but got a {t.kind} value")

@@ -233,6 +233,7 @@ def _change_type(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[s
     cols = [require_column(schema, c, "column") for c in cols]
     to = params.get("to") or "number"
     exprs = []
+    msgs: list[str] = []
     for c in cols:
         e = pl.col(c)
         dt = schema[c]
@@ -247,10 +248,14 @@ def _change_type(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[s
             fmt = (params.get("date_format") or "").strip() or None
             if dt in (pl.Utf8, pl.String):
                 if fmt is None:
-                    from ..timeutil import detect_datetime_format
-                    fmt = detect_datetime_format(lf.select(c).head(2000).collect(engine="streaming")[c])
+                    from ..timeutil import detect_datetime_format, settle_day_month
+                    sample = lf.select(c).head(2000).collect(engine="streaming")[c]
+                    fmt = detect_datetime_format(sample)
                     if fmt is None:
                         raise ValueError(f"Could not work out the date format of {c}. Set it under 'Date format' (e.g. %d/%m/%Y)")
+                    fmt, settled = settle_day_month(lf, c, fmt, sample, whole=not ctx.preview)
+                    if settled:
+                        msgs.append(settled.replace("tick 'Day comes before month' (or set 'Date format')", "set 'Date format' (e.g. %d/%m/%Y)"))
                 e = e.str.strip_chars().str.to_datetime(fmt, strict=False)
             elif dt.is_numeric():
                 unit = params.get("epoch_unit") or "s"
@@ -265,7 +270,7 @@ def _change_type(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[s
         else:
             raise ValueError(f"Unknown type {to!r}")
         exprs.append(e.alias(c))
-    return NodeResult(lf.with_columns(exprs))
+    return NodeResult(lf.with_columns(exprs), messages=msgs)
 
 
 registry.register(NodeType(

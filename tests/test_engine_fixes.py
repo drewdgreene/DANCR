@@ -211,8 +211,8 @@ def test_conditions_cover_every_op_and_duration_columns():
     assert m({"column": "d", "op": "gt", "value": "1m"}) == 1 and m({"column": "d", "op": "between", "value": "10s", "value2": "3m"}) == 2
     assert [k for k, _ in ops_for_kind("duration")][:3] == ["eq", "ne", "gt"]
     assert m({"column": "s", "op": "contains", "value": "alp"}) == 1 and m({"column": "s", "op": "contains", "value": "alp", "case_sensitive": True}) == 0
-    assert m({"column": "s", "op": "not_contains", "value": "e"}) == 1 and m({"column": "s", "op": "starts", "value": "b"}) == 1
-    assert m({"column": "s", "op": "ends", "value": "TA"}) == 1 and m({"column": "s", "op": "ne", "value": "beta"}) == 1   # blanks are neither equal nor unequal
+    assert m({"column": "s", "op": "not_contains", "value": "e"}) == 2 and m({"column": "s", "op": "starts", "value": "b"}) == 1
+    assert m({"column": "s", "op": "ends", "value": "TA"}) == 1 and m({"column": "s", "op": "ne", "value": "beta"}) == 2   # a blank is not equal to "beta" (as in Excel)
     assert m({"column": "n", "op": "le", "value": "1"}) == 1 and m({"column": "n", "op": "in", "value": [1, 2]}) == 2 and m({"column": "n", "op": "in", "value": "1,000; 2"}) == 1
     assert m({"column": "b", "op": "true"}) == 1 and m({"column": "b", "op": "false"}) == 1 and m({"column": "b", "op": "eq", "value": "yes"}) == 1
     assert m({"column": "d", "op": "empty"}) == 1 and m({"column": "n", "op": "not_empty"}) == 2
@@ -265,7 +265,7 @@ def test_combine_drops_blank_times_and_matches_int_to_float_keys(tmp_path):
 def test_rolling_time_window_centred_and_named_consistently(dense):
     r = dense.add_node("rolling", params={"columns": ["v"], "window": "2m", "stat": "mean", "centered": True}); dense.connect("log", r.id)
     out = run_one(dense, r.id)
-    assert out["v_mean_2m"].head(3).to_list() == [0.0, 0.5, 1.5]
+    assert out["v_mean_2m"].head(3).to_list() == [0.5, 1.0, 2.0]      # [t-1m, t+1m], like a centred 3-row window
     dense.set_params(r.id, window="3")
     assert run_one(dense, r.id)["v_mean_3"].head(3).to_list() == [0.5, 1.0, 2.0]
     dense.set_params(r.id, window="2m", centered=False)

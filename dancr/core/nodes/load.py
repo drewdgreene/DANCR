@@ -8,7 +8,7 @@ import polars as pl
 
 from ..params import Param
 from ..registry import NodeType, Ctx, NodeResult, registry
-from ..timeutil import detect_datetime_format
+from ..timeutil import detect_datetime_format, settle_day_month
 
 CSV_EXT = {".csv", ".tsv", ".txt", ".dat", ".tab", ".log"}
 EXCEL_EXT = {".xlsx", ".xlsm", ".xls", ".xlsb", ".ods"}
@@ -128,14 +128,20 @@ def scan_file(ctx: Ctx, params: dict[str, Any]) -> tuple[pl.LazyFrame, list[str]
         if text_cols:
             sample = lf.select(text_cols).head(SAMPLE_ROWS).collect(engine="streaming")
             casts = []
+            day_first = bool(params.get("day_first", False))
             for c in text_cols:
-                fmt = forced or detect_datetime_format(sample[c])
+                fmt = forced or detect_datetime_format(sample[c], day_first=day_first)
+                settled = None
+                if fmt and not forced:
+                    fmt, settled = settle_day_month(lf, c, fmt, sample[c], whole=not ctx.preview)
                 if fmt:
                     e = pl.col(c).str.strip_chars().str.to_datetime(fmt, strict=False)
                     if "%z" in fmt:
                         e = e.dt.convert_time_zone("UTC")
                     casts.append(e.alias(c))
                     messages.append(f"Read '{c}' as date/time using {fmt}" + _unparsed_note(sample[c], fmt))
+                    if settled:
+                        messages.append(settled)
             if casts:
                 lf = lf.with_columns(casts)
     return lf, messages
@@ -202,6 +208,8 @@ registry.register(NodeType(
               help="Turn text columns that look like dates into real date/times"),
         Param("date_format", "Date format", "text", default="", advanced=True,
               help="Force a format like %d/%m/%Y %H:%M:%S when auto-detect gets it wrong"),
+        Param("day_first", "Day comes before month (01/05 = 1 May)", "bool", default=False, advanced=True,
+              help="Only matters when every date could be read either way"),
         Param("decimal_comma", "Numbers use decimal comma", "bool", default=False, advanced=True),
         Param("encoding", "Text encoding", "choice", default="utf8", advanced=True,
               choices=[("utf8", "UTF-8 (normal)"), ("latin1", "Latin-1 / Windows")]),

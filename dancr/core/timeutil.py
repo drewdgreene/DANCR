@@ -75,12 +75,28 @@ DATE_FORMATS = [
 ]
 
 
-def detect_datetime_format(sample: pl.Series, min_fraction: float = 0.9) -> str | None:
+# Formats that read the same text two ways (01/05/2024: 1 May or 5 January). Month first is the default.
+_DAY_FIRST = {f: f.replace("%d/%m", "%m/%d") for f in DATE_FORMATS if f.startswith("%d/%m")}
+_MONTH_FIRST = {v: k for k, v in _DAY_FIRST.items()}
+
+
+def swap_day_month(fmt: str) -> str | None:
+    """The other reading of a day/month format, or None if the format is not one of a pair."""
+    return _DAY_FIRST.get(fmt) or _MONTH_FIRST.get(fmt)
+
+
+def day_month_label(fmt: str) -> str:
+    return "day/month" if fmt in _DAY_FIRST else "month/day"
+
+
+def detect_datetime_format(sample: pl.Series, min_fraction: float = 0.9, day_first: bool = False) -> str | None:
     """Try known formats on a string sample; return the best one or None.
 
     Guards against false positives: separator-less formats (%Y%m%d) need a sane
     year range and more than one distinct day; version-like strings such as
     1.2.2024 are not dates unless every part is in range for every row.
+    When day/month and month/day read the sample equally well, ``day_first`` decides
+    (see :func:`day_month_ambiguous` to tell the person).
     """
     s = sample.drop_nulls().cast(pl.Utf8).str.strip_chars()
     s = s.filter(s != "")
@@ -89,25 +105,75 @@ def detect_datetime_format(sample: pl.Series, min_fraction: float = 0.9) -> str 
     if s.head(50).str.contains(r"\d").sum() < min(len(s), 50) * 0.9:
         return None
     best: tuple[float, str] | None = None
+    fracs: dict[str, float] = {}
     for fmt in DATE_FORMATS:
-        try:
-            parsed = s.str.to_datetime(fmt, strict=False)
-        except Exception:
+        frac = _fraction_parsed(s, fmt, min_fraction)
+        if frac is None:
             continue
-        frac = 1.0 - parsed.null_count() / len(s)
-        if frac < min_fraction:
-            continue
-        ok = parsed.drop_nulls()
-        years = ok.dt.year()
-        if len(ok) and (years.min() < 1900 or years.max() > 2100):
-            continue
-        if fmt.startswith("%Y%m%d") and len(ok) > 3 and ok.dt.day().n_unique() < 2 and ok.dt.month().n_unique() < 2:
-            continue
+        fracs[fmt] = frac
         if best is None or frac > best[0]:
             best = (frac, fmt)
-            if frac == 1.0:
-                break
-    return best[1] if best else None
+        if frac == 1.0 and fmt not in _DAY_FIRST:      # a day-first match waits for its month-first twin
+            break
+    if best is None:
+        return None
+    fmt = best[1]
+    twin = swap_day_month(fmt)
+    if twin is not None and fracs.get(twin) == best[0]:
+        return fmt if day_first == (fmt in _DAY_FIRST) else twin
+    return fmt
+
+
+def _fraction_parsed(s: pl.Series, fmt: str, min_fraction: float) -> float | None:
+    try:
+        parsed = s.str.to_datetime(fmt, strict=False)
+    except Exception:
+        return None
+    frac = 1.0 - parsed.null_count() / len(s)
+    if frac < min_fraction:
+        return None
+    ok = parsed.drop_nulls()
+    years = ok.dt.year()
+    if len(ok) and (years.min() < 1900 or years.max() > 2100):
+        return None
+    if fmt.startswith("%Y%m%d") and len(ok) > 3 and ok.dt.day().n_unique() < 2 and ok.dt.month().n_unique() < 2:
+        return None
+    return frac
+
+
+def day_month_ambiguous(sample: pl.Series, fmt: str) -> bool:
+    """True when the other day/month reading parses the sample just as well as ``fmt``."""
+    twin = swap_day_month(fmt)
+    if twin is None:
+        return False
+    s = sample.drop_nulls().cast(pl.Utf8).str.strip_chars()
+    s = s.filter(s != "")
+    if len(s) == 0:
+        return False
+    return s.str.to_datetime(fmt, strict=False).null_count() == s.str.to_datetime(twin, strict=False).null_count()
+
+
+def settle_day_month(lf: pl.LazyFrame, column: str, fmt: str, sample: pl.Series, whole: bool) -> tuple[str, str | None]:
+    """Resolve a day/month format the sample cannot decide. With ``whole`` (a real run, not a preview) the
+    whole column is read once and the reading that fits more of it wins, so a file whose first rows are all
+    early in the month is still read the right way. Returns (format, message for the person or None)."""
+    if not day_month_ambiguous(sample, fmt):
+        return fmt, None
+    twin = swap_day_month(fmt)
+    assert twin is not None
+    if whole:
+        raw = pl.col(column).cast(pl.Utf8).str.strip_chars()
+        a, b = lf.select(raw.str.to_datetime(fmt, strict=False).is_not_null().sum().alias("a"),
+                         raw.str.to_datetime(twin, strict=False).is_not_null().sum().alias("b")
+                         ).collect(engine="streaming").row(0)
+        if b > a:
+            return twin, (f"'{column}': the first rows could be read as day/month or month/day; the whole file fits "
+                          f"{day_month_label(twin)}, so that is used")
+        if a > b:
+            return fmt, (f"'{column}': the first rows could be read as day/month or month/day; the whole file fits "
+                         f"{day_month_label(fmt)}, so that is used")
+    return fmt, (f"'{column}': every date could be read as day/month or month/day (like 01/05/2024); read as "
+                 f"{day_month_label(fmt)}. If that is wrong, tick 'Day comes before month' (or set 'Date format')")
 
 
 def format_seconds(secs: float) -> str:
