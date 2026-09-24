@@ -12,7 +12,9 @@ Formulas are used by **Calculate** (new columns) and by **Keep rows → Or a for
 - **Numbers and text**: `2.5`, `"warm"`, `'warm'`.
 - **Arithmetic**: `+ - * / ^ %` (`^` is power, `%` is remainder). As in
   Excel, a minus sign on a value binds tighter than `^`, so `-2^2` is 4;
-  write `-(2^2)` for −4. `2^3^2` is `2^(3^2)`.
+  write `-(2^2)` for −4. `2^3^2` is `2^(3^2)`. Whole numbers are added,
+  subtracted and multiplied in 64 bits, so small or unsigned number columns
+  from Parquet files never wrap around; `/` always gives a decimal.
 - **Comparison**: `= != < > <= >=` (also `==`, `<>`).
 - **Logic**: `and`, `or`, `not`, or `AND(a, b)`, `OR(a, b)`, `NOT(a)`.
 - **Text joining**: `&` (e.g. `name & " (" & unit & ")"`).

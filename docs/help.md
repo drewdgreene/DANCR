@@ -95,7 +95,9 @@ columns and right-click to chart them together or fit a curve between them.
 
 Other things in the table: **Ctrl+F** finds text or jumps to a time such as
 `2024-06-05 14:00`. Hover a header to see blanks, min, max and average. The
-copy button (or Ctrl+C) puts the selection on the clipboard ready for Excel.
+copy button (or Ctrl+C) puts the selection on the clipboard ready for Excel, read
+from the table itself: every digit is kept, blank cells stay blank, and up to
+200,000 rows are copied.
 
 ## Steps
 
@@ -179,11 +181,20 @@ marks the steps as needing a run.
 ## Saving, versions and undo
 
 Projects are small `.json` files; data files stay where they are and are
-referenced relative to the project. Once saved, DANCR saves again every minute
-and keeps the previous 50 versions under *File → Earlier versions…*. A project
-you have not saved yet is kept aside every minute too, and offered back the
-next time DANCR starts. Ctrl+Z
-undoes anything, including deleting a step (a toast offers Undo too).
+referenced relative to the project. *Save as* into another folder keeps every
+file setting pointing at the same file. Once saved, DANCR saves again every
+minute and keeps earlier versions under *File → Earlier versions…*: the last
+50 you saved, and apart from them the last 30 autosaves, so autosaving never
+pushes out a version you saved. Changes that are not in the file yet (a project
+you have not saved, or edits while autosave is paused) are kept aside every
+minute and offered back the next time DANCR starts if it closed unexpectedly.
+Ctrl+Z undoes anything, including deleting a step (a toast offers Undo too),
+and puts connections back in their original order.
+
+Steps that save a file (*Save to file*, *Excel workbook*, *Report*) write it
+again when it was deleted or changed, or when the titles, column names or units
+they show change. *Run → Run everything again (ignore cached results)* recomputes every step and
+replaces the stored results.
 
 ## Keyboard shortcuts
 

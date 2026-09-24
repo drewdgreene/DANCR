@@ -9,7 +9,8 @@ person to explore in the window.
 Two interfaces, same engine:
 
 - **MCP server** (preferred): `dancr mcp` (stdio). Register it once in your MCP
-  client (for example: `claude mcp add dancr -- dancr mcp`). Tools: `list_node_types`,
+  client (for example: `claude mcp add dancr -- dancr mcp`); `--root DIR` sets the
+  folder pipelines may be created in (default: the folder it starts in). Tools: `list_node_types`,
   `formula_reference`, `inspect_file`, `create_pipeline`, `build_template`,
   `describe_pipeline`, `add_node`, `set_params`, `connect_nodes`,
   `disconnect_nodes`, `remove_node`, `rename_node`, `set_input`, `remove_input`,
@@ -31,18 +32,22 @@ From a packaged install (the `dist/DANCR` folder, `DANCR.app`), use the
 every command above, including `dancr-cli mcp`. The `DANCR` binary is the
 window and has no console, so it cannot serve JSON or the MCP protocol.
 
-MCP tools only write inside the folder that holds the pipeline file:
-`export_node(out_path)` and `render_chart(out_png)` refuse other locations
-(relative paths are taken from that folder). Put the pipeline next to the data
-and results you want. Reading (`inspect_file`, `load_file` paths) is not
-confined.
+Where MCP may write: pipeline files (`create_pipeline`, `build_template`, and
+every tool that edits one) must be `.json` files inside the server's root
+folder. Every other file must be inside the folder that holds the pipeline
+file: `export_node(out_path)`, `render_chart(out_png)`, and the `path` of
+`export`, `workbook` and `report` steps when `run_pipeline` (or a reading tool)
+runs them; a step pointing elsewhere fails with a message. Relative paths are
+taken from that folder. Put the pipeline next to the data and results you
+want. Reading (`inspect_file`, `load_file` paths) is not confined.
 
 ## Mental model
 
 - A project is a JSON file (`"dancr": 2`) with `nodes` (id, type, title,
   params), `edges` (source → target, input port), `inputs` (named values with
   units) and `columns` (display labels and units). Paths in params are relative
-  to the project file's folder. Node ids are yours to choose (`--id` /
+  to the project file's folder (templates store them that way too); saving the
+  project into another folder rewrites them so they point at the same files. Node ids are yours to choose (`--id` /
   `node_id`), else `type_N`.
 - Every step type is a **transform of Polars LazyFrames**. Sources have no
   inputs; most steps have one input `in`; `combine` has `left` and `right`;
@@ -51,8 +56,12 @@ confined.
 - **Running** materialises each step's output to Parquet under
   `<project dir>/.dancr/cache/<name>/<node>/` (a project with no file yet uses
   the user cache folder instead, so always save the project file first). Re-runs skip steps whose
-  settings, inputs and upstream data did not change. Results of 100M-row steps
-  stay on disk; `get_sample`, `get_stats` and `render_chart` read them lazily.
+  settings, inputs and upstream data did not change; `export`, `workbook` and
+  `report` steps also run again when their file was deleted or changed, or when
+  the titles or column labels they show changed. `force` (`run --force`,
+  `run_pipeline(force=true)`) recomputes everything and replaces the stored
+  results. Results of 100M-row steps stay on disk; `get_sample`, `get_stats` and
+  `render_chart` read them lazily.
 - **Reports**: steps attach findings (fit equation, R², RMSE; gap statistics;
   PASS/FAIL counts) to their status. Read them with `node_status` /
   `dancr status`.
@@ -68,6 +77,9 @@ confined.
   list them under `answers`.
 
 ## Recipe: two logs of the same quantity, one noisier than the other
+
+Both logs here have the columns `time` and `value` (after `combine`, B's
+column is `value_2`); use the names in your files (MCP `inspect_file`, or `dancr --json schema compare.json a` after the first step).
 
 ```bash
 dancr new compare.json
@@ -97,6 +109,7 @@ For a quick demo on generated data: `dancr template compare demo.json` or
 ## Recipe: occasional samples against a continuous log
 
 ```bash
+dancr new samples.json
 dancr add samples.json load_file --id log --set path=log.csv
 dancr add samples.json enter_data --id samples --params '{"columns":[{"name":"sampled_at","type":"datetime"},{"name":"result","type":"number"}],"rows":[["2024-06-03 09:00",4.1],["2024-06-10 09:00",3.6]]}'
 dancr add samples.json summarise_around --id around --after samples --also-after log \
@@ -108,18 +121,18 @@ dancr add samples.json fit_curve --id fit --after per_area --params '{"x":"tempe
 
 ## Settings cheat-sheet (full list: `dancr nodes -v` or `list_node_types`)
 
-- `load_file`: `path`, `sheet`, `has_header`, `skip_rows`, `separator` (auto), `parse_dates`, `date_format`, `decimal_comma`, `encoding` utf8|latin1, `infer_rows`, `ignore_errors`, `columns`.
+- `load_file`: `path`, `sheet`, `has_header`, `skip_rows`, `separator` (auto), `parse_dates`, `date_format`, `day_first` (only for dates like 01/05/2024 that read either way; default month/day, and a run reads the whole column to choose), `decimal_comma`, `encoding` utf8|latin1, `infer_rows`, `ignore_errors`, `columns`.
 - `choose_columns`: `mode` keep|drop, `columns`, `rename`. `sort`: `columns`, `descending`. `remove_duplicates`: `columns`, `keep` first|last|none.
 - `fix_missing`: `method` drop|drop_all|value|forward|backward|interpolate|mean|zero, `value`, `columns`. `change_type`: `columns`, `to` number|integer|text|datetime|bool, `date_format`, `epoch_unit`.
 - `take_sample`: `mode` first|last|every|random, `rows`, `every`, `fraction`, `seed`. `stack`: `label_column`, `labels`; connect tables to `tables`.
 - `enter_data`: `columns` = `[{"name","type": text|number|datetime|bool}]`, `rows` = list of lists.
 - `keep_rows`: `mode` keep|remove, `conditions` = `{"match":"all"|"any","rules":[{"column","op","value","value2"}]}`
-  with ops `eq ne gt lt ge le between contains not_contains starts ends in empty not_empty true false`; values may be input names; or `formula`.
-- `calculate`: `formulas` = `[{"name": "diff", "expr": "[b] - [a]"}]`, `only_new`.
+  with ops `eq ne gt lt ge le between contains not_contains starts ends in empty not_empty true false`; values may be input names; or `formula`. As in Excel, a blank cell counts as not equal to (and not containing) any value.
+- `calculate`: `formulas` = `[{"name": "diff", "expr": "[b] - [a]"}]`, `only_new`. Whole-number `+ - *` work in 64 bits.
 - `fix_values`: `fixes` = `[{"row": 1-based, "column", "value", "was", "note"}]`.
 - `combine`: `method` match|nearest_time|side_by_side; match: `on`, `right_on`, `how`; nearest_time: `left_time`, `right_time`, `direction`, `tolerance` (e.g. `500ms`); `suffix`.
 - `time_buckets`: `every` (`1s 1m 15m 1h 1d`), `columns` (empty = every number column), `default_stats` (mean median min max std sum count first last; one statistic keeps column names, several add `_stat`), `time_column`, `aggregations`, `count_column`.
-- `rolling`: `columns`, `stat` mean|median|min|max|std|sum, `window` (rows like `20` or a span like `30s`), `time_column`, `centered`, `replace`.
+- `rolling`: `columns`, `stat` mean|median|min|max|std|sum, `window` (rows like `20` or a span like `30s`), `time_column`, `centered` (a span `w` then covers `[t - w/2, t + w/2]`; otherwise `(t - w, t]`), `replace`.
 - `rate_of_change`: `columns`, `time_column`, `per` s|m|h|d, `span`. `find_gaps`: `time_column`, `expected`, `factor`. `regular_grid`: `time_column`, `every`, `method` nearest|backward|forward|interpolate.
 - `summarise_around`: `window`, `side` before|after|around, `columns`, `stats`, `sample_time`, `log_time`.
 - `remove_outliers`: `columns`, `method` rolling|zscore|iqr|range, `window`, `threshold`, `iqr_factor`, `local_spread`, `min`, `max`, `action` remove|blank|flag|clip, `flag_column`.
@@ -128,7 +141,7 @@ dancr add samples.json fit_curve --id fit --after per_area --params '{"x":"tempe
 - `check_limits`: `column`, `min`, `max` (numbers or input names), `action` flag|remove|keep_failing, `flag_column`. Report: verdict PASS|FAIL, outside, rows.
 - `group_summary`: `by`, `columns`, `default_stats`, `aggregations`, `count_column`. `summarize`: `columns`.
 - `chart`: `kind` line|scatter|histogram|bar, `x`, `series` `[{"column","color","label"}]`, `color_by`, `split_by` (one panel per value), `limits` `[{"value","label"}]`, `fit`, `mean_line`, `column`, `bins`, `category`, `value`, `stat` mean|sum|count|min|max|median, `title`, `y_label`, `break_gaps`, `log_y`.
-- `export`: `path` (.csv | .parquet | .xlsx). `workbook`: `path` (.xlsx); connect tables to `items`.
+- `export`: `path` (.csv | .tsv | .txt | .parquet | .xlsx). `workbook`: `path` (.xlsx); connect tables to `items`.
 - `report`: `title`, `path` (.html), `notes`, `company`, `author`, `blocks` (`[{"type":"heading"|"text","text"}, {"type":"item","index"}]`, optional), `pdf`, `max_rows`, `include_stats`; connect charts/tables to `items`.
 
 ## Conventions that keep people happy
