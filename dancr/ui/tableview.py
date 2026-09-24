@@ -11,7 +11,7 @@ from ..core.executor import Executor
 from ..views.table import TablePager
 from ..views.stats import column_summary
 from .document import Document
-from .grid import Grid, TableModel
+from .grid import Grid, TableModel, MAX_TABLE_ROWS
 from .workers import Serial
 from .theme import T
 from .common import page_header, status_dot, listen
@@ -150,9 +150,13 @@ class TableView(QWidget):
                     if n != self.nid or self.doc.state(n).output != output:
                         return
                     self.grid.set_content(lf, rows, False, st.column_stats, self.doc.pipeline.columns, pager=pager)
-                    if rows and rows > 50_000_000:
-                        self.status.setText(self.status.text() + " · showing the first 50,000,000")
-                self._preview_serial.submit(open_result, ready, lambda m: self.doc.refresh_states())
+                    if rows and rows > MAX_TABLE_ROWS:
+                        self.status.setText(self.status.text() + f" · showing the first {MAX_TABLE_ROWS:,}")
+
+                def failed(m: str) -> None:              # say so, then look again (the file may have been swept)
+                    self.grid.set_overlay(f"Could not open this result: {m}")
+                    self.doc.refresh_states()
+                self._preview_serial.submit(open_result, ready, failed)
             else:
                 self._load_summary(lambda: pl.scan_parquet(output), rows or 0)
             return

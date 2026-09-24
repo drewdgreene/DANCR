@@ -26,7 +26,7 @@ from PySide6.QtGui import QUndoStack
 from PySide6.QtWidgets import QApplication
 
 from ..core import Pipeline, PipelineError, registry
-from ..core.model import Edge, Answer, rebase_params
+from ..core.model import Edge, Answer, Input, rebase_params
 from ..core.planner import resolve_plan
 from ..core.executor import Executor, NodeState, _pid_alive
 from .workers import RunThread, Task, view_pool
@@ -35,6 +35,9 @@ from . import commands as cmd
 log = logging.getLogger("dancr.ui")
 AUTOSAVE_SECS = 60
 UNDO_LIMIT = 200
+POLL_MS = 2500              # how often states are re-read for changes made elsewhere (a CLI run, a rewritten source)
+AUTO_RUN_DELAY_MS = 700     # quiet time after an edit before an automatic run
+SOURCE_SETTLE_MS = 1500     # a data file being written fires many change events: wait for it to settle
 
 
 ANSWER_CARD_OFFSET = (300.0, 40.0)     # where an answer card sits relative to the step it points at
@@ -102,6 +105,7 @@ class Document(QObject):
         self.undo.indexChanged.connect(lambda _: self.schedule_auto_run())
         self._run: RunThread | None = None
         self._run_settled = True
+        self.last_run_outcome = "done"     # how the last run ended: done | stopped | crashed
         self._watcher = QFileSystemWatcher(self)
         self._watcher.fileChanged.connect(self._on_file_changed)
         self._last_saved_text: str | None = None
@@ -110,10 +114,12 @@ class Document(QObject):
         self._states_token = 0             # bumped by every refresh on this thread: older background polls are dropped
         self._poll_task: Task | None = None
         self._poll = QTimer(self)
-        self._poll.setInterval(2500)
+        self._poll.setInterval(POLL_MS)
         self._poll.timeout.connect(self._poll_states)
         self._poll.start()
-        self._auto_timer = QTimer(self); self._auto_timer.setSingleShot(True); self._auto_timer.setInterval(700)
+        self._auto_timer = QTimer(self); self._auto_timer.setSingleShot(True); self._auto_timer.setInterval(AUTO_RUN_DELAY_MS)
+        self._source_timer = QTimer(self); self._source_timer.setSingleShot(True); self._source_timer.setInterval(SOURCE_SETTLE_MS)
+        self._source_timer.timeout.connect(self._source_changed_settle)
         self._auto_timer.timeout.connect(self._auto_run_now)
         self._auto_pending = False
         self._src_watcher = QFileSystemWatcher(self)
@@ -166,7 +172,7 @@ class Document(QObject):
                 self._src_watcher.addPath(str(p))
 
     def _on_source_changed(self, path: str) -> None:
-        QTimer.singleShot(1500, self._source_changed_settle)
+        self._source_timer.start()                  # restarted by each event: one refresh once writing stops
 
     def _source_changed_settle(self) -> None:
         self._rewatch_sources()
@@ -216,7 +222,8 @@ class Document(QObject):
     # ------------------------------------------------------------ inputs and column registry (undoable)
     def set_input(self, name: str, value: Any = None, unit: str | None = None, note: str | None = None) -> None:
         before = [i.to_dict() for i in self.pipeline.inputs]
-        probe = Pipeline.from_dict(self.pipeline.to_dict())
+        probe = Pipeline()                              # checked on a copy of the inputs alone
+        probe.inputs = [Input(**i) for i in before]
         probe.set_input(name, value, unit, note)
         after = [i.to_dict() for i in probe.inputs]
         if before != after:
@@ -230,7 +237,8 @@ class Document(QObject):
 
     def set_column_meta(self, name: str, label: str | None = None, unit: str | None = None) -> None:
         before = json.loads(json.dumps(self.pipeline.columns))
-        probe = Pipeline.from_dict(self.pipeline.to_dict())
+        probe = Pipeline()                              # checked on a copy of the column names alone
+        probe.columns = json.loads(json.dumps(before))
         probe.set_column_meta(name, label, unit)
         if probe.columns != before:
             self.undo.push(cmd.SetColumns(self, before, probe.columns, f"Describe {name}"))
@@ -410,7 +418,7 @@ class Document(QObject):
         Results of a project that was never saved are deleted: nothing refers to them any more.
         Call this after the view pool has been drained: nothing may still be reading the results."""
         self._auto_pending = False
-        self._auto_timer.stop(); self._poll.stop(); self._autosave.stop()
+        self._auto_timer.stop(); self._poll.stop(); self._autosave.stop(); self._source_timer.stop()
         for w in (self._watcher, self._src_watcher):
             if w.files():
                 w.removePaths(w.files())
@@ -555,8 +563,7 @@ class Document(QObject):
             self.undo.push(cmd.Move(self, moves))
 
     def connect(self, source: str, target: str, port: str | None = None) -> None:
-        probe = Pipeline.from_dict(self.pipeline.to_dict())
-        edge = probe.connect(source, target, port)
+        edge = self.pipeline.plan_connect(source, target, port)
         if edge.key() in {e.key() for e in self.pipeline.edges}:
             return
         self.undo.push(cmd.Connect(self, edge))
@@ -586,9 +593,7 @@ class Document(QObject):
     def move_edge(self, edge: Edge, target: str, port: str | None) -> None:
         """Move a connection to another input as one undo step. Checked first on a copy, so a move that is
         not allowed (the input is taken, it would make a loop) changes nothing and raises PipelineError."""
-        probe = Pipeline.from_dict(self.pipeline.to_dict())
-        probe.disconnect(edge.source, edge.target, edge.port)
-        probe.connect(edge.source, target, port)
+        self.pipeline.plan_connect(edge.source, target, port, ignoring=edge)
         with self.macro("Move connection"):
             self.disconnect(edge)
             self.connect(edge.source, target, port)
@@ -724,8 +729,10 @@ class Document(QObject):
         t = RunThread(runner, targets, force)
         self._run = t
         self._run_settled = False
-        t.event.connect(self._on_run_event)
-        t.failed.connect(self._on_run_failed)
+        # a finished run's last events can still be queued when the project is replaced: only the current
+        # run's events reach the states and the views
+        t.event.connect(lambda e, t=t: self._on_run_event(e) if t is self._run else None)
+        t.failed.connect(lambda text, t=t: self._on_run_failed(text) if t is self._run else None)
         t.finished.connect(lambda: self._on_run_done(t))
         view_pool().hold()
         self.runStarted.emit()
@@ -766,8 +773,9 @@ class Document(QObject):
         self._run_settled = True
         view_pool().release()
         results = dict(t.results)
+        self.last_run_outcome = t.outcome
         self.refresh_states()
         failed = [s for s in results.values() if s.status == "failed"]
-        self.runFinished.emit(not failed, results)
+        self.runFinished.emit(t.outcome == "done" and not failed, results)
         if self._auto_pending:
             self._auto_timer.start()

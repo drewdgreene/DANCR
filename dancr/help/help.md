@@ -205,7 +205,7 @@ replaces the stored results.
 | Ctrl+F | Find in the table / jump to a time |
 | Ctrl+R / F5 | Run everything |
 | Ctrl+Shift+R | Run up to this step |
-| Esc | Stop the run |
+| Ctrl+. | Stop the run |
 | Ctrl+S / Ctrl+Shift+S | Save / Save as |
 | Ctrl+Z / Ctrl+Y | Undo / Redo |
 | Ctrl+D | Duplicate step |

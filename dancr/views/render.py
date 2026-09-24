@@ -1,6 +1,8 @@
 """Headless chart rendering to PNG (matplotlib, Agg). Used by the CLI, MCP and reports."""
 from __future__ import annotations
 
+import functools
+
 from pathlib import Path
 from typing import Any
 
@@ -38,7 +40,9 @@ def render_chart(lf: pl.LazyFrame, params: dict[str, Any], out: Path | str, widt
                              dpi=dpi, sharex=(len(panels) > 1), squeeze=False)
     axes = [a[0] for a in axes]
     for i, ((label, cd), ax) in enumerate(zip(panels, axes)):
-        sub = _draw_panel(ax, cd, params, columns, inputs, mdates)
+        x_dt = schema.get(cd.x) if cd.x else None
+        tz = x_dt.time_zone if isinstance(x_dt, pl.Datetime) else None
+        sub = _draw_panel(ax, cd, params, columns, inputs, mdates, tz)
         if label is not None:
             ax.set_title(label, fontsize=9, color="#555", loc="left")
         if i < len(panels) - 1:
@@ -56,8 +60,10 @@ def render_chart(lf: pl.LazyFrame, params: dict[str, Any], out: Path | str, widt
     return out
 
 
-def _draw_panel(ax, cd: ChartData, params: dict[str, Any], columns, inputs, mdates) -> str:
-    """Draw one queried panel into `ax`; returns the small info text."""
+def _draw_panel(ax, cd: ChartData, params: dict[str, Any], columns, inputs, mdates, tz: str | None = None) -> str:
+    """Draw one queried panel into `ax`; returns the small info text. Times are drawn as wall times in the
+    column's zone (``tz``), as the table shows them."""
+    _to_dates = functools.partial(_wall_times, tz=tz)
     specs = params.get("series") or []
     breaks = params.get("break_gaps", True)
     if cd.kind == "line":
@@ -137,8 +143,14 @@ def _draw_density(ax, d) -> None:
     ax.imshow(np.log1p(d.density.T), origin="lower", aspect="auto", extent=(x0, x1, y0, y1), cmap="viridis")
 
 
-def _to_dates(x: np.ndarray) -> np.ndarray:
+def _wall_times(x: np.ndarray, tz: str | None = None) -> np.ndarray:
+    """Epoch seconds as datetimes: UTC for a naive column, the wall time in ``tz`` (with the offset of each
+    moment, across daylight-saving changes) for a zoned one."""
+    x = np.asarray(x, dtype=float)
     out = np.full(len(x), np.datetime64("NaT", "us"), dtype="datetime64[us]")
     ok = np.isfinite(x)
     out[ok] = (x[ok] * 1e6).astype("datetime64[us]")
+    if tz:
+        out = (pl.Series(out).dt.replace_time_zone("UTC").dt.convert_time_zone(tz).dt.replace_time_zone(None)
+               .to_numpy().astype("datetime64[us]"))
     return out

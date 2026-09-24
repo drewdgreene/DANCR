@@ -117,7 +117,7 @@ class RailTree(QTreeWidget):
 
 
 class Rail(QWidget):
-    selected = Signal(str, object)     # kind ("node" | "inputs" | "none"), id
+    selected = Signal(str, object)     # kind ("node" | "answer" | "inputs" | "none"), id
     deleteRequested = Signal()
 
     MODE_SETTING = "rail_mode"

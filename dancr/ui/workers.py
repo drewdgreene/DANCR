@@ -182,14 +182,17 @@ class RunThread(QThread):
         self.force = force
         self.cancel = threading.Event()
         self.results: dict = {}
+        self.outcome = "done"          # done | stopped (the person stopped it) | crashed (a DANCR error)
 
     def run(self) -> None:
         from ..core.executor import ExecutionCancelled
         try:
             self.results = self.executor.run(targets=self.targets, on_event=self._emit, cancel=self.cancel, force=self.force)
         except ExecutionCancelled:
+            self.outcome = "stopped"
             self.event.emit({"type": "run_cancelled"})
         except Exception as e:  # noqa: BLE001
+            self.outcome = "crashed"
             self.failed.emit(f"{e}\n{traceback.format_exc()}")
 
     def _emit(self, e: dict) -> None:

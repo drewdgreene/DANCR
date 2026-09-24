@@ -263,6 +263,15 @@ class Pipeline:
 
     # ---------------------------------------------------------------- edges
     def connect(self, source: str, target: str, port: str | None = None) -> Edge:
+        edge = self.plan_connect(source, target, port)
+        if edge.key() not in {e.key() for e in self.edges}:
+            self.edges.append(edge)
+        return edge
+
+    def plan_connect(self, source: str, target: str, port: str | None = None, ignoring: Edge | None = None) -> Edge:
+        """The connection `connect` would make, checked (raises PipelineError) but not made. ``ignoring``: judge it
+        as if that connection were already gone (moving a connection from one input to another)."""
+        edges = [e for e in self.edges if ignoring is None or e.key() != ignoring.key()]
         src = self._require(source)
         dst = self._require(target)
         if source == target:
@@ -271,7 +280,10 @@ class Pipeline:
         if dst_type.kind == "source" or not dst_type.inputs:
             raise PipelineError(f"{dst.title} does not take inputs")
         if port is None:
-            taken = self.inputs_of(target)
+            taken = {}
+            for e in edges:
+                if e.target == target:
+                    taken.setdefault(e.port, []).append(e.source)
             port = dst_type.route(src.type, taken) if dst_type.route else None
             if port is None:            # first port that still has room
                 port = next((i.name for i in dst_type.inputs if i.multiple or not taken.get(i.name)), dst_type.inputs[0].name)
@@ -279,15 +291,14 @@ class Pipeline:
         if spec is None:
             raise PipelineError(f"{dst.title} has no input called {port!r}. Inputs: {[i.name for i in dst_type.inputs]}")
         if not spec.multiple:
-            for e in self.edges:
+            for e in edges:
                 if e.target == target and e.port == port:
                     raise PipelineError(f"{dst.title}.{port} is already connected to {e.source}. Disconnect it first.")
         edge = Edge(source, target, port)
-        if edge.key() in {e.key() for e in self.edges}:
+        if edge.key() in {e.key() for e in edges}:
             return edge
         if target in self.upstream_closure(source):
             raise PipelineError("That connection would create a loop")
-        self.edges.append(edge)
         return edge
 
     def disconnect(self, source: str, target: str, port: str | None = None) -> None:

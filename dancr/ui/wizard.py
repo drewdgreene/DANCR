@@ -115,6 +115,7 @@ class WizardPage(QWidget):
         self.answer_id = answer_id
         self._fixed_assembly = None
         self._prefill = None
+        self.paths = []                     # never the files of an earlier build (another project, perhaps)
         if answer_id is not None:
             answer = self.doc.pipeline.answer(answer_id)
             if answer is not None:

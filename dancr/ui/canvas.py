@@ -499,6 +499,7 @@ class CanvasScene(QGraphicsScene):
     selectionChangedTo = Signal(object)
     status = Signal(str)
     addAfterRequested = Signal(str, QPoint)     # node id, screen pos
+    runRequested = Signal(object)               # step ids to run up to, or None for everything (the window checks first)
 
     def __init__(self, doc: Document, parent=None) -> None:
         super().__init__(parent)
@@ -799,7 +800,7 @@ class CanvasScene(QGraphicsScene):
         run_here.setEnabled(not self.doc.running)
         r = m.exec(screen_pos)
         if r == run_here:
-            self.doc.run(targets=[nid])
+            self.runRequested.emit([nid])
         elif r == show:
             self.nodeActivated.emit(nid)
         elif r == add_after:
@@ -1022,6 +1023,6 @@ class CanvasView(QGraphicsView):
         note.triggered.connect(lambda: self.addNoteRequested.emit(pos))
         m.addSeparator()
         fit = m.addAction(icon("arrows-out", T.text), "Fit everything in view"); fit.triggered.connect(self.fit_all)
-        run = m.addAction(icon("play", T.text), "Run everything"); run.triggered.connect(lambda: self.canvas.doc.run())
+        run = m.addAction(icon("play", T.text), "Run everything"); run.triggered.connect(lambda: self.canvas.runRequested.emit(None))
         run.setEnabled(not self.canvas.doc.running)
         m.exec(e.globalPos())

@@ -53,8 +53,7 @@ class Panel:
     items: list = field(default_factory=list)
     series: list = field(default_factory=list)      # (label, xs, ys) for hover readouts
     date_axis: bool = False
-    utc_offset: int = 0                             # seconds east of UTC shown on the axis (the column's own zone)
-    tz_aware: bool = False
+    tz: str | None = None                           # the column's zone: every label and readout uses its offset then
 
 
 def _log10(v: np.ndarray) -> np.ndarray:
@@ -69,6 +68,29 @@ def _zone_offset(tz: str, at: float | None) -> int:
         return int(when.astimezone(ZoneInfo(tz)).utcoffset().total_seconds())
     except (ValueError, OSError, OverflowError, KeyError):
         return 0
+
+
+class ZonedDateAxis(pg.DateAxisItem):
+    """A date axis whose labels are wall times in a time zone, with that zone's offset at each tick, so a
+    range across a daylight-saving change is labelled right on both sides (pyqtgraph's own axis uses one
+    fixed offset)."""
+
+    def __init__(self, tz: str | None, **kw: Any) -> None:
+        super().__init__(orientation="bottom", utcOffset=-_zone_offset(tz, None) if tz else 0, **kw)
+        self.tz = tz
+
+    def tickStrings(self, values, scale, spacing):  # noqa: N802 - pyqtgraph's name
+        spec = next((s for s in self.zoomLevel.tickSpecs if s.spacing == spacing), None)
+        if spec is None or self.tz is None:
+            return super().tickStrings(values, scale, spacing)
+        out = []
+        for v in values:
+            try:
+                text = datetime.fromtimestamp(v, ZoneInfo(self.tz)).strftime(spec.format)
+            except (ValueError, OSError, OverflowError):
+                out.append(""); continue
+            out.append(text[:-3] if "%f" in spec.format else (text.lstrip("0") if "%Y" in spec.format else text))
+        return out
 
 
 class ChartView(QWidget):
@@ -177,10 +199,10 @@ class ChartView(QWidget):
 
     def _set_date_axis(self, p: Panel, on: bool, tz: str | None = None, at: float | None = None) -> None:
         """A date axis in the column's own time zone (naive columns are shown as they are)."""
-        offset = _zone_offset(tz, at) if (on and tz) else 0
-        if on != p.date_axis or offset != p.utc_offset:
-            p.date_axis, p.utc_offset, p.tz_aware = on, offset, bool(on and tz)
-            axis = pg.DateAxisItem(orientation="bottom", utcOffset=-offset) if on else pg.AxisItem(orientation="bottom")
+        tz = tz if on else None
+        if on != p.date_axis or tz != p.tz:
+            p.date_axis, p.tz = on, tz
+            axis = (ZonedDateAxis(tz) if tz else pg.DateAxisItem(orientation="bottom", utcOffset=0)) if on else pg.AxisItem(orientation="bottom")
             axis.setTextPen(QColor(T.muted)); axis.setPen(QColor(T.border))
             p.plot.setAxisItems({"bottom": axis})
 
@@ -491,6 +513,8 @@ class ChartView(QWidget):
         mean_pen = pg.mkPen("#555", width=1, style=Qt.DashLine)
         limit_pen = pg.mkPen(T.danger, width=1.2, style=Qt.DotLine)
         x_tz = self.schema[cd.x].time_zone if (cd.x and isinstance(self.schema.get(cd.x), pl.Datetime)) else None
+        if cd.kind != "bar":
+            plot.getAxis("bottom").setTicks(None)       # a bar chart's category labels must not stay behind
         if cd.kind == "line":
             if cd.groups:
                 for gi, (g, d) in enumerate(cd.groups):
@@ -632,15 +656,13 @@ class ChartView(QWidget):
 
     @staticmethod
     def _format_time(p: Panel, x: float) -> str:
-        """Wall time in the column's zone, with its offset when the column carries one (as the grid shows it)."""
+        """Wall time in the column's zone, with the offset in force at that moment (as the grid shows it)."""
         try:
-            text = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(x + p.utc_offset))
+            if p.tz:
+                return datetime.fromtimestamp(x, ZoneInfo(p.tz)).strftime("%Y-%m-%d %H:%M:%S%z")
+            return time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(x))
         except (ValueError, OSError, OverflowError):
             return f"{x:.6g}"
-        if p.tz_aware:
-            sign = "+" if p.utc_offset >= 0 else "-"
-            text += f"{sign}{abs(p.utc_offset) // 3600:02d}{abs(p.utc_offset) % 3600 // 60:02d}"
-        return text
 
     def _hide_hover(self) -> None:
         for p in self.panels:

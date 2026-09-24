@@ -11,7 +11,7 @@ from PySide6.QtGui import QColor, QFont, QBrush, QKeySequence, QAction, QGuiAppl
 from PySide6.QtWidgets import (QTableView, QAbstractItemView, QMenu, QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QLabel,
                                QToolButton, QStackedLayout)
 
-from ..views.table import TablePager, format_value
+from ..views.table import TablePager, format_value, column_title
 from ..views.stats import quick_column_info
 from ..core.expr import NUM, TIME, STR, BOOL
 from .theme import T
@@ -326,6 +326,11 @@ class Grid(QWidget):
         add("Copy column name", "copyname", "copy")
         m.exec(self.table.horizontalHeader().mapToGlobal(pos))
 
+    def can_fix_values(self) -> bool:
+        """Only a step's computed rows can be corrected: a preview shows a sample of them, so its row numbers
+        are not the rows a correction would change."""
+        return self.model.pager is not None and not self.model.in_memory
+
     def _cell_menu(self, pos: QPoint) -> None:
         idx = self.table.indexAt(pos)
         if not idx.isValid() or not self.model.pager:
@@ -335,6 +340,9 @@ class Grid(QWidget):
         m = QMenu(self); m.setAttribute(Qt.WA_DeleteOnClose)
         a = m.addAction(icon("copy", T.text, 14), "Copy"); a.triggered.connect(self.copy_selection)
         f = m.addAction(icon("note-pencil", T.text, 14), "Fix this value…"); f.triggered.connect(lambda: self.cellAction.emit("fix", idx.row() + 1, col, value))
+        if not self.can_fix_values():
+            f.setEnabled(False)
+            f.setText("Fix this value… (run this step first: a preview shows only a sample of the rows)")
         sel_cols = sorted({i.column() for i in self.table.selectionModel().selectedIndexes()})
         nums = [self.model.pager.columns[i] for i in sel_cols if self.model.pager.kinds.get(self.model.pager.columns[i]) == NUM]
         if len(nums) >= 1:
@@ -371,7 +379,7 @@ class Grid(QWidget):
         clipped = len(rows) > COPY_MAX_ROWS
         rows = rows[:COPY_MAX_ROWS]
         names = [pager.columns[c] for c in cols]
-        header = "\t".join(_clip(self.model.headerData(c, Qt.Horizontal)) for c in cols)
+        header = "\t".join(_clip(column_title(n, self.model.column_meta)) for n in names)   # names and units, no type marks
         lo, hi = rows[0], rows[-1]
         contiguous = isinstance(rows, range) or hi - lo + 1 == len(rows)
 

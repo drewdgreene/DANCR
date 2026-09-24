@@ -122,6 +122,8 @@ class MainWindow(QMainWindow):
         self._update_title()
         self._restore_layout()
         self._show_page()
+        if self.doc.running:                     # rebuilt (theme switch) during a run: show it, keep Stop working
+            self._on_run_started()
         QTimer.singleShot(200, self._maybe_recover)
         QTimer.singleShot(400, self._maybe_tour)
 
@@ -196,7 +198,7 @@ class MainWindow(QMainWindow):
         self.a_run = self._act("&Run everything", "play", ["Ctrl+R", "F5"], lambda: self.run(), "Compute every step on the full data (Ctrl+R)")
         self.a_run_sel = self._act("Run up to &this step", None, "Ctrl+Shift+R", self.run_selected, "Run the current step and what it needs (Ctrl+Shift+R)")
         self.a_run_force = self._act("Run everything again (ignore cached results)", None, None, lambda: self.run(force=True))
-        self.a_stop = self._act("&Stop", "stop", "Escape", self.stop, "Stop after the current step")
+        self.a_stop = self._act("&Stop", "stop", "Ctrl+.", self.stop, "Stop after the current step (Ctrl+.)")   # not Escape: Escape closes find bars and editors
         self.a_stop.setEnabled(False); self.a_stop.setVisible(False)
         self.a_auto = QAction("Run automatically after every change", self, checkable=True)
         self.a_auto.setToolTip("On for small data. Turn it off for very large files, and press Run when you are ready.")
@@ -355,6 +357,7 @@ class MainWindow(QMainWindow):
         self.scene.selectionChangedTo.connect(self._on_scene_select)
         self.scene.nodeActivated.connect(self.show_node)
         self.scene.addAfterRequested.connect(self._add_after)
+        self.scene.runRequested.connect(lambda targets: self.run(targets))
         self.scene.answerActivated.connect(self.show_answer)
         self.scene.answerChangeRequested.connect(self.change_answer)
         self.scene.answerDeleteRequested.connect(self.delete_answer_dialog)
@@ -573,9 +576,11 @@ class MainWindow(QMainWindow):
         if aids:
             self.delete_answer_dialog(aids[0])
             return
+        if not self.scene.selected_node_ids() and self.scene.selectedItems():
+            self.scene.delete_selection()          # an arrow or a note is selected on the map: that is what goes
+            return
         ids = self.scene.selected_node_ids() or ([self._current] if self._current and self._current in self.doc.pipeline.nodes else [])
         if not ids:
-            self.scene.delete_selection()          # a selected arrow or note on the map
             return
         titles = [self.doc.pipeline.nodes[i].title for i in ids]
         if self.scene.selected_node_ids():
@@ -989,7 +994,11 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(350, self._hide_progress)      # let the full bar be seen, then hide
         self._refresh_mode()
         failed = [k for k, s in results.items() if s.status == "failed" and k in self.doc.pipeline.nodes]
-        if ok:
+        if self.doc.last_run_outcome == "stopped":
+            self.status.showMessage("Stopped", 5000)
+        elif self.doc.last_run_outcome == "crashed":
+            pass                                         # "Run failed: …" is already on the status line
+        elif ok:
             secs = time.monotonic() - getattr(self, "_t0", time.monotonic())
             self.status.showMessage(f"Done in {secs:.1f} s" if secs >= 1 else "Done", 5000)
         else:

@@ -93,7 +93,9 @@ def _mean(lf: pl.LazyFrame, col: str) -> float | None:
 
 
 def _filter_group(lf: pl.LazyFrame, col: str, value: Any) -> pl.LazyFrame:
-    return lf.filter(pl.col(col).cast(pl.Utf8) == str(value))
+    """The rows of one group, matched as values (as text, a true/false column reads "true" in Polars but
+    "True" in Python, and dates and numbers have several spellings)."""
+    return lf.filter(pl.col(col).is_null() if value is None else pl.col(col) == pl.lit(value))
 
 
 def query_one(lf: pl.LazyFrame, schema: dict[str, pl.DataType], spec: dict[str, Any], *, x_range: tuple[float, float] | None = None,
