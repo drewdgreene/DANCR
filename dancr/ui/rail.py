@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QTreeWidget, Q
 
 from ..core import registry
 from .document import Document
+from .common import listen
 from .theme import T, category_color, STATUS_COLORS
 from .icons import icon, node_icon_name
 
@@ -158,9 +159,9 @@ class Rail(QWidget):
         self.tree.itemCollapsed.connect(lambda it: self._on_expanded(it, False))
         for sig in (doc.nodeAdded, doc.nodeRemoved, doc.nodeChanged, doc.reloaded, doc.inputsChanged,
                     doc.edgeAdded, doc.edgeRemoved, doc.answerAdded, doc.answerRemoved, doc.answerChanged):
-            sig.connect(lambda *_: self.refill())
-        doc.statesChanged.connect(self.refill_status)
-        doc.nodeState.connect(lambda *_: self.refill_status())
+            listen(self, sig, lambda *_: self.refill())
+        listen(self, doc.statesChanged, self.refill_status)
+        listen(self, doc.nodeState, lambda *_: self.refill_status())
         self._update_mode_btn()
         self.refill()
 

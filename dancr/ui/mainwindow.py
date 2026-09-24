@@ -15,6 +15,7 @@ from ..core import registry, PipelineError
 from ..core.model import Pipeline
 from ..core.samples import write_sample, build_template
 from .document import Document
+from .common import listen
 from .dialogs import Toast, VersionsDialog
 from .stepfactory import StepFactory
 from .workers import view_pool
@@ -47,7 +48,7 @@ class MainWindow(QMainWindow):
         self._terminating = False
         self._disposed = False
         self._toast_index = -1
-        self.scene = CanvasScene(self.doc)
+        self.scene = CanvasScene(self.doc, self)          # parented: it goes when the window goes (theme switch)
         self.view = CanvasView(self.scene)
         self.rail = Rail(self.doc)
         self.pages = QStackedWidget()
@@ -335,20 +336,21 @@ class MainWindow(QMainWindow):
 
     def _wire(self) -> None:
         d = self.doc
-        d.dirtyChanged.connect(lambda _: self._update_title())
-        d.pathChanged.connect(lambda _: self._update_title())
-        d.autosaveChanged.connect(lambda _: self._update_title())
-        d.autosaved.connect(lambda: (self._update_title(), self.status.showMessage("Saved automatically", 2000)))
-        d.undo.indexChanged.connect(self._on_undo_index)
-        d.reloaded.connect(self._on_reloaded)
-        d.message.connect(lambda m: self.status.showMessage(m, 8000))
-        d.runStarted.connect(self._on_run_started)
-        d.runProgress.connect(self._run_progress)
-        d.runFinished.connect(self._on_run_finished)
-        d.nodeAdded.connect(lambda _: self._show_page())
-        d.nodeRemoved.connect(self._on_node_removed)
-        d.autoRunChanged.connect(lambda _: self._refresh_mode())
-        d.nodeAdded.connect(lambda _: self._refresh_mode()); d.nodeRemoved.connect(lambda _: self._refresh_mode()); d.nodeChanged.connect(lambda _: self._refresh_mode())
+        listen(self, d.dirtyChanged, lambda _: self._update_title())
+        listen(self, d.pathChanged, lambda _: self._update_title())
+        listen(self, d.autosaveChanged, lambda _: self._update_title())
+        listen(self, d.autosaved, lambda: (self._update_title(), self.status.showMessage("Saved automatically", 2000)))
+        listen(self, d.undo.indexChanged, self._on_undo_index)
+        listen(self, d.reloaded, self._on_reloaded)
+        listen(self, d.message, lambda m: self.status.showMessage(m, 8000))
+        listen(self, d.runStarted, self._on_run_started)
+        listen(self, d.runProgress, self._run_progress)
+        listen(self, d.runFinished, self._on_run_finished)
+        listen(self, d.nodeAdded, lambda _: self._show_page())
+        listen(self, d.nodeRemoved, self._on_node_removed)
+        listen(self, d.autoRunChanged, lambda _: self._refresh_mode())
+        for sig in (d.nodeAdded, d.nodeRemoved, d.nodeChanged):
+            listen(self, sig, lambda _: self._refresh_mode())
         self.scene.status.connect(lambda m: self.status.showMessage(m, 6000))
         self.scene.selectionChangedTo.connect(self._on_scene_select)
         self.scene.nodeActivated.connect(self.show_node)
@@ -611,6 +613,7 @@ class MainWindow(QMainWindow):
         self._refresh_mode()
 
     def maybe_save(self) -> bool:
+        self.doc.flush_edits()
         if not self.doc.dirty:
             return True
         if self.doc.autosave_paused:

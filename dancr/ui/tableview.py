@@ -14,7 +14,7 @@ from .document import Document
 from .grid import Grid, TableModel
 from .workers import Serial
 from .theme import T
-from .common import page_header, status_dot
+from .common import page_header, status_dot, listen
 from .icons import icon
 
 
@@ -28,8 +28,8 @@ class TableView(QWidget):
         super().__init__(parent)
         self.doc = doc
         self.nid: str | None = None
-        self._preview_serial = Serial()
-        self._summary_serial = Serial()
+        self._preview_serial = Serial(self)
+        self._summary_serial = Serial(self)
         self._shown_hash: str | None = None
         lay = QVBoxLayout(self); lay.setContentsMargins(0, 0, 0, 0); lay.setSpacing(0)
         head, h = page_header()
@@ -57,17 +57,18 @@ class TableView(QWidget):
         self.grid.columnAction.connect(self.columnAction.emit)
         self.grid.cellAction.connect(self.cellAction.emit)
         self.grid.chartColumns.connect(self.chartColumns.emit)
+        self.grid.notice.connect(self.doc.message.emit)
         self.copy_btn.clicked.connect(self._copy)
         self.find_btn.clicked.connect(self.grid.show_find)
-        doc.nodeState.connect(self._on_state)
-        doc.statesChanged.connect(self._refresh_if_changed)
-        doc.nodeChanged.connect(lambda nid: self._schedule() if nid == self.nid else None)
-        doc.columnsChanged.connect(lambda: self.grid.model.set_column_meta(self.doc.pipeline.columns))
-        doc.edgeAdded.connect(lambda e: self._schedule() if e.target == self.nid else None)
-        doc.edgeRemoved.connect(lambda e: self._schedule() if e.target == self.nid else None)
-        doc.runStarted.connect(self._refresh_header)
-        doc.runFinished.connect(lambda ok, res: self.refresh())
-        doc.reloaded.connect(lambda: self.set_node(None))
+        listen(self, doc.nodeState, self._on_state)
+        listen(self, doc.statesChanged, self._refresh_if_changed)
+        listen(self, doc.nodeChanged, lambda nid: self._schedule() if nid == self.nid else None)
+        listen(self, doc.columnsChanged, lambda: self.grid.model.set_column_meta(self.doc.pipeline.columns))
+        listen(self, doc.edgeAdded, lambda e: self._schedule() if e.target == self.nid else None)
+        listen(self, doc.edgeRemoved, lambda e: self._schedule() if e.target == self.nid else None)
+        listen(self, doc.runStarted, self._refresh_header)
+        listen(self, doc.runFinished, lambda ok, res: self.refresh())
+        listen(self, doc.reloaded, lambda: self.set_node(None))
         self._timer = QTimer(self); self._timer.setSingleShot(True); self._timer.setInterval(450); self._timer.timeout.connect(self.refresh)
 
     def set_node(self, nid: str | None) -> None:
@@ -127,6 +128,7 @@ class TableView(QWidget):
         if self.nid is not None and self.nid not in self.doc.pipeline.nodes:
             self.nid = None
         if self.nid is None:
+            self._preview_serial.cancel(); self._summary_serial.cancel()
             self.title.setText(""); self.status.setText(""); self.run_btn.hide(); self.open_btn.hide()
             self.grid.set_content(None, None, True, None, None); self.summary_model.set_pager(None)
             return
@@ -164,11 +166,11 @@ class TableView(QWidget):
                 self.summary_overlay.setText(msg); self.summary_overlay.show()
         elif tab == 0:
             self.grid.set_overlay("Building a preview…")
-        nid = self.nid
+        nid, executor = self.nid, self.doc.executor         # captured here: the project may be replaced meanwhile
 
         def work():
             try:
-                df, res, kind = self.doc.executor.preview(nid, Executor.PREVIEW_ROWS)
+                df, res, kind = executor.preview(nid, Executor.PREVIEW_ROWS)
                 return nid, df, kind, None
             except Exception as e:  # noqa: BLE001
                 from ..core.executor import friendly_error

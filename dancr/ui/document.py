@@ -28,7 +28,7 @@ from ..core import Pipeline, PipelineError, registry
 from ..core.model import Edge, Answer
 from ..core.planner import signature, signatures_of, plan_layout
 from ..core.executor import Executor, NodeState, _pid_alive
-from .workers import RunThread, view_pool
+from .workers import RunThread, Task, view_pool
 from . import commands as cmd
 
 log = logging.getLogger("dancr.ui")
@@ -80,6 +80,7 @@ class Document(QObject):
     autoRunChanged = Signal(bool)
     autosaveChanged = Signal(object)   # the reason autosave is paused, or None
     autosaved = Signal()               # a quiet save just happened
+    flushRequested = Signal()          # settings typed but not yet committed (editors wait ~350 ms) must go in now
 
     AUTO_RUN_BYTES = 200_000_000       # sources smaller than this in total run automatically after every change
 
@@ -98,9 +99,11 @@ class Document(QObject):
         self._last_saved_text: str | None = None
         self._states_cache: dict[str, NodeState] = {}
         self._held: dict[str, str | None] = {}
+        self._states_token = 0             # bumped by every refresh on this thread: older background polls are dropped
+        self._poll_task: Task | None = None
         self._poll = QTimer(self)
         self._poll.setInterval(2500)
-        self._poll.timeout.connect(self.refresh_states)
+        self._poll.timeout.connect(self._poll_states)
         self._poll.start()
         self._auto_timer = QTimer(self); self._auto_timer.setSingleShot(True); self._auto_timer.setInterval(700)
         self._auto_timer.timeout.connect(self._auto_run_now)
@@ -231,6 +234,11 @@ class Document(QObject):
         self._rewatch()
         QTimer.singleShot(200, self._maybe_reload)
 
+    def flush_edits(self) -> None:
+        """Ask every editor to commit what was typed in the last moment, so saving, reloading or replacing
+        the project never loses it, and it never lands on a step of the next project with the same id."""
+        self.flushRequested.emit()
+
     def _maybe_reload(self) -> None:
         self._rewatch()
         if not self.pipeline.path or not self.pipeline.path.exists():
@@ -238,6 +246,7 @@ class Document(QObject):
         if QApplication.activeModalWidget() is not None or self.running:
             QTimer.singleShot(1000, self._maybe_reload)     # try again once the modal/run is over
             return
+        self.flush_edits()                                  # a half-typed setting makes the project dirty: no reload
         try:
             text = self.pipeline.path.read_text(encoding="utf-8")
         except OSError:
@@ -281,6 +290,7 @@ class Document(QObject):
         version). Edits that must not go into the file yet — an unsaved project, autosave paused, a run in
         progress, or a dialog open that asks about these very edits (Save changes? Revert?) — are copied
         to the recovery file instead, so a crash or a force-quit loses nothing."""
+        self.flush_edits()
         if not self.pipeline.nodes or not self.dirty:
             return
         if self.pipeline.path is None or self.autosave_paused or self.running or QApplication.activeModalWidget() is not None:
@@ -361,6 +371,7 @@ class Document(QObject):
 
     # ------------------------------------------------------------ whole-pipeline replacement, save, shutdown
     def replace_pipeline(self, pipeline: Pipeline) -> None:
+        self.flush_edits()                                  # into the old project, never the new one
         self.stop(wait=True)
         self.pipeline = pipeline
         self._set_executor(Executor(self.pipeline))
@@ -406,6 +417,7 @@ class Document(QObject):
     def save(self, path: Path | str | None = None, auto: bool = False) -> Path:
         if path is not None and self.running and Path(path).expanduser().resolve() != self.pipeline.path:
             raise PipelineError("Wait for the run to finish before saving under a new name")
+        self.flush_edits()
         old = self.pipeline.path
         old_cache = self.executor.cache_dir
         p = self.pipeline.save(path, auto=auto)
@@ -437,11 +449,35 @@ class Document(QObject):
         return st
 
     def refresh_states(self) -> None:
+        """Re-read every step's state now (after an edit: the person expects to see it at once)."""
+        self._states_token += 1
         try:
             new = self.executor.states()
         except Exception:  # noqa: BLE001
             log.exception("Could not read the step states")
             return
+        self._apply_states(new)
+
+    def _poll_states(self) -> None:
+        """The periodic check for changes made elsewhere (a CLI run, a source file rewritten). Every step's
+        state means reading files, which can be slow on a network drive, so it runs on a worker over a
+        snapshot of the project; the answer is dropped if the project was edited meanwhile."""
+        if self._poll_task is not None:
+            return
+        snapshot = Pipeline.from_dict(self.pipeline.to_dict(), self.pipeline.path)
+        ex = Executor(snapshot, self.executor.cache_dir)
+        token, executor = self._states_token, self.executor
+        t = Task(ex.states)
+        t.waits_for_run = False
+        t.signals.done.connect(lambda new: self._apply_states(new) if token == self._states_token and executor is self.executor else None)
+
+        def finished() -> None:
+            self._poll_task = None
+        t.signals.finished.connect(finished)
+        self._poll_task = t
+        view_pool().start(t)
+
+    def _apply_states(self, new: dict[str, NodeState]) -> None:
         # keep "running" markers from the live run
         for nid, st in self._states_cache.items():
             if st.status == "running" and nid in new and new[nid].status != "done":
@@ -503,6 +539,19 @@ class Document(QObject):
     def disconnect(self, edge: Edge) -> None:
         if edge.key() in {e.key() for e in self.pipeline.edges}:
             self.undo.push(cmd.Disconnect(self, edge))
+
+    def move_edge(self, edge: Edge, target: str, port: str | None) -> None:
+        """Move a connection to another input as one undo step. Checked first on a copy, so a move that is
+        not allowed (the input is taken, it would make a loop) changes nothing and raises PipelineError."""
+        probe = Pipeline.from_dict(self.pipeline.to_dict())
+        probe.disconnect(edge.source, edge.target, edge.port)
+        probe.connect(edge.source, target, port)
+        self.undo.beginMacro("Move connection")
+        try:
+            self.disconnect(edge)
+            self.connect(edge.source, target, port)
+        finally:
+            self.undo.endMacro()
 
     def add_note(self, text: str, x: float, y: float) -> str:
         note = self.pipeline.add_note(text, x, y)

@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineE
 
 from .document import Document
 from .theme import T
-from .common import page_header, status_dot
+from .common import page_header, status_dot, listen
 from .icons import icon, node_icon_name
 from .external import open_external
 
@@ -63,14 +63,20 @@ class ReportView(QWidget):
         tip = QLabel("To add a chart or table: open it and press <b>Add to report</b>, or connect it to this step in the Map."); tip.setObjectName("muted"); tip.setWordWrap(True)
         r.addWidget(tip)
         split.addWidget(right); split.setSizes([420, 520])
-        doc.nodeChanged.connect(lambda nid: self.refill() if nid == self.nid and not self._timer.isActive() else None)
-        doc.edgeAdded.connect(lambda e: self.refill() if e.target == self.nid else None)
-        doc.edgeRemoved.connect(lambda e: self.refill() if e.target == self.nid else None)
-        doc.nodeState.connect(lambda nid, st: self._refresh_status() if nid == self.nid else None)
-        doc.statesChanged.connect(self._refresh_status)
-        doc.runFinished.connect(lambda *_: self._refresh_status())
-        doc.runStarted.connect(self._refresh_status)
-        doc.reloaded.connect(lambda: self.set_node(None))
+        listen(self, doc.nodeChanged, lambda nid: self.refill() if nid == self.nid and not self._timer.isActive() else None)
+        listen(self, doc.edgeAdded, lambda e: self.refill() if e.target == self.nid else None)
+        listen(self, doc.edgeRemoved, lambda e: self.refill() if e.target == self.nid else None)
+        listen(self, doc.nodeState, lambda nid, st: self._refresh_status() if nid == self.nid else None)
+        listen(self, doc.statesChanged, self._refresh_status)
+        listen(self, doc.runFinished, lambda *_: self._refresh_status())
+        listen(self, doc.runStarted, self._refresh_status)
+        listen(self, doc.reloaded, lambda: self.set_node(None))
+        listen(self, doc.flushRequested, self._flush)
+
+    def _flush(self) -> None:
+        if self._timer.isActive():
+            self._timer.stop()
+            self._commit_text()
 
     def set_node(self, nid: str | None) -> None:
         if self._timer.isActive():

@@ -7,7 +7,7 @@ from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel, QTableWidget, QTable
 
 from .document import Document
 from .theme import T
-from .common import page_header
+from .common import page_header, listen
 from .icons import icon
 
 TYPES = [("text", "text"), ("number", "number"), ("datetime", "date / time"), ("bool", "true / false")]
@@ -38,8 +38,14 @@ class EnterDataView(QWidget):
         self.table.itemChanged.connect(self._item_changed)
         a = QAction(self); a.setShortcut(QKeySequence.Paste); a.setShortcutContext(Qt.WidgetWithChildrenShortcut); a.triggered.connect(self.paste); self.table.addAction(a)
         d = QAction(self); d.setShortcut(QKeySequence.Delete); d.setShortcutContext(Qt.WidgetWithChildrenShortcut); d.triggered.connect(self._clear_selection); self.table.addAction(d)
-        doc.nodeChanged.connect(lambda nid: self.refill() if nid == self.nid and not self._timer.isActive() else None)
-        doc.reloaded.connect(lambda: self.set_node(None))
+        listen(self, doc.nodeChanged, lambda nid: self.refill() if nid == self.nid and not self._timer.isActive() else None)
+        listen(self, doc.reloaded, lambda: self.set_node(None))
+        listen(self, doc.flushRequested, self._flush)
+
+    def _flush(self) -> None:
+        if self._timer.isActive():
+            self._timer.stop()
+            self._commit()
 
     def set_node(self, nid: str | None) -> None:
         if self._timer.isActive():

@@ -24,6 +24,12 @@ run_gate = threading.Event()
 run_gate.set()
 
 
+def alive(obj: QObject) -> bool:
+    """False once Qt has deleted the widget behind ``obj`` (a result may arrive after its window closed)."""
+    import shiboken6
+    return shiboken6.isValid(obj)
+
+
 class Task(QRunnable):
     """Run fn(*args) in a pool; results come back on the GUI thread via signals.
     ``cancelled`` is honoured before the work starts and before any result is delivered."""
@@ -120,24 +126,42 @@ def view_pool() -> ViewPool:
 
 class Serial:
     """Keeps only the latest task of a kind: earlier results are ignored. Tasks that have not started
-    (queued or held for a run) are dropped when a newer one arrives."""
+    (queued or held for a run) are dropped when a newer one arrives. Nothing is delivered once ``owner``
+    (the widget that shows the results) has been deleted."""
 
-    def __init__(self) -> None:
+    def __init__(self, owner: QObject | None = None, waits_for_run: bool = True) -> None:
+        self._alive = True
+        if owner is not None:
+            owner.destroyed.connect(self._owner_gone)
         self._current: Task | None = None
         self._inflight: set[Task] = set()
         self.pool = view_pool()
+        self.waits_for_run = waits_for_run     # False for reads that never touch a result being written
 
     def submit(self, fn: Callable[..., Any], on_done: Callable[[Any], None], on_fail: Callable[[str], None] | None = None, *args: Any, **kwargs: Any) -> Task:
         self.cancel()
         t = Task(fn, *args, **kwargs)
+        t.waits_for_run = self.waits_for_run
         self._current = t
         self._inflight.add(t)
-        t.signals.done.connect(on_done)
+        # an older task's result may already be queued on the GUI thread when a newer task replaces it
+        # (the node or project changed meanwhile): deliver only the current task's outcome
+        t.signals.done.connect(lambda r, t=t: on_done(r) if self._delivers(t) else None)
         if on_fail:
-            t.signals.failed.connect(on_fail)
+            t.signals.failed.connect(lambda m, t=t: on_fail(m) if self._delivers(t) else None)
         t.signals.finished.connect(lambda t=t: self._inflight.discard(t))
         self.pool.start(t)
         return t
+
+    def _delivers(self, t: Task) -> bool:
+        return self._alive and t is self._current and not t.cancelled
+
+    def _owner_gone(self, *_: Any) -> None:
+        self._alive = False
+        try:
+            self.cancel()
+        except RuntimeError:        # the pool itself is gone (the app is exiting)
+            pass
 
     def cancel(self) -> None:
         if self._current is not None:

@@ -46,17 +46,20 @@ class RemoveNodes(QUndoCommand):
         super().__init__("Delete")
         self.doc = doc
         self.nodes = [doc.pipeline.nodes[i] for i in ids]
-        self.edges: list[Edge] = []
+        # per removed node, its connections with their places in the edge list: the order of a step's
+        # inputs (stack, workbook, report) is the order of the list, so undo puts each one back in place
+        self.removed: list[list[tuple[int, Edge]]] = []
 
     def redo(self) -> None:
         p = self.doc.pipeline
-        self.edges = []
+        self.removed = []
         for n in self.nodes:
             if n.id not in p.nodes:
                 continue
+            placed = [(i, e) for i, e in enumerate(p.edges) if e.source == n.id or e.target == n.id]
             for e in p.remove_node(n.id):
-                self.edges.append(e)
                 self.doc.edgeRemoved.emit(e)
+            self.removed.append(placed)
             self.doc.nodeRemoved.emit(n.id)
         self.doc.refresh_states()
 
@@ -65,10 +68,11 @@ class RemoveNodes(QUndoCommand):
         for n in self.nodes:
             p.nodes[n.id] = n
             self.doc.nodeAdded.emit(n.id)
-        for e in self.edges:
-            if e.key() not in {x.key() for x in p.edges} and e.source in p.nodes and e.target in p.nodes:
-                p.edges.append(e)
-                self.doc.edgeAdded.emit(e)
+        for placed in reversed(self.removed):
+            for i, e in placed:
+                if e.key() not in {x.key() for x in p.edges} and e.source in p.nodes and e.target in p.nodes:
+                    p.edges.insert(min(i, len(p.edges)), e)
+                    self.doc.edgeAdded.emit(e)
         self.doc.refresh_states()
 
 
@@ -141,23 +145,35 @@ class Connect(QUndoCommand):
     def __init__(self, doc: Document, edge: Edge) -> None:
         super().__init__("Connect")
         self.doc, self.edge = doc, edge
+        self.index: int | None = None       # where the edge sat when it was detached, so it comes back in place
 
-    def redo(self) -> None:
+    def _attach(self) -> None:
+        p = self.doc.pipeline
         try:
-            e = self.doc.pipeline.connect(self.edge.source, self.edge.target, self.edge.port)
+            e = p.connect(self.edge.source, self.edge.target, self.edge.port)
         except PipelineError:
             return
+        if self.index is not None and p.edges and p.edges[-1] is e:
+            p.edges.insert(min(self.index, len(p.edges) - 1), p.edges.pop())
         self.edge = e
         self.doc.edgeAdded.emit(e)
         self.doc.refresh_states()
 
-    def undo(self) -> None:
-        try:
-            self.doc.pipeline.disconnect(self.edge.source, self.edge.target, self.edge.port)
-        except PipelineError:
+    def _detach(self) -> None:
+        p = self.doc.pipeline
+        idx = next((i for i, e in enumerate(p.edges) if e.key() == self.edge.key()), None)
+        if idx is None:
             return
+        self.index = idx
+        p.disconnect(self.edge.source, self.edge.target, self.edge.port)
         self.doc.edgeRemoved.emit(self.edge)
         self.doc.refresh_states()
+
+    def redo(self) -> None:
+        self._attach()
+
+    def undo(self) -> None:
+        self._detach()
 
 
 class Disconnect(Connect):
@@ -166,10 +182,10 @@ class Disconnect(Connect):
         self.setText("Disconnect")
 
     def redo(self) -> None:
-        Connect.undo(self)
+        self._detach()
 
     def undo(self) -> None:
-        Connect.redo(self)
+        self._attach()
 
 
 class AddNote(QUndoCommand):

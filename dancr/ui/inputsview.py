@@ -6,7 +6,7 @@ from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel, QTableWidget, QTable
 
 from .document import Document
 from .theme import T
-from .common import page_header
+from .common import page_header, listen
 from .icons import icon
 
 
@@ -34,8 +34,8 @@ class InputsView(QWidget):
                          "or used in a formula as <code>[value] / [maximum allowed]</code>. Change it here and every step that uses it updates."); example.setObjectName("muted"); example.setWordWrap(True); example.setContentsMargins(12, 8, 12, 10)
         lay.addWidget(example)
         self.table.itemChanged.connect(self._changed)
-        doc.inputsChanged.connect(self.refill)
-        doc.reloaded.connect(self.refill)
+        listen(self, doc.inputsChanged, self.refill)
+        listen(self, doc.reloaded, self.refill)
         self.refill()
 
     def refill(self) -> None:

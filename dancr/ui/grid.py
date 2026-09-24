@@ -16,7 +16,9 @@ from ..views.stats import quick_column_info
 from ..core.expr import NUM, TIME, STR, BOOL
 from .theme import T
 from .icons import icon
-from .workers import Task, view_pool
+from .workers import Task, Serial, alive, view_pool
+
+COPY_MAX_ROWS = 200_000
 
 log = logging.getLogger("dancr.ui")
 MAX_TABLE_ROWS = 50_000_000     # QHeaderView length is a 32-bit int
@@ -29,6 +31,14 @@ def fmt_number(v: float, decimals: int | None) -> str:
     if decimals is not None:
         return f"{v:,.{decimals}f}"
     return format_value(v)
+
+
+def _clip(v: Any) -> str:
+    """One cell as clipboard text: blank for a blank cell, numbers in full, no tabs or line breaks inside."""
+    if v is None or (isinstance(v, float) and v != v):
+        return ""
+    text = format_value(v) if not isinstance(v, (int, float, str)) or isinstance(v, bool) else str(v)
+    return text.replace("\t", " ").replace("\r", " ").replace("\n", " ")
 
 
 class TableModel(QAbstractTableModel):
@@ -73,7 +83,7 @@ class TableModel(QAbstractTableModel):
         pager, gen = self.pager, self._generation
 
         def done(df):
-            if gen != self._generation or self.pager is not pager:
+            if not alive(self) or gen != self._generation or self.pager is not pager:
                 return
             pager.store_page(p, df)
             self._pending.discard(p)
@@ -84,7 +94,7 @@ class TableModel(QAbstractTableModel):
         t = Task(pager.fetch_page, p)
         t.waits_for_run = False
         t.signals.done.connect(done)
-        t.signals.failed.connect(lambda m: self._pending.discard(p))
+        t.signals.failed.connect(lambda m: self._pending.discard(p) if alive(self) else None)
         self._keep.add(t)
         t.signals.finished.connect(lambda t=t: self._keep.discard(t))
         view_pool().start(t)
@@ -222,6 +232,7 @@ class Grid(QWidget):
     columnAction = Signal(str, str)          # action, column
     cellAction = Signal(str, int, str, object)   # action, row (1-based), column, value
     chartColumns = Signal(list)              # selected numeric columns -> chart these
+    notice = Signal(str)                     # a short message for the status bar
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -256,7 +267,8 @@ class Grid(QWidget):
         a = QAction(self); a.setShortcut(QKeySequence.Find); a.setShortcutContext(Qt.WidgetWithChildrenShortcut); a.triggered.connect(self.show_find); self.addAction(a)
         c = QAction(self); c.setShortcut(QKeySequence.Copy); c.setShortcutContext(Qt.WidgetWithChildrenShortcut); c.triggered.connect(self.copy_selection); self.table.addAction(c)
         self._lf: pl.LazyFrame | None = None
-        self._keep: set[Task] = set()
+        self._find = Serial(self, waits_for_run=False)     # the latest search wins, whatever order searches finish in
+        self._copy = Serial(self, waits_for_run=False)
 
     # ---- content
     def set_content(self, lf: pl.LazyFrame | None, rows: int | None, in_memory: bool, column_stats: dict | None, column_meta: dict | None,
@@ -341,26 +353,42 @@ class Grid(QWidget):
         sel = self.table.selectionModel().selectedIndexes()
         if not sel:
             return
-        rows = sorted({i.row() for i in sel}); cols = sorted({i.column() for i in sel})
-        if len(rows) > 200_000:
-            rows = rows[:200_000]
-        header = [str(self.model.headerData(c, Qt.Horizontal)) for c in cols]
-        lines = ["\t".join(header)]
-        for r in rows:
-            lines.append("\t".join(str(self.model.data(self.model.index(r, c), Qt.DisplayRole)) for c in cols))
-        QGuiApplication.clipboard().setText("\n".join(lines))
+        self._copy_rows(sorted({i.row() for i in sel}), sorted({i.column() for i in sel}))
 
     def copy_all_visible(self) -> None:
-        """Copy the first page(s) of the table as tab-separated text, without selecting every row
-        (selecting 50 million rows would build a QModelIndex for each one and exhaust memory)."""
+        """Copy the table (up to COPY_MAX_ROWS rows) without selecting every row: selecting 50 million rows
+        would build a QModelIndex for each one and exhaust memory."""
         if not self.model.pager:
             return
-        cols = list(range(self.model.columnCount()))
-        cap = min(self.model.rowCount(), 200_000)
-        lines = ["\t".join(str(self.model.headerData(c, Qt.Horizontal)) for c in cols)]
-        for r in range(cap):
-            lines.append("\t".join(str(self.model.data(self.model.index(r, c), Qt.DisplayRole)) for c in cols))
-        QGuiApplication.clipboard().setText("\n".join(lines))
+        self._copy_rows(range(min(self.model.rowCount(), COPY_MAX_ROWS)), list(range(self.model.columnCount())))
+
+    def _copy_rows(self, rows: list[int] | range, cols: list[int]) -> None:
+        """Tab-separated text of these rows and columns, read from the table itself on a worker (the grid only
+        holds the pages on screen), with every value in full: blank cells stay blank, numbers keep all digits."""
+        pager = self.model.pager
+        if pager is None or not rows or not cols:
+            return
+        clipped = len(rows) > COPY_MAX_ROWS
+        rows = rows[:COPY_MAX_ROWS]
+        names = [pager.columns[c] for c in cols]
+        header = "\t".join(_clip(self.model.headerData(c, Qt.Horizontal)) for c in cols)
+        lo, hi = rows[0], rows[-1]
+        contiguous = isinstance(rows, range) or hi - lo + 1 == len(rows)
+
+        def work():
+            lf = pager.lf.select(names)
+            if contiguous:
+                df = lf.slice(lo, hi - lo + 1).collect(engine="streaming")
+            else:
+                df = lf.with_row_index("__dancr_r").filter(pl.col("__dancr_r").is_in(list(rows))).drop("__dancr_r").collect(engine="streaming")
+            return "\n".join([header] + ["\t".join(_clip(v) for v in r) for r in df.iter_rows()]), df.height
+
+        def done(r):
+            text, n = r
+            QGuiApplication.clipboard().setText(text)
+            self.notice.emit(f"Copied {n:,} rows" + (f" (the first {COPY_MAX_ROWS:,} of the selection)" if clipped else ""))
+        self.notice.emit(f"Copying {len(rows):,} rows…")
+        self._copy.submit(work, done, lambda m: self.notice.emit(f"Could not copy: {m}"))
 
     # ---- find / jump
     def show_find(self) -> None:
@@ -404,7 +432,4 @@ class Grid(QWidget):
             idx = self.model.index(min(r, self.model.rowCount() - 1), 0)
             self.table.scrollTo(idx, QAbstractItemView.PositionAtCenter)
             self.table.setCurrentIndex(idx); self.table.selectRow(idx.row())
-        t = Task(work); t.waits_for_run = False
-        t.signals.done.connect(done); t.signals.failed.connect(lambda m: self.find_status.setText(m[:60]) if self.model.pager is pager else None)
-        self._keep.add(t); t.signals.finished.connect(lambda t=t: self._keep.discard(t))
-        view_pool().start(t)
+        self._find.submit(work, done, lambda m: self.find_status.setText(m[:60]) if self.model.pager is pager else None)

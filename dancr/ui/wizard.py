@@ -70,7 +70,7 @@ class WizardPage(QWidget):
         self._prefill: dict | None = None
         self._link_rows: list[dict] = []
         self._stack_checks: dict[int, QCheckBox] = {}
-        self._serial = Serial()
+        self._serial = Serial(self)
         self._step = 0
         self._build_ui()
 

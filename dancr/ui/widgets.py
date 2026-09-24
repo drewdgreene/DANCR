@@ -543,12 +543,14 @@ class RowListWidget(ParamWidget):
     add_text = "+ Add"
     spacing = 4
     keep_one_blank = False          # show one empty row when the value is empty
+    can_add = True                  # False when rows come from elsewhere (the table's cell menu)
 
     def __init__(self, param: Param, parent=None) -> None:
         super().__init__(param, parent)
         self.lay = QVBoxLayout(self); self.lay.setContentsMargins(0, 0, 0, 0); self.lay.setSpacing(self.spacing)
         self.rows: list[QWidget] = []
         self.add_btn = QPushButton(self.add_text); self.add_btn.clicked.connect(lambda: (self.add_row(self.empty_item()), self.changed.emit()))
+        self.add_btn.setVisible(self.can_add)
         self.lay.addWidget(self.add_btn)
 
     def empty_item(self) -> Any:
@@ -947,44 +949,43 @@ class LimitsWidget(RowListWidget):
 
 
 # ---------------------------------------------------------------- fixes (cell corrections)
-class FixesWidget(ParamWidget):
+class FixRow(_Row):
+    """One correction: where, what it was, what it is now, and why."""
+
+    def __init__(self, item: dict) -> None:
+        super().__init__()
+        self._item = dict(item)
+        h = QHBoxLayout(self); h.setContentsMargins(0, 0, 0, 0); h.setSpacing(4)
+        was = "empty" if item.get("was") in (None, "") else str(item.get("was"))
+        new = "empty" if item.get("value") in (None, "") else str(item.get("value"))
+        lab = QLabel(f"Row {int(item.get('row', 0)):,}, <b>{item.get('column')}</b>: {was} → {new}" + (f"<br><span style='color:{T.muted}'>{item['note']}</span>" if item.get("note") else ""))
+        lab.setWordWrap(True); lab.setTextFormat(Qt.RichText)
+        h.addWidget(lab, 1); h.addWidget(self._remove_button("Remove this correction"), 0, Qt.AlignTop)
+
+    def item(self) -> dict:
+        return dict(self._item)
+
+
+class FixesWidget(RowListWidget):
     """The list of corrections made from the table's cell menu; each can be removed here."""
+    spacing = 3
+    can_add = False
 
     def __init__(self, param: Param, parent=None) -> None:
         super().__init__(param, parent)
-        self.lay = QVBoxLayout(self); self.lay.setContentsMargins(0, 0, 0, 0); self.lay.setSpacing(3)
-        self._fixes: list[dict[str, Any]] = []
         self.hint = QLabel("Right-click a cell in the table and choose Fix this value to add one."); self.hint.setObjectName("muted"); self.hint.setWordWrap(True)
-        self.lay.addWidget(self.hint)
+        self.lay.insertWidget(0, self.hint)
+        self.changed.connect(self._sync_hint)
 
-    def _rebuild(self) -> None:
-        while self.lay.count() > 1:
-            w = self.lay.takeAt(1).widget()
-            if w:
-                w.deleteLater()
-        for i, f in enumerate(self._fixes):
-            w = QWidget(); h = QHBoxLayout(w); h.setContentsMargins(0, 0, 0, 0); h.setSpacing(4)
-            was = "empty" if f.get("was") in (None, "") else str(f.get("was"))
-            new = "empty" if f.get("value") in (None, "") else str(f.get("value"))
-            lab = QLabel(f"Row {int(f.get('row', 0)):,}, <b>{f.get('column')}</b>: {was} → {new}" + (f"<br><span style='color:{T.muted}'>{f['note']}</span>" if f.get("note") else ""))
-            lab.setWordWrap(True); lab.setTextFormat(Qt.RichText)
-            rm = QToolButton(); rm.setObjectName("quiet"); rm.setIcon(icon("x", T.muted)); rm.setToolTip("Remove this correction")
-            rm.clicked.connect(lambda _=False, i=i: self._remove(i))
-            h.addWidget(lab, 1); h.addWidget(rm, 0, Qt.AlignTop)
-            self.lay.addWidget(w)
-        self.hint.setVisible(not self._fixes)
-
-    def _remove(self, i: int) -> None:
-        del self._fixes[i]; self._rebuild(); self.changed.emit()
-
-    def value(self) -> Any:
-        return [dict(f) for f in self._fixes]
+    def build_row(self, item: Any) -> QWidget:
+        return FixRow(item)
 
     def set_value(self, v: Any) -> None:
-        v = [dict(f) for f in (v or [])]
-        if v == self._fixes:
-            return
-        self._fixes = v; self._rebuild()
+        super().set_value(v)
+        self._sync_hint()
+
+    def _sync_hint(self) -> None:
+        self.hint.setVisible(not self.rows)
 
 
 # ---------------------------------------------------------------- factory

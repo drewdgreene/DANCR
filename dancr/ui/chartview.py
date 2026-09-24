@@ -24,7 +24,7 @@ from ..views.chartquery import ChartData, ChartError, query_panels, limit_values
 from ..views.palette import SERIES_COLORS, series_color
 from .document import Document
 from .theme import T
-from .common import page_header
+from .common import page_header, listen
 from .workers import Serial
 from .icons import icon
 from .flow import FlowLayout
@@ -84,7 +84,7 @@ class ChartView(QWidget):
         self._schema_src: str | None = None  # the table ``schema`` describes
         self.rows = 0
         self.preview = False
-        self._serial = Serial()
+        self._serial = Serial(self)
         self._suppress = False
         self._last_range: tuple[float, float] | None = None
         self._bounds: dict[str, tuple[float, float, int]] = {}
@@ -134,12 +134,15 @@ class ChartView(QWidget):
         self._timer = QTimer(self); self._timer.setSingleShot(True); self._timer.setInterval(90); self._timer.timeout.connect(lambda: self._query(full=False))
         self.hint = QLabel("Drag to pan · scroll to zoom · right-drag to zoom into a box · double-click to fit · click a legend entry to hide it"); self.hint.setObjectName("faint"); self.hint.setWordWrap(True)
         self.hint.setContentsMargins(10, 2, 10, 3); lay.addWidget(self.hint)
-        doc.nodeChanged.connect(lambda nid: self.refresh() if nid == self.nid else None)
-        doc.statesChanged.connect(self._maybe_refresh)
-        doc.inputsChanged.connect(self.refresh)
-        doc.columnsChanged.connect(self.refresh)
-        doc.runFinished.connect(lambda ok, r: self.refresh())
-        doc.reloaded.connect(self.clear)
+        listen(self, doc.nodeChanged, lambda nid: self.refresh() if nid == self.nid else None)
+        listen(self, doc.statesChanged, self._maybe_refresh)
+        listen(self, doc.inputsChanged, self.refresh)
+        listen(self, doc.columnsChanged, self.refresh)
+        listen(self, doc.runFinished, lambda ok, r: self.refresh())
+        listen(self, doc.reloaded, self.clear)
+        # rewiring the chart's input changes what it draws, even when no state hash changed
+        listen(self, doc.edgeAdded, lambda e: self.refresh() if e.target == self.nid else None)
+        listen(self, doc.edgeRemoved, lambda e: self.refresh() if e.target == self.nid else None)
 
     # ------------------------------------------------------------ panels
     @property
@@ -261,9 +264,11 @@ class ChartView(QWidget):
         else:
             self._set_overlay("Waiting for the run to finish…" if self.doc.running else "Building a preview…")
 
+            executor = self.doc.executor            # captured here: the project may be replaced meanwhile
+
             def work():
                 try:
-                    df, _res, _kind = self.doc.executor.preview(src, Executor.PREVIEW_ROWS)
+                    df, _res, _kind = executor.preview(src, Executor.PREVIEW_ROWS)
                     return df, None
                 except Exception as e:  # noqa: BLE001 - a preview that cannot be built is not a failure of the app
                     from ..core.executor import friendly_error

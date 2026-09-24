@@ -19,9 +19,9 @@ from ..core.nodes.load import EXCEL_EXT, list_sheets
 from .document import Document
 from .widgets import make_widget, ParamWidget, SheetWidget, PathWidget, BoolWidget, kind_of
 from .finding import FindingCard
-from .workers import Serial, Task, view_pool
+from .workers import Serial, Task, alive, view_pool
 from .theme import T, category_color
-from .common import status_dot
+from .common import status_dot, listen
 from .icons import icon, node_icon_name
 
 
@@ -38,7 +38,7 @@ class InspectorPanel(QWidget):
         self._labels: dict[str, QWidget] = {}
         self._committing = False
         self._pending: dict[str, Any] = {}
-        self._schema_serial = Serial()
+        self._schema_serial = Serial(self)
         self._suggest_cache: OrderedDict[tuple, list[str]] = OrderedDict()     # (output file, column) -> values, newest last
         self._suggest_tasks: set[Task] = set()
         self._timer = QTimer(self); self._timer.setSingleShot(True); self._timer.setInterval(350); self._timer.timeout.connect(self._commit)
@@ -50,15 +50,16 @@ class InspectorPanel(QWidget):
         self.setMinimumWidth(300)
         self.scroll.setMinimumWidth(0)
         self.setStyleSheet(f"QWidget#inspector {{ background: {T.bg}; border-left: 1px solid {T.border}; }}")
-        doc.nodeChanged.connect(self._on_node_changed)
-        doc.nodeRemoved.connect(lambda nid: self.set_node(None) if nid == self.nid else None)
-        doc.reloaded.connect(lambda: self.set_node(None))
-        doc.statesChanged.connect(self._refresh_status)
-        doc.nodeState.connect(lambda nid, st: self._refresh_status() if nid == self.nid else None)
-        doc.runStarted.connect(self._refresh_status)
-        doc.runFinished.connect(lambda ok, res: self._refresh_status())
-        doc.edgeAdded.connect(lambda e: self._refresh_schema() if self.nid in (e.source, e.target) else None)
-        doc.edgeRemoved.connect(lambda e: self._refresh_schema() if self.nid in (e.source, e.target) else None)
+        listen(self, doc.flushRequested, self._flush)
+        listen(self, doc.nodeChanged, self._on_node_changed)
+        listen(self, doc.nodeRemoved, lambda nid: self.set_node(None) if nid == self.nid else None)
+        listen(self, doc.reloaded, lambda: self.set_node(None))
+        listen(self, doc.statesChanged, self._refresh_status)
+        listen(self, doc.nodeState, lambda nid, st: self._refresh_status() if nid == self.nid else None)
+        listen(self, doc.runStarted, self._refresh_status)
+        listen(self, doc.runFinished, lambda ok, res: self._refresh_status())
+        listen(self, doc.edgeAdded, lambda e: self._refresh_schema() if self.nid in (e.source, e.target) else None)
+        listen(self, doc.edgeRemoved, lambda e: self._refresh_schema() if self.nid in (e.source, e.target) else None)
         self.set_node(None)
 
     def _title_bar(self) -> QWidget:
@@ -250,6 +251,8 @@ class InspectorPanel(QWidget):
                 return key, sorted(vals)
 
             def done(r):
+                if not alive(self):
+                    return
                 k, vals = r
                 if k in cache:
                     cache[k] = vals
@@ -274,6 +277,11 @@ class InspectorPanel(QWidget):
             self._commit()
         else:
             self._timer.start()
+
+    def _flush(self) -> None:
+        if self._timer.isActive():
+            self._timer.stop()
+            self._commit()
 
     def _commit(self) -> None:
         if not self._pending or self.nid is None or self.nid not in self.doc.pipeline.nodes:

@@ -13,6 +13,7 @@ from ..core import registry, PipelineError
 from ..core.model import Edge, Node, Note, Answer
 from ..core.nodes.load import CSV_EXT, EXCEL_EXT, PARQUET_EXT
 from .document import Document
+from .common import listen
 from .theme import T, category_color
 from .icons import paint as paint_icon, icon, node_icon_name
 
@@ -512,21 +513,21 @@ class CanvasScene(QGraphicsScene):
         self._reroute_item: EdgeItem | None = None
         self.setSceneRect(-6000, -6000, 12000, 12000)
         self.selectionChanged.connect(self._on_selection)
-        doc.nodeAdded.connect(self._add_node)
-        doc.nodeRemoved.connect(self._remove_node)
-        doc.nodeChanged.connect(self._node_changed)
-        doc.nodeMoved.connect(self._node_moved)
-        doc.edgeAdded.connect(self._add_edge)
-        doc.edgeRemoved.connect(self._remove_edge)
-        doc.noteAdded.connect(self._add_note)
-        doc.noteRemoved.connect(self._remove_note)
-        doc.noteChanged.connect(lambda nid: self.notes[nid].update() if nid in self.notes else None)
-        doc.answerAdded.connect(self._add_answer)
-        doc.answerRemoved.connect(self._remove_answer)
-        doc.answerChanged.connect(lambda aid: self.answers[aid].update() if aid in self.answers else None)
-        doc.reloaded.connect(self.rebuild)
-        doc.statesChanged.connect(self.refresh_states)
-        doc.nodeState.connect(self._node_state)
+        listen(self, doc.nodeAdded, self._add_node)
+        listen(self, doc.nodeRemoved, self._remove_node)
+        listen(self, doc.nodeChanged, self._node_changed)
+        listen(self, doc.nodeMoved, self._node_moved)
+        listen(self, doc.edgeAdded, self._add_edge)
+        listen(self, doc.edgeRemoved, self._remove_edge)
+        listen(self, doc.noteAdded, self._add_note)
+        listen(self, doc.noteRemoved, self._remove_note)
+        listen(self, doc.noteChanged, lambda nid: self.notes[nid].update() if nid in self.notes else None)
+        listen(self, doc.answerAdded, self._add_answer)
+        listen(self, doc.answerRemoved, self._remove_answer)
+        listen(self, doc.answerChanged, lambda aid: self.answers[aid].update() if aid in self.answers else None)
+        listen(self, doc.reloaded, self.rebuild)
+        listen(self, doc.statesChanged, self.refresh_states)
+        listen(self, doc.nodeState, self._node_state)
         self.rebuild()
 
     # ---- sync with document
@@ -768,13 +769,12 @@ class CanvasScene(QGraphicsScene):
                 if item is not None:                        # dropped back where it was: no change
                     item.setVisible(True)
                 return
-            self.doc.undo.beginMacro("Move connection")     # detach here, attach there, as one undo step
-            self.doc.disconnect(edge)
             try:
-                self.doc.connect(edge.source, target.node_item.node_id, target.name)
-            except PipelineError as e:
+                self.doc.move_edge(edge, target.node_item.node_id, target.name)
+            except PipelineError as e:                      # not allowed: the connection stays where it was
+                if item is not None:
+                    item.setVisible(True)
                 self.status.emit(str(e))
-            self.doc.undo.endMacro()
             return
         if not src or not target:
             return
@@ -873,7 +873,7 @@ class CanvasView(QGraphicsView):
         self._pan_start = QPointF()
         self._pan_moved = False
         self._build_overlay()
-        scene.changed.connect(lambda _: self._update_empty())
+        listen(self, scene.changed, lambda _: self._update_empty())
         self._update_empty()
 
     # ---- overlay: zoom buttons + empty state
