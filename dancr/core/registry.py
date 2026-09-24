@@ -32,6 +32,13 @@ class NodeResult:
     frame: pl.LazyFrame
     report: dict[str, Any] = field(default_factory=dict)   # extra findings (fit coefficients, gap counts...)
     messages: list[str] = field(default_factory=list)      # human-readable notes for the log
+    files: list[Path] = field(default_factory=list)        # files this step wrote (rewritten if deleted or changed)
+
+
+def resolve_path(base: Path, path: str) -> Path:
+    """A path setting as a file path: ``~`` expanded, relative paths taken from the project folder."""
+    p = Path(path).expanduser()
+    return p if p.is_absolute() else (base / p)
 
 
 @dataclass
@@ -47,10 +54,20 @@ class Ctx:
     inputs: dict[str, Any] | None = None            # named project inputs (belt area, permit limit, ...)
     upstream_meta: dict[str, list[dict]] | None = None   # {port: [{"title","node_type","params","messages","report"}]}
     columns: dict[str, dict] | None = None          # column registry: name -> {"label", "unit"}
+    output_root: Path | None = None                 # when set, steps may only write files inside it (MCP)
 
     def resolve(self, path: str) -> Path:
-        p = Path(path).expanduser()
-        return p if p.is_absolute() else (self.pipeline_dir / p)
+        """A path to read."""
+        return resolve_path(self.pipeline_dir, path)
+
+    def resolve_output(self, path: str) -> Path:
+        """A path to write. Refused outside ``output_root`` when one is set (symlinks and ``..`` included)."""
+        out = resolve_path(self.pipeline_dir, path)
+        if self.output_root is not None:
+            real = out.resolve()
+            if not real.is_relative_to(self.output_root):
+                raise ValueError(f"Can only save inside the project folder {self.output_root}, not {real}")
+        return out
 
 
 ApplyFn = Callable[[Ctx, dict[str, list[pl.LazyFrame]], dict[str, Any]], "pl.LazyFrame | NodeResult"]

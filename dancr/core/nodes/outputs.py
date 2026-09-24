@@ -74,11 +74,11 @@ def _export(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, A
     path = (params.get("path") or "").strip()
     if not path:
         raise ValueError("Choose where to save the file")
-    out = ctx.resolve(path)
+    out = ctx.resolve_output(path)
     if ctx.preview:
         return NodeResult(lf, messages=[f"Will write {out.name} when the pipeline runs"])
     write_table(lf, out)
-    return NodeResult(lf, messages=[f"Saved {out}"], report={"path": str(out)})
+    return NodeResult(lf, messages=[f"Saved {out}"], report={"path": str(out)}, files=[out])
 
 
 EXCEL_MAX_ROWS = 1_048_576
@@ -119,6 +119,7 @@ registry.register(NodeType(
     description="Write the table to CSV, Excel or Parquet.",
     apply=_export,
     kind="sink",
+    materialize=False,      # the table is the upstream result; keeping a second copy in the cache wastes the disk
     summary=lambda p: Path(p.get("path") or "").name or "no file chosen",
     params=[Param("path", "Save as", "path", required=True, help=".csv, .tsv, .xlsx or .parquet")],
 ))

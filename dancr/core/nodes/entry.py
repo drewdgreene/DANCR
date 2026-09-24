@@ -116,7 +116,7 @@ def _workbook(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str,
     path = (params.get("path") or "").strip()
     if not path:
         raise ValueError("Choose where to save the workbook (an .xlsx file)")
-    out = ctx.resolve(path)
+    out = ctx.resolve_output(path)
     if out.suffix.lower() != ".xlsx":
         raise ValueError("Save the workbook as an .xlsx file")
     if ctx.preview:
@@ -140,7 +140,8 @@ def _workbook(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str,
         os.replace(tmp, out)
     finally:
         tmp.unlink(missing_ok=True)
-    return NodeResult(frames[0], messages=[f"Saved {len(frames)} sheets to {out}"], report={"path": str(out), "sheets": len(frames)})
+    return NodeResult(frames[0], messages=[f"Saved {len(frames)} sheets to {out}"], report={"path": str(out), "sheets": len(frames)},
+                      files=[out])
 
 
 registry.register(NodeType(

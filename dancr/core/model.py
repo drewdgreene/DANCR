@@ -116,6 +116,15 @@ class Input:
         return {"name": self.name, "value": self.value, "unit": self.unit, "note": self.note}
 
 
+def portable_path(path: Path, base: Path) -> str:
+    """How a file is written into a path setting: relative when it is inside the project folder
+    (so the folder can be moved or shared), else absolute."""
+    try:
+        return path.relative_to(base).as_posix()
+    except ValueError:
+        return str(path)
+
+
 _INPUT_RE = re.compile(r"^[^\W\d][\w ]*$")
 
 
@@ -449,6 +458,22 @@ class Pipeline:
                          for k, v in cols.items() if isinstance(v, dict)}
         return p
 
+    def _rebase_paths(self, old_dir: Path, new_dir: Path) -> None:
+        """Save As to another folder: every path setting keeps pointing at the same file (relative when
+        that file is inside the new folder, absolute otherwise)."""
+        for node in self.nodes.values():
+            try:
+                nt = registry.get(node.type)
+            except KeyError:
+                continue
+            for prm in nt.params:
+                v = node.params.get(prm.name)
+                if prm.kind != "path" or not isinstance(v, str) or not v.strip():
+                    continue
+                p = Path(v).expanduser()
+                full = p if p.is_absolute() else Path(os.path.normpath(old_dir.resolve() / p))
+                node.params = {**node.params, prm.name: portable_path(full, new_dir)}
+
     def dumps(self) -> str:
         return json.dumps(self.to_dict(), indent=2, ensure_ascii=False) + "\n"
 
@@ -459,7 +484,10 @@ class Pipeline:
         if target.is_dir():
             raise PipelineError(f"{target} is a folder; choose a file name")
         old_path = self.path
-        self.path = target                      # so relative paths serialise against the new folder
+        old_dir = self.directory
+        self.path = target
+        if old_dir.resolve() != target.parent:
+            self._rebase_paths(old_dir, target.parent)
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
             text = self.dumps()

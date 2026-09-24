@@ -148,7 +148,7 @@ def _apply(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, An
     path = (params.get("path") or "").strip()
     if not path:
         raise ValueError("Choose where to save the report (a .html file)")
-    out = ctx.resolve(path)
+    out = ctx.resolve_output(path)
     if out.suffix.lower() not in (".html", ".htm"):
         raise ValueError("Save the report as a .html file (it opens in any browser and prints to PDF)")
     if ctx.preview:
@@ -164,16 +164,18 @@ def _apply(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, An
         tmp.unlink(missing_ok=True)
     msgs = [f"Saved report to {out}"]
     rep: dict[str, Any] = {"path": str(out), "items": len(frames)}
+    files = [out]
     if params.get("pdf", True):
         from ...views.pdf import html_to_pdf
         try:
             pdf = html_to_pdf(doc, out.with_suffix(".pdf"))
             msgs.append(f"PDF: {pdf}")
             rep["pdf"] = str(pdf)
+            files.append(Path(pdf))
         except Exception as e:  # PDF is a convenience; never fail the report for it
             ctx.logger.warning("PDF not written for %s: %s", out, e)
             msgs.append(f"PDF not written ({e})")
-    return NodeResult(frames[0], messages=msgs, report=rep)
+    return NodeResult(frames[0], messages=msgs, report=rep, files=files)
 
 
 registry.register(NodeType(

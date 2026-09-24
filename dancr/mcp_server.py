@@ -354,7 +354,7 @@ def render_chart(path: str, node_id: str, out_png: str | None = None, kind: str 
     if title:
         params["title"] = title
     params.setdefault("kind", "line")
-    out = _inside_project(p, out_png) if out_png else (ex.cache_dir / "charts" / f"{node_id}.png")
+    out = _inside_project(p, out_png) if out_png else (ex.cache_dir / ".charts" / f"{node_id}.png")
     _render(lf, params, out, width=width, height=height, inputs=p.input_values())
     return Image(path=str(out))
 

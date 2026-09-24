@@ -96,6 +96,7 @@ class Document(QObject):
         self._watcher.fileChanged.connect(self._on_file_changed)
         self._last_saved_text: str | None = None
         self._states_cache: dict[str, NodeState] = {}
+        self._held: dict[str, str | None] = {}
         self._poll = QTimer(self)
         self._poll.setInterval(2500)
         self._poll.timeout.connect(self.refresh_states)
@@ -348,7 +349,7 @@ class Document(QObject):
     def replace_pipeline(self, pipeline: Pipeline) -> None:
         self.stop(wait=True)
         self.pipeline = pipeline
-        self.executor = Executor(self.pipeline)
+        self._set_executor(Executor(self.pipeline))
         self.undo.clear()
         self._states_cache = {}
         # the in-memory project now matches what is on disk, so the next watcher event is an external one
@@ -379,8 +380,14 @@ class Document(QObject):
         for w in (self._watcher, self._src_watcher):
             if w.files():
                 w.removePaths(w.files())
+        self.executor.release()
         if self.pipeline.path is None and self.executor.cache_dir.exists():
             shutil.rmtree(self.executor.cache_dir, ignore_errors=True)
+
+    def _set_executor(self, ex: Executor) -> None:
+        self.executor.release()
+        self.executor = ex
+        self._held = {}
 
     def save(self, path: Path | str | None = None) -> Path:
         if path is not None and self.running and Path(path).expanduser().resolve() != self.pipeline.path:
@@ -397,7 +404,7 @@ class Document(QObject):
                     shutil.move(str(old_cache), str(new_exec.cache_dir))     # keep computed results after Save As
             except OSError:
                 log.exception("Could not move the cached results from %s to %s; the steps will run again", old_cache, new_exec.cache_dir)
-            self.executor = new_exec
+            self._set_executor(new_exec)
             self._states_cache = {}
             self.pathChanged.emit(p)
             self.refresh_states()
@@ -428,6 +435,10 @@ class Document(QObject):
         changed = set(new) != set(self._states_cache) or any(
             new[k].status != self._states_cache[k].status or new[k].hash != self._states_cache[k].hash for k in new)
         self._states_cache = new
+        held = {k: st.hash for k, st in new.items()}
+        if held != self._held:                       # other processes' cache sweeps keep what this window shows
+            self._held = held
+            self.executor.hold(held)
         if changed:
             self.statesChanged.emit()
 
