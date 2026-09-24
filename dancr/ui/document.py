@@ -40,6 +40,10 @@ AUTO_RUN_DELAY_MS = 700     # quiet time after an edit before an automatic run
 SOURCE_SETTLE_MS = 1500     # a data file being written fires many change events: wait for it to settle
 
 
+class ChangedOnDisk(PipelineError):
+    """Saving would overwrite changes another program made to the project file."""
+
+
 class _DocEdits:
     """Plan edits as undoable commands (inside the caller's undo macro)."""
 
@@ -150,6 +154,7 @@ class Document(QObject):
         self._src_watcher = QFileSystemWatcher(self)
         self._src_watcher.fileChanged.connect(self._on_source_changed)
         self.autosave_paused: str | None = None
+        self.last_set_aside: list[str] = []        # hand-edited steps the last answer change left as they were
         self._autosave = QTimer(self); self._autosave.setInterval(AUTOSAVE_SECS * 1000); self._autosave.timeout.connect(self.autosave_now); self._autosave.start()
         self._rewatch()
 
@@ -339,6 +344,9 @@ class Document(QObject):
             return
         try:
             self.save(auto=True)
+        except ChangedOnDisk:
+            self.write_recovery()            # never over someone else's change; the person decides when saving
+            return
         except (OSError, PipelineError):
             log.exception("Autosave of %s failed", self.pipeline.path)
             self.write_recovery()
@@ -468,9 +476,24 @@ class Document(QObject):
         self.executor = ex
         self._held = {}
 
-    def save(self, path: Path | str | None = None, auto: bool = False) -> Path:
+    def changed_elsewhere(self) -> bool:
+        """True when the project file on disk is not what this window last read or wrote: another program (an agent
+        over MCP, the command line, another window) changed it, and saving now would silently throw that away."""
+        p = self.pipeline.path
+        if p is None or not p.exists() or self._last_saved_text is None:
+            return False
+        try:
+            return p.read_text(encoding="utf-8") != self._last_saved_text
+        except OSError:
+            return False
+
+    def save(self, path: Path | str | None = None, auto: bool = False, overwrite: bool = False) -> Path:
         if path is not None and self.running and Path(path).expanduser().resolve() != self.pipeline.path:
             raise PipelineError("Wait for the run to finish before saving under a new name")
+        same_file = path is None or Path(path).expanduser().resolve() == self.pipeline.path
+        if same_file and not overwrite and self.changed_elsewhere():
+            self.pause_autosave("the project file changed on disk")
+            raise ChangedOnDisk("The project file was changed by another program since it was opened here")
         self.flush_edits()
         old = self.pipeline.path
         old_dir = self.pipeline.directory.resolve()
@@ -659,11 +682,16 @@ class Document(QObject):
         from ..core.planner import apply_plan, protected_nodes
         from ..core.recipes import plan as make_plan
         plan = make_plan(model, spec)
+        from ..core.recipes import PlanError
+        missing = [s.params["node"] for s in plan.steps if s.type == "@" and s.params["node"] not in self.pipeline.nodes]
+        if missing:                                 # checked before anything changes: a failed build leaves no trace
+            raise PlanError(f"The table {missing[0]!r} is not in the project any more")
         existing = self.pipeline.answer(answer_id) if answer_id else None
         with self.macro("Change answer" if existing else f"Answer: {plan.title}"):
-            resolved, record = apply_plan(self.pipeline, plan, _DocEdits(self),
-                                          existing.steps if existing else None, protected_nodes(self.pipeline, answer_id))
-            fields = answers.answer_fields(self.pipeline, plan, resolved, record)
+            applied = apply_plan(self.pipeline, plan, _DocEdits(self),
+                                 existing.steps if existing else None, protected_nodes(self.pipeline, answer_id))
+            fields = answers.answer_fields(self.pipeline, plan, applied.resolved, applied.record)
+            self.last_set_aside = [self.pipeline.nodes[n].title for n in applied.left if n in self.pipeline.nodes]
             if existing is None:
                 a = Answer(self.pipeline._new_answer_id(), fields["title"], fields["x"], fields["y"], fields["terminal"],
                            fields["view"], fields["spec"], fields["steps"], fields["assumptions"], fields["rules"])

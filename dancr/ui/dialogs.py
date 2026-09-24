@@ -55,7 +55,7 @@ class VersionsDialog(QDialog):
         self.list = QListWidget()
         versions = doc.versions()
         for p in versions:
-            m = re.match(r"(\d{4}-\d{2}-\d{2})_(\d{2})-(\d{2})-(\d{2})", p.name)
+            m = re.search(r"(\d{4}-\d{2}-\d{2})_(\d{2})-(\d{2})-(\d{2})", p.name)
             when = f"{m.group(1)}  {m.group(2)}:{m.group(3)}:{m.group(4)}" if m else p.stem
             stamp = when + ("   ·   autosave" if p.name.endswith(".auto.json") else "")
             it = QListWidgetItem(icon("clock-counter-clockwise", T.muted, 16), stamp); it.setData(Qt.UserRole, str(p)); self.list.addItem(it)

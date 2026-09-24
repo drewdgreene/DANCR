@@ -67,16 +67,20 @@ def datetime_literal(value: Any, dt: pl.DataType, what: str = "value") -> pl.Exp
 
 
 def align_time_column(expr: pl.Expr, dt_from: pl.DataType, dt_to: pl.DataType) -> pl.Expr:
-    """Cast a time column expression so it matches another time column's dtype."""
+    """Cast a time column expression so it matches another time column's dtype. Between a zoned time and one
+    without a zone (or a date), the local wall-clock time is what is compared: 00:20 in Oslo is 00:20 on that
+    date. A wall time the clocks skipped (inside a daylight-saving jump) has no moment, so it becomes blank."""
+    tz_from = time_zone(dt_from) if is_datetime(dt_from) else None
+    if is_date(dt_to):
+        if tz_from:
+            expr = expr.dt.replace_time_zone(None)
+        return expr.cast(pl.Datetime("us"))
     if is_date(dt_from):
         expr = expr.cast(pl.Datetime("us"))
-    if is_date(dt_to):
-        return expr.cast(pl.Datetime("us")).dt.replace_time_zone(None)
     unit, tz = time_unit(dt_to), time_zone(dt_to)
-    tz_from = time_zone(dt_from) if is_datetime(dt_from) else None
     expr = expr.cast(pl.Datetime(unit, tz_from))
     if tz and not tz_from:
-        expr = expr.dt.replace_time_zone(tz, ambiguous="earliest")
+        expr = expr.dt.replace_time_zone(tz, ambiguous="earliest", non_existent="null")
     elif tz and tz_from:
         expr = expr.dt.convert_time_zone(tz)
     elif not tz and tz_from:

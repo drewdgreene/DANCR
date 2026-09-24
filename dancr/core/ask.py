@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .recipes import PlanError, plan, groupables, RECIPES
-from .understand import DataModel, MEASURE, CATEGORY, TIME_ROLE, ID, TEXT, FLAG, BLANK, CONSTANT, norm, _words
+from .understand import DataModel, MEASURE, CATEGORY, TIME_ROLE, ID, TEXT, FLAG, BLANK, CONSTANT, STR, norm, _words
 
 STATS = {"total": "sum", "totals": "sum", "sum": "sum", "sums": "sum", "add up": "sum", "added up": "sum",
          "average": "mean", "averages": "mean", "avg": "mean", "mean": "mean", "typical": "mean",
@@ -65,6 +65,7 @@ class Meaning:
     kind: str                  # stat every recipe col table value by op num top unit stop and
     value: Any = None
     refs: list[list] = field(default_factory=list)      # col: every column the words could mean
+    alias: bool = False                                 # col: only by a shortened name ("patient" for patient_id)
 
 
 @dataclass
@@ -127,22 +128,24 @@ def vocabulary(model: DataModel) -> dict[tuple[str, ...], list[Meaning]]:
         for phrase in names:
             add(phrase, Meaning("table", node))
         for c in t.columns:
-            if c.role in (BLANK, CONSTANT):
+            if c.role == BLANK:
                 continue
             ref = [node, c.name]
             words = _words(c.name)
             if c.role == ID and len(words) > 1 and words[-1] in ("id", "key", "code", "no", "number", "ref"):
-                stem = " ".join(words[:-1])
-                if stem not in table_words:                       # "by patient" is by patient_id
-                    _add_ref(voc, tuple(_tokens(stem)), ref)
-            for phrase in _column_phrases(c.name, c.label):
-                _add_ref(voc, tuple(_tokens(phrase)), ref)
+                stem = " ".join(words[:-1])                     # "by patient" is by patient_id
+                for form in _plural_forms(stem):
+                    _add_ref(voc, tuple(_tokens(form)), ref, alias=True)
+            for phrase, short in _column_phrases(c.name, c.label):
+                for form in _plural_forms(phrase):              # "customers" for a column called customer
+                    _add_ref(voc, tuple(_tokens(form)), ref, alias=short)
                 for n in names:                                  # "product name", "customers region"
                     _add_ref(voc, tuple(_tokens(f"{n} {phrase}")), ref)
-            if c.role == CATEGORY:
+            if c.role == CATEGORY and c.kind == STR:
                 for v in c.values:
-                    if v is not None and str(v).strip():
-                        voc.setdefault(tuple(_tokens(str(v))), []).append(Meaning("value", str(v), [ref]))
+                    # a value spelled as a number is read as that number ("per 15 minutes"), never as a value
+                    if v is not None and str(v).strip() and _number(str(v).strip()) is None:
+                        _add_value(voc, tuple(_tokens(str(v))), str(v), ref)
     for r in model.relations:
         if r.kind == "stack":
             for node, lab in zip(r.tables, r.labels):
@@ -150,26 +153,50 @@ def vocabulary(model: DataModel) -> dict[tuple[str, ...], list[Meaning]]:
     return voc
 
 
-def _add_ref(voc, key, ref) -> None:
+def _plural_forms(phrase: str) -> list[str]:
+    p = phrase.strip()
+    out = [p]
+    if len(p) > 3 and p.endswith("s") and not p.endswith("ss"):
+        out.append(p[:-1])
+    elif len(p) > 2:
+        out.append(p + "s")
+    return out
+
+
+def _add_value(voc, key, value: str, ref) -> None:
+    if not key:
+        return
+    for m in voc.setdefault(key, []):
+        if m.kind == "value" and m.value == value:
+            if ref not in m.refs:
+                m.refs.append(ref)
+            return
+    voc[key].append(Meaning("value", value, [ref]))
+
+
+def _add_ref(voc, key, ref, alias: bool = False) -> None:
     if not key:
         return
     for m in voc.setdefault(key, []):
         if m.kind == "col":
             if ref not in m.refs:
                 m.refs.append(ref)
+            m.alias = m.alias and alias                   # a real name wins over a shortened one
             return
-    voc[key].append(Meaning("col", refs=[ref]))
+    voc[key].append(Meaning("col", refs=[ref], alias=alias))
 
 
-def _column_phrases(name: str, label: str) -> set[str]:
-    """pressure_psia -> 'pressure_psia', 'pressure psia', 'pressure'; 'Pressure (bar)' -> 'pressure'."""
-    out = {name, name.replace("_", " "), label, re.sub(r"\s*[\(\[].*?[\)\]]\s*$", "", label)}
+def _column_phrases(name: str, label: str) -> list[tuple[str, bool]]:
+    """(phrase, shortened?): pressure_psia -> 'pressure_psia', 'pressure psia', and 'pressure' (shortened);
+    'Pressure (bar)' -> 'pressure (bar)', 'pressure'."""
+    full = {name, name.replace("_", " "), label, re.sub(r"\s*[\(\[].*?[\)\]]\s*$", "", label)}
     words = _words(name)
     if words:
-        out.add(" ".join(words))
-        if len(words) > 1 and words[-1] not in ("id", "key", "code", "no"):
-            out.add(words[0])                         # pressure_psia is 'pressure'
-    return {o for o in out if o and o.strip()}
+        full.add(" ".join(words))
+    out = [(p, False) for p in sorted(x for x in full if x and x.strip())]
+    if len(words) > 1 and words[-1] not in ("id", "key", "code", "no"):
+        out.append((words[0], True))                  # pressure_psia is 'pressure', customer_name is 'customer'
+    return out
 
 
 # =================================================================== reading
@@ -183,16 +210,30 @@ def ask(model: DataModel, text: str) -> Asked:
     voc = vocabulary(model)
     maxlen = max((len(k) for k in voc), default=1)
     items: list[tuple[str, Meaning]] = []           # (words, meaning)
+
+    def match(j: int):
+        for n in range(min(maxlen, len(toks) - j), 0, -1):
+            key = tuple(toks[j:j + n])
+            if key in voc:
+                return key, voc[key]
+        return None
+
+    def kinds_at(j: int) -> set[str]:
+        if j >= len(toks):
+            return set()
+        h = match(j)
+        if h is not None:
+            return {m.kind for m in h[1]}
+        return {"num"} if _number(toks[j]) is not None else ({"stop"} if toks[j] in STOP else {"?"})
+
     i = 0
     while i < len(toks):
-        hit = None
-        for n in range(min(maxlen, len(toks) - i), 0, -1):
-            key = tuple(toks[i:i + n])
-            if key in voc:
-                hit = (key, voc[key]); break
+        hit = match(i)
         if hit is not None:
             key, ms = hit
-            items.append((" ".join(key), _pick(ms)))
+            prev = next((m.kind for _, m in reversed(items) if m.kind != "stop"), None)
+            chosen = _pick(ms, " ".join(key), prev, kinds_at(i + len(key)))
+            items.append((" ".join(key), chosen))
             i += len(key); continue
         tok = toks[i]
         num = _number(tok)
@@ -224,10 +265,42 @@ def ask(model: DataModel, text: str) -> Asked:
     return out
 
 
-def _pick(ms: list[Meaning]) -> Meaning:
-    """When a phrase means several things, a column or value of the project beats a fixed word."""
-    order = {"col": 0, "value": 1, "table": 2}
-    return sorted(ms, key=lambda m: order.get(m.kind, 3))[0]
+FIXED = {"stat", "every", "recipe", "by", "op", "unit", "top", "and"}
+
+
+def _pick(ms: list[Meaning], words: str, prev: str | None, nxt: set[str]) -> Meaning:
+    """What a phrase means here, when it could mean several things. Deterministic, from its neighbours:
+
+    - right after a comparison ("region is Total", "status is on") it is the project's value or column;
+    - a fixed word followed by a column, value, table or number is the fixed word ("total amount", "top 10");
+    - otherwise the project's own word wins (a column called "total" when nothing follows);
+    - a value that is also an everyday word ("on", "for") is that word unless a comparison came just before;
+    - after "by"/"per", a table (customers) beats the id column named after it, and a column beats a value.
+    """
+    fixed = [m for m in ms if m.kind in FIXED]
+    proj = [m for m in ms if m.kind not in FIXED]
+    if prev == "op":
+        if proj:
+            return sorted(proj, key=lambda m: {"value": 0, "col": 1, "table": 2}.get(m.kind, 3))[0]
+    elif fixed and proj and fixed[0].kind == "unit" and prev in ("by", None, "stat") :
+        return fixed[0]                                   # "per day" is a time step, even with a column called day
+    elif fixed and proj:
+        if nxt & {"col", "value", "table", "num"} or fixed[0].kind in ("by", "op", "and"):
+            return fixed[0]
+    elif fixed:
+        return fixed[0]
+    if not proj:
+        return fixed[0]
+    if all(m.kind == "value" for m in proj) and words in STOP:
+        return Meaning("stop")
+    tables = [m for m in proj if m.kind == "table"]
+    if tables and all(m.alias for m in proj if m.kind == "col"):
+        return tables[0]                                  # "customers" is the table, not customer_id shortened
+    if prev in ("by", "top"):
+        order = {"table": 0, "col": 1, "value": 2}
+    else:
+        order = {"col": 0, "value": 1, "table": 2}
+    return sorted(proj, key=lambda m: order.get(m.kind, 3))[0]
 
 
 def _number(tok: str) -> float | int | None:
@@ -247,6 +320,7 @@ def _assemble(model: DataModel, items: list[tuple[str, Meaning]], out: Asked) ->
     tables = [m.value for _, m in items if m.kind == "table"]
     every = next((m.value for _, m in items if m.kind == "every"), None)
     top, bottom = None, False
+    by_table, by_table_words = None, ""
     filters: list[dict[str, Any]] = []
     by = None
     cols: list[tuple[str, list[list]]] = []          # (words, candidate refs) in order, for measures
@@ -265,6 +339,8 @@ def _assemble(model: DataModel, items: list[tuple[str, Meaning]], out: Asked) ->
             every = f"{int(nxt.value)}{items[i + 2][1].value}"; i += 3; continue
         if m.kind == "by" and nxt is not None and nxt.kind == "col":
             by = (items[i + 1][0], nxt.refs); i += 2; continue
+        if m.kind == "by" and nxt is not None and nxt.kind == "table":
+            by_table, by_table_words = nxt.value, items[i + 1][0]; i += 2; continue
         if m.kind == "col":
             # a column followed by a comparison is a filter
             if nxt is not None and nxt.kind == "op":
@@ -295,10 +371,16 @@ def _assemble(model: DataModel, items: list[tuple[str, Meaning]], out: Asked) ->
         every = every or None
     if by_ref is not None and _role(model, by_ref) == MEASURE:
         measures.insert(0, by_ref); by_ref = None       # "customers by qty": qty is what is ranked, not a group
-    numbers = [r for r in measures if _role(model, r) == MEASURE]
+    numbers = [r for r in measures if _role(model, r) == MEASURE or (_role(model, r) == CONSTANT and _is_number(model, r))]
     groups = [r for r in measures if _role(model, r) in (CATEGORY, ID, TEXT, FLAG)]
     if by_ref is None and groups and (numbers or stat == "count" or top):
         by_ref = groups[0]                              # "customers by qty": the group named first
+    if by_table is not None and by_ref is None:
+        by_ref = _group_for_table(model, base, by_table)
+        if by_ref is None and by_table == base:
+            by_ref = _own_key(model, base, by_table_words)       # "per sensor" in a table called sensors: its sensor_id
+        if by_ref is None:
+            raise PlanError(f"{model.tables[by_table].title} is not linked to {model.tables[base].title}, so its rows cannot be counted per it")
     named_lookups = [t for t in tables if t != base and model.tables[t].shape == "lookup"]
     if by_ref is None and named_lookups and (numbers or stat or top):
         by_ref = _name_column(model, named_lookups[0], base)   # "top 3 customers by qty": customers by their name
@@ -350,6 +432,16 @@ def _assemble(model: DataModel, items: list[tuple[str, Meaning]], out: Asked) ->
         spec.update({"recipe": "top", "n": top, "by": by_ref, "bottom": bottom or None, "measure": numbers[0] if numbers else None,
                      "stat": stat or ("count" if not numbers else "sum")})
         return _tidy(spec)
+    t0 = model.tables[base]
+    if by_ref is not None and (every or recipe == "trend" or time_ref is not None) and (t0.time or time_ref):
+        spec.update({"recipe": "trend", "measures": numbers[:3], "by": by_ref})    # "sales per day by region"
+        if every:
+            spec["every"] = every
+        if stat:
+            spec["stat"] = stat
+        if time_ref is not None:
+            spec["time"] = time_ref
+        return _tidy(spec)
     if by_ref is not None:
         spec.update({"recipe": "breakdown", "by": by_ref, "measure": numbers[0] if numbers else None})
         if stat:
@@ -392,6 +484,42 @@ def _name_column(model: DataModel, table: str, base: str) -> list | None:
     return [table, key.name] if key is not None else None
 
 
+def _is_number(model: DataModel, ref: list) -> bool:
+    t = model.table(ref[0])
+    c = t.column(ref[1]) if t else None
+    return c is not None and c.kind == "number"
+
+
+def _group_for_table(model: DataModel, base: str, table: str) -> list | None:
+    """'per customer' when customers is a table: its name column if it is a lookup the base links to, else the
+    base's own key column that links to it."""
+    if table == base:
+        return None
+    t = model.tables[table]
+    if t.shape == "lookup":
+        g = _name_column(model, table, base)
+        if g is not None and (g[0] == base or g[0] in _reach(model, base)):
+            return g
+    link = next((r for r in model.relations if r.kind == "link" and r.tables == [base, table]), None)
+    return [base, link.left_on] if link is not None else None
+
+
+def _own_key(model: DataModel, table: str, words: str) -> list | None:
+    """The id column of ``table`` whose name starts with the words (sensor -> sensor_id), if there is one."""
+    want = norm(words)
+    want_s = want[:-1] if want.endswith("s") else want
+    for c in model.tables[table].columns:
+        w = _words(c.name)
+        if c.role in (ID, CATEGORY) and len(w) > 1 and norm("".join(w[:-1])) in (want, want_s):
+            return [table, c.name]
+    return None
+
+
+def _reach(model: DataModel, base: str) -> list[str]:
+    from .recipes import _reachable
+    return _reachable(model, base)
+
+
 def _tidy(spec: dict) -> dict:
     return {k: v for k, v in spec.items() if v is not None and v != []}
 
@@ -413,7 +541,8 @@ def _filter(items: list[tuple[str, Meaning]], i: int) -> tuple[dict | None, int]
     if val.kind == "num":
         return {"column": col.refs[0], "op": op, "value": val.value}, j + 1 - i
     if val.kind == "value" and op in ("eq", "ne"):
-        return {"column": val.refs[0], "op": op, "value": val.value}, j + 1 - i
+        # the column named wins ("where billing country is France"), when that value can be in it
+        return {"column": col.refs[0], "op": op, "value": val.value}, j + 1 - i
     return None, 1
 
 

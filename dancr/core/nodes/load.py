@@ -61,14 +61,19 @@ def scan_file(ctx: Ctx, params: dict[str, Any]) -> tuple[pl.LazyFrame, list[str]
         sheet = params.get("sheet")
         kwargs: dict[str, Any] = {"has_header": has_header}
         if sheet not in (None, ""):
-            if isinstance(sheet, int) or (isinstance(sheet, str) and sheet.strip().isdigit()):
+            if isinstance(sheet, str) and sheet.strip() in list_sheets(path):
+                kwargs["sheet_name"] = sheet.strip()          # a sheet called "2024" is that sheet, not the 2024th
+            elif isinstance(sheet, int) or (isinstance(sheet, str) and sheet.strip().isdigit()):
                 if int(sheet) < 1:
                     raise ValueError("Sheets are numbered from 1 (or give the sheet's name)")
                 kwargs["sheet_id"] = int(sheet)
             else:
                 kwargs["sheet_name"] = str(sheet)
         try:
-            df = pl.read_excel(path, engine="calamine", read_options={"skip_rows": skip_rows} if skip_rows else None, **kwargs)
+            import warnings
+            with warnings.catch_warnings():      # a Polars notice about its own internals, not about the file
+                warnings.simplefilter("ignore", FutureWarning)
+                df = pl.read_excel(path, engine="calamine", read_options={"skip_rows": skip_rows} if skip_rows else None, **kwargs)
         except Exception as e:
             msg = str(e)
             if "sheet" in msg.lower():

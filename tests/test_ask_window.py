@@ -18,6 +18,7 @@ def window(app, tmp_path):
     w = MainWindow()
     w.show(); app.processEvents()
     yield w
+    w.doc.stop(wait=True)                     # a run still going would ask "Stop the run and quit?"
     w.doc.undo.setClean()
     w.close()
 
@@ -132,21 +133,49 @@ def test_hand_edits_are_kept_and_said_so(window, app, files):
     window.askbar.edit.setText("total qty by region"); window.askbar._ask()
     assert until(app, lambda: bool(window.doc.pipeline.answers))
     a = window.doc.pipeline.answers[0]
-    g = a.steps["groups"]["node"]
-    window.doc.set_params(g, {"default_stats": ["max"]})
+    order, groups = a.steps["order"]["node"], a.steps["groups"]["node"]
+    window.doc.set_params(order, {"descending": False})             # a step the change does not need to touch
     window.change_answer(a.id, "stat", "mean")
     assert until(app, lambda: window.doc.pipeline.answers[0].title == "Average qty by region")
-    assert window.doc.pipeline.nodes[g].params["default_stats"] == ["max"]
+    assert window.doc.pipeline.nodes[order].params["descending"] is False
     assert "Kept your changes" in window.answer_bar.kept.text()
+    window.doc.set_params(groups, {"default_stats": ["max"]})       # a step the next change must change
+    window.change_answer(a.id, "measure", None)
+    assert until(app, lambda: window.doc.pipeline.answers[0].title == "Rows by region")
+    assert window.doc.pipeline.nodes[groups].params["default_stats"] == ["max"]
+    assert "left as you made it" in window.toast.label.text()
 
 
-def test_a_question_that_cannot_be_answered_says_why(window, app, files, monkeypatch):
+def test_the_same_question_twice_shows_the_answer_already_built(window, app, files):
+    window._add_files(files)
+    ready(window, app)
+    card = next(c for c in window.askbar.cards if c.s.title == "Total qty by region")
+    card.chosen.emit(card.s); card.chosen.emit(card.s)                # a double click
+    assert until(app, lambda: bool(window.doc.pipeline.answers))
+    pump(app, 300)
+    window.askbar.edit.setText("total qty by region"); window.askbar._ask()
+    pump(app, 300)
+    assert len(window.doc.pipeline.answers) == 1
+
+
+def test_a_build_waiting_for_the_data_is_dropped_when_another_project_opens(window, app, files, tmp_path):
+    from dancr.core import Pipeline
+    window._add_files(files)
+    ready(window, app)
+    window.understanding.full = False                               # as if every row were still being read
+    window.build_answer({"recipe": "describe", "table": "load_file_1"})
+    other = Pipeline("other"); other.save(tmp_path / "other.json")
+    window.doc.undo.setClean()
+    window.open_path(str(tmp_path / "other.json"))
+    pump(app, 800)
+    assert window.doc.pipeline.answers == [] and not window.understanding.waiting
+
+
+def test_a_question_that_cannot_be_answered_says_why(window, app, files):
     window._add_files(files[:1])
     ready(window, app)
-    shown = []
-    monkeypatch.setattr(QMessageBox, "information", lambda *a: shown.append(a[2]))
     window.build_answer({"recipe": "compare", "table": "load_file_1", "other": "nope", "measure": ["load_file_1", "qty"]})
-    assert until(app, lambda: bool(shown)) and "do not record the same thing" in shown[0]
+    assert until(app, lambda: "do not record the same thing" in window.askbar.message.text())
     assert not window.doc.pipeline.answers
 
 

@@ -40,7 +40,7 @@ def _outliers(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str,
     flags = []
     msgs = []
     for c in cols:
-        e = pl.col(c).cast(pl.Float64)
+        e = pl.col(c).cast(pl.Float64).fill_nan(None)      # NaN (0/0) is a blank: it neither moves the statistics nor is flagged
         if method == "zscore":
             k = number_param(params, "threshold", 3, "The threshold", above=0)
             bad = ((e - e.mean()) / e.std()).abs() > k
@@ -89,7 +89,14 @@ def _outliers(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str,
         if method != "range":
             raise ValueError("'Clip to range' only works with the 'Outside a fixed range' method")
         lo, hi = _range(params, ctx)
-        out = lf.with_columns([pl.col(c).clip(lo, hi).alias(c) for c in cols])
+        fractional = any(v is not None and float(v) != int(v) for v in (lo, hi))
+
+        def clipped(c: str) -> pl.Expr:
+            col = pl.col(c)
+            if fractional and schema[c].is_integer():
+                col = col.cast(pl.Float64)                 # 1.5 .. 3.5 on whole numbers: the ends stay as given
+            return col.clip(lo, hi).alias(c)
+        out = lf.with_columns([clipped(c) for c in cols])
     else:
         raise ValueError(f"Unknown action {action!r}")
     return NodeResult(out, messages=msgs)

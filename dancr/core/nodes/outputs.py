@@ -8,7 +8,7 @@ import polars as pl
 
 from ..params import Param
 from ..registry import NodeType, Ctx, NodeResult, registry
-from ._common import first_input, schema_of, require_column
+from ._common import private_temp, first_input, schema_of, require_column
 
 CHART_KINDS = [("line", "Line over time / x"), ("scatter", "Scatter (x vs y)"), ("histogram", "Histogram"), ("bar", "Bar (category totals)")]
 
@@ -107,7 +107,7 @@ def write_table(lf: pl.LazyFrame, out: Path) -> None:
     ext = out.suffix.lower()
     if ext not in (".parquet", ".pq", ".xlsx", ".csv", ".txt", ".tsv"):
         raise ValueError("Use a .csv, .tsv, .txt, .parquet or .xlsx file name")
-    tmp = out.with_name(f".{out.name}.{os.getpid()}.tmp{ext}")
+    tmp = private_temp(out)
     try:
         if ext in (".parquet", ".pq"):
             lf.sink_parquet(tmp)

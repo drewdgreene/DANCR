@@ -170,7 +170,7 @@ def ev(df, src, inputs=None):
     ("-2^2", [4.0] * 4), ("2^-1", [0.5] * 4), ("2^3^2", [512.0] * 4), ("-a^2", [1.0, 4.0, 9.0, None]), ("3 - -2", [5] * 4), ("2*-a", [-2.0, -4.0, -6.0, None]),
     ("LEAD(a)", [2.0, 3.0, None, None]), ("PCT_CHANGE(a)", [None, 100.0, 50.0, None]), ("ROLLING_SUM(a, 2)", [1.0, 3.0, 5.0, 3.0]),
     ("ROLLING_MAX(a, 2)", [1.0, 2.0, 3.0, 3.0]), ("ROLLING_MIN(a, 3)", [1.0, 1.0, 1.0, 2.0]), ("CUMMAX(a)", [1.0, 2.0, 3.0, None]), ("CUMMIN(a)", [1.0, 1.0, 1.0, None]),
-    ("RANK(a)", [1, 2, 3, None]), ("PERCENTILE(a, 50)", [2.0] * 4), ("CLIP(a, 1.5, 2.5)", [1.5, 2.0, 2.5, None]),
+    ("RANK(a)", [3, 2, 1, None]), ("RANK(a, 1)", [1, 2, 3, None]), ("PERCENTILE(a, 50)", [2.0] * 4), ("CLIP(a, 1.5, 2.5)", [1.5, 2.0, 2.5, None]),
     ("LEFT(s, 1) & RIGHT(s, 1)", ["xx", "yy", "zz", ""]), ("MID(\"hello\", 2, 3)", ["ell"] * 4), ("REPLACE(s, \"x\", \"q\")", ["q", "y", "z", None]),
     ("CONTAINS(s, \"y\")", [False, True, False, None]), ("STARTSWITH(s, \"z\")", [False, False, True, None]), ("ENDSWITH(s, \"x\")", [True, False, False, None]),
     ("TEXT(t, \"%Y\")", ["2024", "2024", "2025", None]), ("VALUE(\"1,200\") + a", [1201.0, 1202.0, 1203.0, None]),

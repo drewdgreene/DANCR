@@ -253,10 +253,11 @@ def ask(path: str, question: str, files: list[str] | None = None, dry_run: bool 
     'orders where qty above 2', 'gaps in probe_A'. Builds the steps and an Answer (unless dry_run) and reports how
     the question was read (chips), what was assumed, and any word it did not know with 'did you mean' hints."""
     with _editing(path) as p:
-        hl.add_files(p, _data_files(files))
+        hl.add_files(p, _data_files(files))           # kept even when the question is not understood, as on the CLI
         out = hl.ask_question(p, question, build=not dry_run)
-        if not out["question"]["ok"]:
-            raise ToolError(out["question"]["message"])
+    if not out["question"]["ok"]:
+        q = out["question"]
+        raise ToolError(q["message"] + (f" (unknown: {', '.join(q['unknown'])})" if q["unknown"] else ""))
     return _dump(out)
 
 
@@ -500,7 +501,7 @@ def main(root: str | None = None) -> None:
     if root:
         ROOT = Path(root).expanduser().resolve()
         if not ROOT.is_dir():
-            raise SystemExit(f"--root {ROOT} is not a folder")
+            raise ValueError(f"--root {ROOT} is not a folder")      # a usage error: exit 2, JSON with --json
     configure(stderr_level=logging.WARNING)      # stdout carries the protocol; the log file and stderr get the rest
     mcp.run(transport="stdio")
 

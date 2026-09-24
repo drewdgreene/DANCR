@@ -376,7 +376,9 @@ class Compiler:
                     b = Typed(text_to_number_expr(b.expr), NUM)
             fn = {"=": pl.Expr.eq, "!=": pl.Expr.ne, "<": pl.Expr.lt, ">": pl.Expr.gt,
                   "<=": pl.Expr.le, ">=": pl.Expr.ge}[op]
-            return Typed(fn(a.expr, b.expr), BOOL)
+            ea = a.expr.fill_nan(None) if a.kind == NUM else a.expr      # NaN is a blank: never "above" anything
+            eb = b.expr.fill_nan(None) if b.kind == NUM else b.expr
+            return Typed(fn(ea, eb), BOOL)
         if op == "&":
             return Typed(pl.concat_str([_as_text(a), _as_text(b)]), STR)
         if op == "+":
@@ -395,9 +397,11 @@ class Compiler:
         if op == "*":
             return Typed(_wide(a) * _wide(b), self._numkind(a, b))
         if op == "/":
-            return Typed(a.expr.cast(pl.Float64) / b.expr.cast(pl.Float64), NUM)
+            den = b.expr.cast(pl.Float64)
+            # dividing by zero has no answer (Excel shows #DIV/0!): a blank, not an infinity that breaks charts and totals
+            return Typed(pl.when(den == 0).then(None).otherwise(a.expr.cast(pl.Float64) / den), NUM)
         if op == "%":
-            return Typed(_num(a) % _num(b), NUM)
+            return Typed(pl.when(_num(b) == 0).then(None).otherwise(_num(a) % _num(b)), NUM)
         if op == "^":
             return Typed(a.expr.cast(pl.Float64).pow(b.expr.cast(pl.Float64)), NUM)
         raise FormulaError(f"Unknown operator {op}")
@@ -542,12 +546,21 @@ def _f_concat(c: Compiler, args: list[Typed]) -> Typed:
     return Typed(pl.concat_str([a.expr.cast(pl.Utf8) for a in args]), STR)
 
 
+def _count_lit(t: Typed, what: str) -> int:
+    n = _int_lit(t, what)
+    if n < 0:
+        raise FormulaError(f"{what} cannot be negative")
+    return n
+
+
 def _f_left(c: Compiler, args: list[Typed]) -> Typed:
-    return Typed(args[0].expr.cast(pl.Utf8).str.slice(0, _int_lit(args[1], "LEFT length")), STR)
+    return Typed(args[0].expr.cast(pl.Utf8).str.slice(0, _count_lit(args[1], "LEFT length")), STR)
 
 
 def _f_right(c: Compiler, args: list[Typed]) -> Typed:
-    n = _int_lit(args[1], "RIGHT length")
+    n = _count_lit(args[1], "RIGHT length")
+    if n == 0:
+        return Typed(pl.when(args[0].expr.is_null()).then(None).otherwise(pl.lit("")), STR)
     return Typed(args[0].expr.cast(pl.Utf8).str.slice(-n, n), STR)
 
 
@@ -555,7 +568,7 @@ def _f_mid(c: Compiler, args: list[Typed]) -> Typed:
     start = _int_lit(args[1], "MID start") - 1
     if start < 0:
         raise FormulaError("MID start must be 1 or more")
-    n = _int_lit(args[2], "MID length")
+    n = _count_lit(args[2], "MID length")
     return Typed(args[0].expr.cast(pl.Utf8).str.slice(start, n), STR)
 
 
@@ -599,7 +612,19 @@ def _f_date(c: Compiler, args: list[Typed]) -> Typed:
         return Typed(e.cast(pl.Utf8).str.to_datetime(args[1].literal, strict=False), TIME)
     if args[0].kind == NUM:
         raise FormulaError("DATE of a number needs a unit; use DATE(TEXT(x)) or convert the column type first")
-    return Typed(e.cast(pl.Utf8).str.to_datetime(strict=False), TIME)
+    # the formats DANCR reads everywhere, month first when a date reads both ways (01/02/2024 is 2 January),
+    # tried in order for each value; times with a UTC offset need their format given
+    from .timeutil import DATE_FORMATS, _DAY_FIRST
+    text = e.cast(pl.Utf8).str.strip_chars()
+    fmts = []
+    for f in DATE_FORMATS:
+        if "%z" in f or f == "%+":
+            continue
+        if f in _DAY_FIRST:                        # %d/%m/…: its month-first twin goes first
+            fmts.append(_DAY_FIRST[f])
+        if f not in fmts:
+            fmts.append(f)
+    return Typed(pl.coalesce([text.str.to_datetime(f, strict=False, time_unit="us") for f in fmts]), TIME)
 
 
 def _dt_part(attr: str) -> Callable:
@@ -680,7 +705,7 @@ def _f_percentile(c: Compiler, args: list[Typed]) -> Typed:
         q = q / 100.0
     if not 0 <= q <= 1:
         raise FormulaError(f"PERCENTILE must be between 0 and 1 (or 0 and 100), not {lit}")
-    return Typed(_num(args[0]).quantile(q, interpolation="linear"), NUM)     # as Excel's PERCENTILE.INC
+    return Typed(_num(args[0]).fill_nan(None).quantile(q, interpolation="linear"), NUM)     # as Excel's PERCENTILE.INC
 
 
 def _f_clip(c: Compiler, args: list[Typed]) -> Typed:
@@ -715,7 +740,9 @@ def _f_interpolate(c: Compiler, args: list[Typed]) -> Typed:
 
 
 def _f_rank(c: Compiler, args: list[Typed]) -> Typed:
-    return Typed(args[0].expr.rank(method="min"), NUM)
+    """As Excel's RANK: the largest value is 1, unless the order is 1 (then the smallest is 1). Ties share a rank."""
+    order = _int_lit(args[1], "RANK order") if len(args) > 1 else 0
+    return Typed(args[0].expr.rank(method="min", descending=order == 0), NUM)
 
 
 def _f_count(c: Compiler, args: list[Typed]) -> Typed:
@@ -757,14 +784,14 @@ FUNCTIONS: dict[str, tuple[int, int | None, Callable[[Compiler, list[Typed]], Ty
     "MAX": (1, None, _horizontal_or_column(pl.max_horizontal, lambda e: e.max()), "MAX(col) or MAX(a, b, ...)"),
     "AVERAGE": (1, None, _horizontal_or_column(pl.mean_horizontal, lambda e: e.mean()), "AVERAGE(col) or AVERAGE(a, b, ...)"),
     "MEAN": (1, None, _horizontal_or_column(pl.mean_horizontal, lambda e: e.mean()), "Same as AVERAGE"),
-    "MEDIAN": (1, 1, _simple(lambda e: e.median()), "Column median"),
+    "MEDIAN": (1, 1, _simple(lambda e: e.fill_nan(None).median()), "Column median"),
     "STDEV": (1, 1, _simple(lambda e: e.std()), "Column standard deviation"),
     "STD": (1, 1, _simple(lambda e: e.std()), "Column standard deviation"),
     "VAR": (1, 1, _simple(lambda e: e.var()), "Column variance"),
     "COUNT": (1, 1, _f_count, "Number of non-empty values"),
     "PERCENTILE": (2, 2, _f_percentile, "PERCENTILE(col, 0.95)"),
     "ZSCORE": (1, 1, _f_zscore, "(x - mean) / std"),
-    "RANK": (1, 1, _f_rank, "Rank of each value"),
+    "RANK": (1, 2, _f_rank, "Rank of each value, largest first; RANK(x, 1) smallest first"),
     "CUMSUM": (1, 1, _simple(lambda e: e.cum_sum()), "Running total"),
     "CUMMAX": (1, 1, _simple(lambda e: e.cum_max()), "Running maximum"),
     "CUMMIN": (1, 1, _simple(lambda e: e.cum_min()), "Running minimum"),

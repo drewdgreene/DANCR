@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from typing import Any
 
 import polars as pl
@@ -8,8 +10,8 @@ from ..expr import _kind_of_dtype, NUM, TIME
 
 STAT_CHOICES = [
     ("mean", "average"), ("median", "median"), ("min", "minimum"), ("max", "maximum"),
-    ("std", "standard deviation"), ("sum", "total"), ("count", "count"), ("first", "first"), ("last", "last"),
-    ("n_unique", "distinct count"),
+    ("std", "standard deviation"), ("sum", "total"), ("count", "count of filled values"), ("first", "first"), ("last", "last"),
+    ("n_unique", "distinct count"), ("rows", "number of rows (blank or not)"),
 ]
 def number_param(params: dict[str, Any], key: str, default: float, what: str, *, whole: bool = False,
                  above: float | None = None, at_least: float | None = None, at_most: float | None = None) -> float:
@@ -43,6 +45,8 @@ def stat_expr(col: str, stat: str, order_by: str | None = None) -> pl.Expr:
     c = pl.col(col)
     if order_by is not None and stat in ("first", "last"):
         c = c.sort_by(order_by)
+    if stat in ("mean", "median", "min", "max", "std", "sum"):
+        c = c.fill_nan(None)                  # NaN is a blank, as everywhere else: it does not poison or skew a statistic
     if stat == "mean":
         return c.mean()
     if stat == "median":
@@ -63,6 +67,8 @@ def stat_expr(col: str, stat: str, order_by: str | None = None) -> pl.Expr:
         return c.last()
     if stat == "n_unique":
         return c.n_unique()
+    if stat == "rows":
+        return pl.len()                       # every row of the group, whatever its values
     raise ValueError(f"Unknown statistic {stat!r}")
 
 
@@ -132,3 +138,11 @@ def first_input(inputs: dict[str, list[pl.LazyFrame]], port: str = "in") -> pl.L
     if not frames:
         raise ValueError("Nothing is connected to this node's input")
     return frames[0]
+
+
+def private_temp(out: Path) -> Path:
+    """A temporary file next to ``out`` that no other writer (another process, another thread) uses, so two
+    runs writing the same file never overwrite each other's half-written copy. Keeps the extension."""
+    import os
+    import uuid
+    return out.with_name(f".{out.stem}.{os.getpid()}.{uuid.uuid4().hex[:10]}.tmp{out.suffix}")

@@ -132,7 +132,7 @@ def rule_mask(schema: dict[str, pl.DataType], rule: dict[str, Any], inputs: dict
         raise ValueError(f"{what}: enter a value")
     lit = _literal(v, kind, what, dtype)
     if kind == NUM:
-        c = c.cast(pl.Float64)
+        c = c.cast(pl.Float64).fill_nan(None)     # NaN is a blank: it matches no comparison
     if op == "eq":
         return c == lit
     if op == "ne":

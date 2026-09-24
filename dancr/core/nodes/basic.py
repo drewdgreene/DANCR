@@ -246,7 +246,15 @@ def _change_type(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[s
         if to == "number":
             e = as_number
         elif to == "integer":
-            e = excel_round(as_number).cast(pl.Int64, strict=False)          # 2.5 -> 3, as in Excel
+            rounded = excel_round(as_number).cast(pl.Int64, strict=False)    # 2.5 -> 3, as in Excel
+            if dt in (pl.Utf8, pl.String):
+                # whole numbers written as text are read exactly (a 17-digit id would lose digits through a float)
+                exact = e.str.strip_chars().str.replace_all(r"[\s,_']", "").cast(pl.Int64, strict=False)
+                e = pl.coalesce([exact, rounded])
+            elif dt.is_integer():
+                e = e.cast(pl.Int64, strict=False)
+            else:
+                e = rounded
         elif to == "text":
             e = e.cast(pl.Utf8)
         elif to == "datetime":
@@ -309,7 +317,34 @@ def _stack(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, An
                 raise ValueError(f"There is already a column called {label_col!r}; choose another name for the label column")
         frames = [f.with_columns(pl.lit(str(labels[i]) if i < len(labels) and labels[i] is not None else f"table {i + 1}").alias(label_col))
                   for i, f in enumerate(frames)]
-    return NodeResult(pl.concat(frames, how="diagonal_relaxed"))
+    frames, msgs = _same_time_zones(frames)
+    return NodeResult(pl.concat(frames, how="diagonal_relaxed"), messages=msgs)
+
+
+def _same_time_zones(frames: list[pl.LazyFrame]) -> tuple[list[pl.LazyFrame], list[str]]:
+    """Date/time columns that are in different time zones (or in one and in none) in different tables are put
+    in UTC, so the stacked rows keep their true moments and the tables can be appended at all."""
+    schemas = [f.collect_schema() for f in frames]
+    zones: dict[str, set] = {}
+    for sch in schemas:
+        for c, dt in sch.items():
+            if isinstance(dt, pl.Datetime):
+                zones.setdefault(c, set()).add(dt.time_zone)
+    mixed = [c for c, z in zones.items() if len(z) > 1]
+    if not mixed:
+        return frames, []
+    out = []
+    for f, sch in zip(frames, schemas):
+        fixes = []
+        for c in mixed:
+            dt = sch.get(c)
+            if isinstance(dt, pl.Datetime):
+                e = pl.col(c).cast(pl.Datetime("us", dt.time_zone))
+                e = e.dt.convert_time_zone("UTC") if dt.time_zone else e.dt.replace_time_zone("UTC")
+                fixes.append(e.alias(c))
+        out.append(f.with_columns(fixes) if fixes else f)
+    return out, [f"{', '.join(mixed)}: the tables use different time zones, so every time is shown in UTC "
+                 "(times without a zone are taken as UTC)"]
 
 
 registry.register(NodeType(

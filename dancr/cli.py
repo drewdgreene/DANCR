@@ -287,7 +287,10 @@ def cmd_ask(a: argparse.Namespace) -> None:
     q = out["question"]
     if not q["ok"]:
         if a.file:
-            p.save()
+            p.save()                          # the files are added either way; only the question failed
+        if a.json:
+            print(json.dumps({"error": q["message"], "unknown": q["unknown"], "hints": q["hints"]}))
+            sys.exit(EXIT_ERROR)
         raise CliError(q["message"])
     if not a.dry_run or a.file:
         p.save()
@@ -315,6 +318,8 @@ def cmd_answer(a: argparse.Namespace) -> None:
         p.save()
         _print(a, {"removed": a.answer, "steps_removed": gone}, f"Deleted {a.answer}" + (f" and {len(gone)} steps" if gone else ""))
         return
+    if a.set is not None and not a.set:
+        raise CliError("Say what to change: --set KEY=VALUE (for example stat=mean or every=1d)")
     if a.set or a.choose is not None:
         if a.choose is not None:
             out = hl.change_answer(p, a.answer, assumption=a.choose[0], choice=a.choose[1] if len(a.choose) > 1 else 0)
@@ -620,6 +625,8 @@ def main(argv: list[str] | None = None) -> None:
         configure(stderr_level=logging.WARNING)         # file as usual, warnings to stderr, never stdout
     try:
         a.fn(a)
+    except hl.StepFailed as e:
+        _fail(a, str(e), EXIT_FAILED)
     except (CliError, PipelineError, ValueError, OSError, pl.exceptions.PolarsError) as e:
         _fail(a, str(e), EXIT_ERROR)
     except Exception as e:  # noqa: BLE001 - anything else is a DANCR bug: say so and keep the traceback

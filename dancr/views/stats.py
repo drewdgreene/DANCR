@@ -45,7 +45,7 @@ def column_summary(lf: pl.LazyFrame, columns: list[str] | None = None) -> pl.Dat
         rec: dict[str, Any] = {k: None for k in SUMMARY_SCHEMA}
         rec.update({"column": c, "type": kind, "rows": total})
         if kind == NUM:
-            f = e.cast(pl.Float64)
+            f = e.cast(pl.Float64).fill_nan(None)      # NaN counts as missing, as in filters and ISBLANK
             r = lf.select([f.null_count().alias("missing"), f.mean().alias("mean"), f.std().alias("std"),
                            f.min().alias("min"), f.max().alias("max")]).collect(engine=STREAM).row(0, named=True)
             rec.update(r)

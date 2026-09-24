@@ -169,7 +169,7 @@ Here `log.csv` has the columns `time`, `value` and `temperature`.
 - `calculate`: `formulas` = `[{"name": "diff", "expr": "[b] - [a]"}]`, `only_new`. Whole-number `+ - *` work in 64 bits.
 - `fix_values`: `fixes` = `[{"row": 1-based, "column", "value", "was", "note"}]`.
 - `combine`: `method` match|nearest_time|side_by_side; match: `on`, `right_on`, `how`; nearest_time: `left_time`, `right_time`, `direction`, `tolerance` (e.g. `500ms`); `suffix`.
-- `time_buckets`: `every` (`1s 1m 15m 1h 1d`, calendar `1mo 1q 1y`), `columns` (empty = every number column), `default_stats` (mean median min max std sum count first last; one statistic keeps column names, several add `_stat`), `time_column`, `aggregations`, `count_column`.
+- `time_buckets`: `every` (`1s 1m 15m 1h 1d`, calendar `1mo 1q 1y`), `by` (also split per value of these columns), `columns` (empty = every number column), `default_stats` (mean median min max std sum count first last n_unique rows — `count` is filled values, `rows` every row; one statistic keeps column names, several add `_stat`), `time_column`, `aggregations`, `count_column`.
 - `rolling`: `columns`, `stat` mean|median|min|max|std|sum, `window` (rows like `20` or a span like `30s`), `time_column`, `centered` (a span `w` then covers `[t - w/2, t + w/2]`; otherwise `(t - w, t]`), `replace`.
 - `rate_of_change`: `columns`, `time_column`, `per` s|m|h|d, `span`. `find_gaps`: `time_column`, `expected`, `factor`. `regular_grid`: `time_column`, `every`, `method` nearest|backward|forward|interpolate.
 - `summarise_around`: `window`, `side` before|after|around, `columns`, `stats`, `sample_time`, `log_time`.

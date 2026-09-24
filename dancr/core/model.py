@@ -93,6 +93,11 @@ class Answer:
 _ID_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_\-]*$")
 
 
+def _version_number(f: Path) -> int | None:
+    m = re.match(r"^(\d{6,})_", f.name)
+    return int(m.group(1)) if m else None
+
+
 def _coerce_input(v: Any) -> Any:
     """Inputs are numbers when they look like numbers (read as everywhere else: '1,5' is 1.5, whole numbers
     stay exact), otherwise text. Lists and objects are refused rather than stored as their Python text."""
@@ -570,35 +575,40 @@ class Pipeline:
 
     @classmethod
     def _keep_version(cls, target: Path) -> None:
-        """Copy the current file into the versions folder before overwriting it."""
+        """Copy the current file into the versions folder before overwriting it. Each copy is numbered one after
+        the last, so the order never depends on clocks: two saves in the same second (or on a drive that keeps
+        times to two seconds), or either side of the clocks going back, still list newest first."""
         from datetime import datetime
         import shutil
         vdir = cls.versions_dir(target)
         vdir.mkdir(parents=True, exist_ok=True)
-        # to the microsecond, and never over an existing copy: several saves in one second each keep a version
-        stamp = datetime.fromtimestamp(target.stat().st_mtime).strftime("%Y-%m-%d_%H-%M-%S_%f")
+        stamp = datetime.fromtimestamp(target.stat().st_mtime).strftime("%Y-%m-%d_%H-%M-%S")
         try:
             auto = bool((json.loads(target.read_text(encoding="utf-8")).get("meta") or {}).get("autosaved"))
         except (OSError, ValueError, AttributeError):
             auto = False
-        n = 0
-        while (dest := vdir / f"{stamp}{f'-{n}' if n else ''}{'.auto' if auto else ''}.json").exists():
-            if dest.read_bytes() == target.read_bytes():
-                break                               # this very copy is already kept
-            n += 1
-        if not dest.exists():
-            shutil.copy2(target, dest)
-        autos = sorted(vdir.glob("*.auto.json"))
-        saved = sorted(f for f in vdir.glob("*.json") if not f.name.endswith(".auto.json"))
+        kept = cls._numbered(vdir)
+        if kept and kept[-1].read_bytes() == target.read_bytes():
+            return                                   # this very copy is already the latest version
+        seq = _version_number(kept[-1]) + 1 if kept else 1
+        shutil.copy2(target, vdir / f"{seq:06d}_{stamp}{'.auto' if auto else ''}.json")
+        kept = cls._numbered(vdir)
+        autos = [f for f in kept if f.name.endswith(".auto.json")]
+        saved = [f for f in kept if not f.name.endswith(".auto.json")]
         for f in saved[:-cls.MAX_VERSIONS] + autos[:-cls.MAX_AUTO_VERSIONS]:
             f.unlink(missing_ok=True)
+
+    @staticmethod
+    def _numbered(vdir: Path) -> list[Path]:
+        """The kept versions, oldest first."""
+        return sorted((f for f in vdir.glob("*.json") if _version_number(f) is not None), key=_version_number)
 
     def versions(self) -> list[Path]:
         """Saved earlier versions of this file, newest first."""
         if self.path is None:
             return []
         vdir = self.versions_dir(self.path)
-        return sorted(vdir.glob("*.json"), reverse=True) if vdir.exists() else []
+        return list(reversed(self._numbered(vdir))) if vdir.exists() else []
 
     @classmethod
     def load(cls, path: Path | str) -> "Pipeline":

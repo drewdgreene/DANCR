@@ -1,6 +1,8 @@
 """Report: several charts and tables on one page (HTML, plus a PDF) for sending to a colleague."""
 from __future__ import annotations
 
+import os
+
 import base64
 import html
 
@@ -12,6 +14,7 @@ from typing import Any
 import polars as pl
 
 from ..params import Param
+from ._common import private_temp
 from ..registry import NodeType, InputSpec, Ctx, NodeResult, registry
 from ..dtypes import strip_time_zones
 
@@ -61,7 +64,7 @@ def _item_html(i: int, lf: pl.LazyFrame, meta: dict[str, Any], params: dict[str,
         n = int(lf.select(pl.len()).collect(engine="streaming")[0, 0])
         df = strip_time_zones(lf.head(max_rows).collect(engine="streaming"))
         if columns:
-            df = df.rename({c: _title(c, columns) for c in df.columns if _title(c, columns) != c})
+            df = df.rename(_display_names(df.columns, columns))
         parts.append(f"<p class='muted'>{n:,} rows × {len(df.columns)} columns</p>")
         parts.append(_table_html(df, max_rows, n))
         if n > max_rows and params.get("include_stats", True):
@@ -156,10 +159,11 @@ def _apply(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, An
     meta = getattr(ctx, "item_meta", None) or []
     doc = build_report(ctx, inputs, params, meta, getattr(ctx, "columns", None), ctx.inputs)
     out.parent.mkdir(parents=True, exist_ok=True)
-    tmp = out.with_name(f".{out.name}.tmp")
+    tmp = private_temp(out)
     try:
-        tmp.write_text(doc, encoding="utf-8")
-        tmp.replace(out)
+        with open(tmp, "x", encoding="utf-8") as f:          # "x": never write through a file (or link) already there
+            f.write(doc)
+        os.replace(tmp, out)
     finally:
         tmp.unlink(missing_ok=True)
     msgs = [f"Saved report to {out}"]
@@ -168,7 +172,14 @@ def _apply(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, An
     if params.get("pdf", True):
         from ...views.pdf import html_to_pdf
         try:
-            pdf = html_to_pdf(doc, out.with_suffix(".pdf"))
+            target = ctx.resolve_output(str(out.with_suffix(".pdf")))     # the PDF is a file the step writes too
+            tmp_pdf = private_temp(target)
+            try:
+                html_to_pdf(doc, tmp_pdf)
+                os.replace(tmp_pdf, target)
+            finally:
+                tmp_pdf.unlink(missing_ok=True)
+            pdf = target
             msgs.append(f"PDF: {pdf}")
             rep["pdf"] = str(pdf)
             files.append(Path(pdf))
@@ -176,6 +187,21 @@ def _apply(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, An
             ctx.logger.warning("PDF not written for %s: %s", out, e)
             msgs.append(f"PDF not written ({e})")
     return NodeResult(frames[0], messages=msgs, report=rep, files=files)
+
+
+def _display_names(names: list[str], columns: dict) -> dict[str, str]:
+    """Column headings by display label; two columns with the same label keep their names beside it."""
+    titles = {c: _title(c, columns) for c in names}
+    counts: dict[str, int] = {}
+    for t in titles.values():
+        counts[t] = counts.get(t, 0) + 1
+    out = {}
+    for c, t in titles.items():
+        if counts[t] > 1 and t != c:
+            t = f"{t} [{c}]"
+        if t != c:
+            out[c] = t
+    return out
 
 
 registry.register(NodeType(

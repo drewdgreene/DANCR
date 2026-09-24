@@ -160,9 +160,34 @@ def _ordered_measures(t: Table) -> list[Column]:
     return sorted(t.measures, key=lambda c: (0 if c.unit else 1, t.columns.index(c)))
 
 
+AMOUNT_WORDS = {"sales", "sale", "revenue", "amount", "amounts", "cost", "costs", "spend", "spent", "profit", "income",
+                "qty", "quantity", "quantities", "units", "unit", "count", "counts", "total", "sum", "volume", "orders",
+                "items", "visits", "hours", "minutes", "calls", "tickets", "turnover", "paid", "payment", "payments",
+                "sold", "bookings", "downloads", "clicks", "views", "impressions", "rainfall", "precipitation", "energy"}
+READING_WORDS = {"temperature", "temp", "pressure", "humidity", "speed", "velocity", "level", "depth", "height",
+                 "voltage", "current", "rate", "ratio", "percent", "pct", "percentage", "price", "score", "age", "ph",
+                 "conductivity", "salinity", "concentration", "density", "flow", "rating", "latitude", "longitude",
+                 "lat", "lon", "lng", "altitude", "elevation", "weight", "mass", "size", "length", "width", "psi",
+                 "psia", "bar", "tension", "load", "signal", "strength", "frequency", "value", "reading", "average",
+                 "mean", "median", "index", "margin", "utilisation", "utilization", "occupancy", "efficiency"}
+CURRENCY_UNITS = {"$", "€", "£", "¥", "usd", "eur", "gbp", "jpy", "chf", "aud", "cad", "nok", "sek", "dkk", "k$", "m$"}
+
+
 def default_stat(model: DataModel, table: str, measure: list | None = None) -> str:
-    """Readings are averaged (the mean pressure per hour); amounts are added up (the total sales per month).
-    A number that describes a lookup row (a product's unit cost) is averaged too: adding it up means nothing."""
+    """Amounts are added up (the total sales per month); readings are averaged (the mean pressure per hour).
+    Decided by what the number is — its name and unit — and, when that says nothing, by its table: a logger's
+    numbers are readings, a lookup's numbers describe its rows (a product's unit cost), anything else adds up."""
+    from .understand import _words
+    col = _col(model, measure) if measure and not measure[0].startswith("stack:") else None
+    if col is not None:
+        words = set(_words(col.name)) | set(_words(col.label or ""))
+        unit = (col.unit or "").strip().lower()
+        if words & AMOUNT_WORDS and not words & {"price", "rate", "average", "mean", "ratio", "percent", "pct"}:
+            return "sum"
+        if unit in CURRENCY_UNITS:
+            return "sum"
+        if words & READING_WORDS or unit:
+            return "mean"
     t = model.table(measure[0] if measure and not measure[0].startswith("stack:") else table)
     return "mean" if t is not None and t.shape in (SERIES, LOOKUP) else "sum"
 
@@ -232,7 +257,7 @@ def _candidates(model: DataModel, t: Table) -> list[dict]:
     out: list[dict] = []
     measures = _ordered_measures(t)
     m0 = [t.node, measures[0].name] if measures else None
-    stat = default_stat(model, t.node)
+    stat = default_stat(model, t.node, m0)
     st = model.stack_of(t.node)
     # compare two series of the same quantity
     for r in model.relations:
@@ -462,48 +487,66 @@ def _plan_trend(b: _Builder):
     if not time:
         raise PlanError(f"{t.title} has no date or time column")
     measures = [r for r in (spec.get("measures") or []) if r]
+    by = spec.get("by")
     stat = spec.get("stat") or ("count" if not measures else default_stat(m, t.node, measures[0]))
     every = spec.get("every") or auto_every(m, t)
+    per = EVERY_WORDS.get(every, every)
     if not spec.get("every"):
-        b.assume("every", f"One point per {EVERY_WORDS.get(every, every)}, so the whole span "
-                          f"({_span_text(t.span_seconds)}) fits on one chart",
+        b.assume("every", f"One point per {per}, so the whole span ({_span_text(t.span_seconds)}) fits on one chart",
                  [{"label": f"Per {EVERY_WORDS.get(e, e)}", "set": {"every": e}} for e in EVERY_CHOICES if e != every][:4])
     st = m.stack_of(t.node)
     together = st is not None and spec.get("together", True)
-    stat_params = _bucket_stats(measures, stat, time[1])
-    if together and not spec.get("filters") and all(r[0] in st.tables or r[0] == t.node for r in measures):
+    own = lambda r: r[0] in (st.tables if st else [t.node])            # noqa: E731 - a column of the tables themselves
+    ys = [_bucket_name(r[1], stat) for r in measures] or ["rows"]
+    if together and not by and all(own(r) for r in measures) and all(own(f["column"]) for f in spec.get("filters") or []):
         # bucket each table first (small), then stack the buckets with a label: one line per table
         label_col = _free_name("source", [c.name for c in t.columns])
         keys = []
-        for i, node in enumerate(st.tables):
-            nk = b.use(node)
-            keys.append(b.add(f"buckets:{node}", "time_buckets", f"{_tlabel(m, node)} per {EVERY_WORDS.get(every, every)}",
-                              {"every": every, "time_column": time[1], **stat_params}, {"in": [nk]}))
+        for node in st.tables:
+            cur = b.use(node)
+            rules = [_rule(f, f["column"][1]) for f in spec.get("filters") or []]
+            if rules:
+                cur = b.add(f"filter:{node}", "keep_rows", f"Keep {filter_text(m, spec['filters'])}",
+                            {"mode": "keep", "conditions": {"match": "all", "rules": rules}}, {"in": [cur]})
+            keys.append(b.add(f"buckets:{node}", "time_buckets", f"{_tlabel(m, node)} per {per}",
+                              {"every": every, "time_column": time[1], **_bucket_stats(measures, stat, time[1])}, {"in": [cur]}))
         b.add("stack", "stack", f"All {len(st.tables)} together", {"label_column": label_col, "labels": list(st.labels)},
               {"tables": keys})
         b.assume("together", f"One line for each of {', '.join(st.labels)} ({st.why})",
                  [{"label": f"Only {t.title}", "set": {"together": False}}])
-        ys = [_bucket_name(r[1], stat) for r in measures] or ["rows"]
-        chart = b.add("chart", "chart", "", {"kind": "line", "x": time[1], "series": [{"column": ys[0]}], "color_by": label_col,
+        split = len(ys) > 1                              # several quantities: one panel per table, a line each
+        chart = b.add("chart", "chart", "", {"kind": "line", "x": time[1], "series": [{"column": y} for y in ys],
+                                             **({"split_by": label_col} if split else {"color_by": label_col}),
                                              "y_label": _y_label(m, measures[0] if measures else None, stat)}, {"in": ["stack"]})
     else:
         b.base()
-        b.need(*measures)
+        b.need(*measures, by)
         b.filters()
         tname = b.name(time) if tuple(time) in b.names else time[1]
-        stat_params = _bucket_stats([[None, b.name(r)] for r in measures], stat, tname)
-        b.current = b.add("buckets", "time_buckets", f"Per {EVERY_WORDS.get(every, every)}",
-                          {"every": every, "time_column": tname, **stat_params}, {"in": [b.current]})
+        g = b.name(by) if by else None
+        params = {"every": every, "time_column": tname, **_bucket_stats([[None, b.name(r)] for r in measures], stat, tname)}
+        if g:
+            params["by"] = [g]
+        b.current = b.add("buckets", "time_buckets", f"Per {per}" + (f" and {group_label(m, by)}" if by else ""),
+                          params, {"in": [b.current]})
         ys = [_bucket_name(b.name(r), stat) for r in measures] or ["rows"]
-        chart = b.add("chart", "chart", "", {"kind": "line", "x": tname, "series": [{"column": y} for y in ys],
+        extra = {"color_by": g} if g and len(ys) == 1 else ({"split_by": g} if g else {})
+        chart = b.add("chart", "chart", "", {"kind": "line", "x": tname, "series": [{"column": y} for y in ys], **extra,
                                              "y_label": _y_label(m, measures[0] if measures else None, stat)}, {"in": [b.current]})
     what = ", ".join(label(m, r) for r in measures) if measures else "rows"
-    title = f"{STAT_WORDS.get(stat, stat.title())} {what} per {EVERY_WORDS.get(every, every)}"
-    if stat == "count":
-        title = f"Rows per {EVERY_WORDS.get(every, every)}"
+    title = f"{STAT_WORDS.get(stat, stat.title())} {what} per {per}" if stat != "count" else f"Rows per {per}"
+    if by:
+        title += f", by {group_label(m, by)}"
     b.steps[-1].title = title
     b.steps[-1].params["title"] = title
     return chart, "chart", title, f"{t.title} has {time[1]}" + (f" and {what}" if measures else "")
+
+
+def _rule(f: dict, column: str) -> dict:
+    rule = {"column": column, "op": f["op"], "value": f.get("value", "")}
+    if f.get("value2") not in (None, ""):
+        rule["value2"] = f["value2"]
+    return rule
 
 
 def auto_every(model: DataModel, t: Table) -> str:
@@ -515,7 +558,7 @@ def auto_every(model: DataModel, t: Table) -> str:
 
 def _bucket_stats(measures: list[list], stat: str, time_col: str) -> dict:
     if stat == "count" or not measures:
-        return {"columns": [], "aggregations": [{"column": time_col, "stats": ["count"], "alias": "rows"}]}
+        return {"columns": [], "aggregations": [{"column": time_col, "stats": ["rows"], "alias": "rows"}]}
     return {"columns": [r[1] for r in measures], "default_stats": [stat]}
 
 
@@ -564,7 +607,7 @@ def _plan_breakdown(b: _Builder, top: int | None = None):
     g = b.name(by)
     if stat == "count":
         value = "rows"
-        params = {"by": [g], "columns": [], "aggregations": [{"column": g, "stats": ["count"], "alias": "rows"}]}
+        params = {"by": [g], "columns": [], "aggregations": [{"column": g, "stats": ["rows"], "alias": "rows"}]}
     else:
         value = b.name(measure)
         params = {"by": [g], "columns": [value], "default_stats": [stat]}
@@ -601,7 +644,7 @@ def _plan_single(b: _Builder):
     b.need(measure)
     b.filters()
     if stat == "count" or not measure:
-        params = {"by": [], "columns": [], "aggregations": [{"column": b.cols[0], "stats": ["count"], "alias": "rows"}]}
+        params = {"by": [], "columns": [], "aggregations": [{"column": b.cols[0], "stats": ["rows"], "alias": "rows"}]}
         title = "Number of rows"
     else:
         params = {"by": [], "columns": [b.name(measure)], "default_stats": [stat]}
@@ -630,7 +673,8 @@ def _plan_compare(b: _Builder):
     b.assume("pairing", f"Paired each reading of {ta.title} with the nearest reading of {tb.title}"
                         + (f" no more than {tol} away" if tol else ""),
              [{"label": "Allow twice as far apart", "set": {"tolerance": _double(tol)}}] if tol else [])
-    y = f"{col}_2"
+    col_b = rel.pairs.get(col, col)                   # the same quantity may have another name in the second log
+    y = f"{col_b}_2" if ta.column(col_b) is not None else col_b    # right-hand names that clash get the suffix
     b.add("fit", "fit_curve", f"{tb.title} against {ta.title}", {"x": col, "y": y, "kind": "linear"}, {"in": ["pair"]})
     b.assume("fit", f"{tb.title} is a straight-line function of {ta.title} (offset and scale); what is left over is the difference")
     span = min(x for x in (ta.span_seconds, tb.span_seconds) if x) if (ta.span_seconds or tb.span_seconds) else None

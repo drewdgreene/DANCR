@@ -245,9 +245,11 @@ class Executor:
         vals = self.pipeline.input_values()
         if not vals:
             return {}
-        # ensure_ascii=False: an escaped name ("D\\u00e9bit") would never match the input "Débit"
-        text = (params_json or json.dumps(self.pipeline.nodes[node_id].params, sort_keys=True, default=str, ensure_ascii=False)).lower()
-        return {k: v for k, v in vals.items() if re.search(r"(?<![\w])" + re.escape(k.lower()) + r"(?![\w])", text)}
+        # every text in the settings as written (not as JSON, where a newline is "\\n" and would hide the name after it)
+        params = json.loads(params_json) if params_json else self.pipeline.nodes[node_id].params
+        texts = [t.lower() for t in _texts(params)]
+        return {k: v for k, v in vals.items()
+                if any(re.search(r"(?<![\w])" + re.escape(k.lower()) + r"(?![\w])", t) for t in texts)}
 
     def plan_hash(self, node_id: str, memo: dict[str, str] | None = None) -> str:
         memo = {} if memo is None else memo
@@ -763,6 +765,17 @@ class Executor:
             return sum(p.stat().st_size for p in self.cache_dir.rglob("*.parquet")) if self.cache_dir.exists() else 0
         except OSError:
             return 0
+
+
+def _texts(obj: Any) -> list[str]:
+    """Every string in a settings value (keys included), however deeply nested."""
+    if isinstance(obj, str):
+        return [obj]
+    if isinstance(obj, dict):
+        return [t for k, v in obj.items() for t in (_texts(k) + _texts(v))]
+    if isinstance(obj, (list, tuple)):
+        return [t for v in obj for t in _texts(v)]
+    return [str(obj)] if obj is not None else []
 
 
 def column_stats(scan: pl.LazyFrame) -> dict[str, dict[str, Any]]:

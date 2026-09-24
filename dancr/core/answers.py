@@ -51,8 +51,10 @@ def build(pipe, model: DataModel, spec: dict[str, Any], edits: Edits | None = No
     edits = edits or PipelineEdits(pipe)
     existing = pipe.answer(answer_id) if answer_id else None
     previous = existing.steps if existing is not None else None
-    resolved, record = apply_plan(pipe, plan, edits, previous, protected_nodes(pipe, answer_id))
-    fields = answer_fields(pipe, plan, resolved, record)
+    applied = apply_plan(pipe, plan, edits, previous, protected_nodes(pipe, answer_id))
+    fields = answer_fields(pipe, plan, applied.resolved, applied.record)
+    fields["set_aside"] = [pipe.nodes[n].title for n in applied.left if n in pipe.nodes]
+    set_aside = fields.pop("set_aside")
     if existing is None:
         a = pipe.add_answer(fields["title"], fields["terminal"], fields["x"], fields["y"], fields["view"], fields["spec"],
                             steps=fields["steps"], assumptions=fields["assumptions"], rules=fields["rules"])
@@ -60,6 +62,7 @@ def build(pipe, model: DataModel, spec: dict[str, Any], edits: Edits | None = No
         for k, v in fields.items():
             setattr(existing, k, v)
         a = existing
+    plan.set_aside = set_aside
     return a, plan
 
 
@@ -107,3 +110,11 @@ def kept_by_hand(pipe, a: Answer) -> list[str]:
 def describe(pipe, a: Answer) -> dict[str, Any]:
     """How the command line and MCP report an answer."""
     return {**a.to_dict(), "built": a.terminal in pipe.nodes, "kept_by_hand": kept_by_hand(pipe, a)}
+
+
+def set_aside_note(titles: list[str]) -> str:
+    if not titles:
+        return ""
+    names = ", ".join(f"“{t}”" for t in titles)
+    return (f"You had edited {names}; the change needed it to be different, so it was left as you made it "
+            "and the answer now uses a new step")

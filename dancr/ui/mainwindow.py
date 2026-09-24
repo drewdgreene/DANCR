@@ -2,6 +2,7 @@
 a Map drawer showing the steps, and a Settings dock on the right."""
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 
@@ -111,6 +112,7 @@ class MainWindow(QMainWindow):
         self.mode_label = QLabel(""); self.mode_label.setObjectName("faint"); self.status.addPermanentWidget(self.mode_label)
         self._current: str | None = None
         self._current_answer: str | None = None
+        self._building: set[str] = set()          # answers queued until every row has been read
         self._tick = QTimer(self); self._tick.setInterval(100); self._tick.timeout.connect(self._tick_progress)
         self._progress_text = ""
         self._run_total = 0
@@ -444,17 +446,27 @@ class MainWindow(QMainWindow):
         """Build (or change) an answer once every row of the tables has been read: answers are never planned
         from a sample. Shows the answer when it is built."""
         from ..core.recipes import PlanError
+        same = self._same_answer(spec) if answer_id is None else None
+        if same is not None:                       # asked again (or a double click): the answer is already here
+            self.show_answer(same)
+            return
+        key = json.dumps([spec, answer_id], sort_keys=True, default=str)
+        if key in self._building:
+            return
+        self._building.add(key)
         if not self.understanding.full:
             self.askbar.show_status("Reading every row of your tables first…")
 
         def go(model) -> None:
+            self._building.discard(key)
             if self._disposed:
                 return
+            if answer_id is None and self._same_answer(spec) is not None:
+                self.show_answer(self._same_answer(spec)); return
             try:
                 aid = self.doc.build_answer(model, spec, answer_id)
             except (PlanError, KeyError) as e:
-                self.askbar.show_status("")
-                QMessageBox.information(self, "Cannot answer that", str(e).strip("'\""))
+                self.askbar.show_status(str(e).strip("'\""), error=True)     # inline, never a dialog out of the blue
                 return
             self.askbar.show_status("")
             self.doc.schedule_auto_run()
@@ -465,8 +477,20 @@ class MainWindow(QMainWindow):
             a = self.doc.pipeline.answer(aid)
             if a is not None and not self.doc.auto_run and not self.doc.running:
                 self.run([a.terminal])
-            self.status.showMessage("Built the answer. Change its choices above, or ask another question", 8000)
+            from ..core.answers import set_aside_note
+            note = set_aside_note(self.doc.last_set_aside)
+            if note:
+                self.toast.show_message(note, "OK", lambda: None)
+            self.status.showMessage(note or "Built the answer. Change its choices above, or ask another question", 8000)
         self.understanding.when_full(go)
+
+    def _same_answer(self, spec: dict) -> str | None:
+        want = json.dumps({k: v for k, v in spec.items() if k != "title"}, sort_keys=True, default=str)
+        for a in self.doc.pipeline.answers:
+            if a.terminal in self.doc.pipeline.nodes and json.dumps({k: v for k, v in a.spec.items() if k != "title"},
+                                                                     sort_keys=True, default=str) == want:
+                return a.id
+        return None
 
     def change_answer(self, aid: str, key: str, value) -> None:
         from ..core.recipes import apply_choice
@@ -612,6 +636,7 @@ class MainWindow(QMainWindow):
         self.a_revert.setEnabled(self.doc.path is not None and self.doc.dirty)
 
     def _on_reloaded(self) -> None:
+        self._building.clear()
         self._update_title()
         self._current = None
         self._current_answer = None
@@ -696,8 +721,31 @@ class MainWindow(QMainWindow):
     def save(self) -> bool:
         if self.doc.path is None:
             return self.save_as()
+        from .document import ChangedOnDisk
         try:
             self.doc.save()
+        except ChangedOnDisk:
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Warning)
+            box.setWindowTitle("The project changed on disk")
+            box.setText(f"{self.doc.path.name} was changed by another program (an agent, the command line or another "
+                        "window) since it was opened here.")
+            box.setInformativeText("Keep mine overwrites their change (it stays under File → Earlier versions). "
+                                   "Load theirs throws away the unsaved changes in this window.")
+            mine = box.addButton("Keep mine", QMessageBox.AcceptRole)
+            theirs = box.addButton("Load theirs", QMessageBox.DestructiveRole)
+            box.addButton(QMessageBox.Cancel)
+            box.exec()
+            if box.clickedButton() is mine:
+                try:
+                    self.doc.save(overwrite=True)
+                except (OSError, PipelineError) as e:
+                    QMessageBox.critical(self, "Cannot save", str(e)); return False
+            elif box.clickedButton() is theirs:
+                self.doc.load(self.doc.path)
+                return True
+            else:
+                return False
         except (OSError, PipelineError) as e:
             QMessageBox.critical(self, "Cannot save", str(e)); return False
         self.status.showMessage(f"Saved {self.doc.path.name}", 3000)
@@ -946,12 +994,15 @@ class MainWindow(QMainWindow):
         return nid
 
     def _start_template(self, key: str) -> None:
+        # a template is a new project: it never replaces the open one's file (even one whose steps were all deleted)
+        if not self.maybe_save():
+            return
         base = self.doc.path.parent if self.doc.path else Path.home() / "DANCR samples"
         try:
             data = write_sample(base)
         except OSError as e:
             QMessageBox.critical(self, "Sample data", f"Could not write the sample file: {e}"); return
-        pipe = Pipeline(self.doc.pipeline.name); pipe.path = self.doc.path
+        pipe = Pipeline("Untitled")
         try:
             build_template(key, pipe, data)
         except Exception as e:  # noqa: BLE001

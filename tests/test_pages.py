@@ -288,7 +288,7 @@ def test_autosave_pauses_after_external_change_and_restore(window, app, sample, 
     assert "autosave paused" in window.windowTitle()
     window.doc.autosave_now()
     assert "ext" in Pipeline.load(path).nodes                        # not overwritten
-    window.doc.save()                                                # an explicit save resumes it
+    window.doc.save(overwrite=True)                                  # the person chose "Keep mine": saving resumes it
     assert window.doc.autosave_paused is None
     versions = window.doc.versions()
     assert versions

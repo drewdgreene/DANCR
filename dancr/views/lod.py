@@ -112,7 +112,9 @@ def x_bounds(lf: pl.LazyFrame, x: str | None) -> tuple[float, float, int]:
         n = int(_collect(lf.select(pl.len()))[0, 0])
         return 0.0, float(max(n - 1, 0)), n
     xe, _ = _x_expr(schema, x)
-    r = _collect(lf.select(xe.min().alias("lo"), xe.max().alias("hi"), pl.len().alias("n")))
+    xf = xe.cast(pl.Float64)
+    xf = xf.filter(xf.is_finite())            # an infinite x (a division by zero upstream) must not stretch the axis
+    r = _collect(lf.select(xf.min().alias("lo"), xf.max().alias("hi"), pl.len().alias("n")))
     lo, hi, n = r["lo"][0], r["hi"][0], int(r["n"][0])
     return (float(lo) if lo is not None else 0.0), (float(hi) if hi is not None else 0.0), n
 

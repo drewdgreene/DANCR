@@ -45,7 +45,7 @@ def ev(df, src):
     ("t > \"2024-01-01 00:00:01\"", [False, False, True, True]),
     ("MOD([Pressure A], 2) = 0", [False, True, False, True]),
     ("ROW()", [1, 2, 3, 4]),
-    ("[Pressure A] / 0", [math.inf] * 4),
+    ("[Pressure A] / 0", [None] * 4),                 # no answer, as Excel's #DIV/0!: a blank, not infinity
 ])
 def test_values(df, src, expected):
     got, _ = ev(df, src)

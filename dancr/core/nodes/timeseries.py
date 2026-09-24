@@ -55,7 +55,10 @@ def _time_buckets(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[
     lf = _with_time(lf, schema, t)
     every, secs = parse_bucket(params.get("every") or "1m")
     only = [require_column(schema, c, "column", NUM) for c in (params.get("columns") or [])]
-    aggs = build_aggregations(schema, params.get("aggregations"), exclude=[t],
+    by = [require_column(schema, c, "group column") for c in (params.get("by") or [])]
+    if t in by:
+        raise ValueError("The time column is already how rows are grouped; choose another column to group by")
+    aggs = build_aggregations(schema, params.get("aggregations"), exclude=[t, *by],
                               default_stats=tuple(params.get("default_stats") or ["mean"]), only=only or None, order_by=t)
     if not aggs:
         raise ValueError("There are no number columns to summarise")
@@ -65,8 +68,8 @@ def _time_buckets(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[
             raise ValueError(f"The count column cannot be called {count_col!r}: that name is already used in the output")
         aggs.append(pl.len().alias(count_col))
     bucket = pl.col(t).dt.truncate(every).alias(t)
-    out = lf.group_by(bucket).agg(aggs).sort(t)
-    return NodeResult(out, messages=[f"Grouped rows into {every} buckets by {t}"])
+    out = lf.group_by([bucket, *by]).agg(aggs).sort([t, *by], nulls_last=True)
+    return NodeResult(out, messages=[f"Grouped rows into {every} buckets by {t}" + (f" and {', '.join(by)}" if by else "")])
 
 
 registry.register(NodeType(
@@ -80,6 +83,7 @@ registry.register(NodeType(
         Param("columns", "Columns to summarise", "columns", column_group="numeric", default=[],
               help="Empty = every number column"),
         Param("default_stats", "Statistics", "text_list", default=["mean"], help=STAT_HELP),
+        Param("by", "Also split by", "columns", default=[], help="One row per bucket and value (per day and per store)"),
         Param("time_column", "Time column", "column", column_group="temporal", help="Blank = first date/time column", advanced=True),
         Param("aggregations", "Choose statistics column by column", "aggregations", default=[], column_group="numeric", advanced=True),
         Param("count_column", "Add a column counting rows per bucket", "text", default="", advanced=True, placeholder="e.g. count"),
@@ -251,6 +255,15 @@ def _regular_grid(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[
     if lo is None:
         raise ValueError("The time column is empty")
     step_us = int(round(secs * 1e6))
+    # ticks fall on whole multiples of the spacing (12:00:00, 12:00:01 … not 12:00:00.120, 12:00:01.120 …), so two
+    # tables put on the same grid line up tick for tick; the first tick is the first such time at or after the data
+    zoned0 = isinstance(tdt, pl.Datetime) and tdt.time_zone
+    first = pl.select((pl.lit(lo).cast(tdt) if zoned0 else pl.lit(lo).cast(pl.Datetime("us"))).dt.truncate(every)).item()
+    if first < lo:
+        first = first + timedelta(microseconds=step_us)
+    lo = first
+    if lo > hi:
+        raise ValueError(f"The data spans less than one {every} step, so there is no tick to put it on")
     # whole microseconds, not seconds as floats: 0.3 s / 0.1 s is 2.9999… and would lose the last tick
     n_ticks = (hi - lo) // timedelta(microseconds=1) // step_us + 1
     if n_ticks > 200_000_000:

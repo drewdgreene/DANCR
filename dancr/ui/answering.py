@@ -59,9 +59,16 @@ class Understanding:
         self._timer = QTimer(owner); self._timer.setSingleShot(True); self._timer.setInterval(350)
         self._timer.timeout.connect(self.refresh)
         d = doc
-        for sig in (d.nodeAdded, d.nodeRemoved, d.nodeChanged, d.edgeAdded, d.edgeRemoved, d.reloaded, d.statesChanged,
-                    d.columnsChanged):
+        for sig in (d.nodeAdded, d.nodeRemoved, d.nodeChanged, d.edgeAdded, d.edgeRemoved, d.statesChanged, d.columnsChanged):
             listen(owner, sig, lambda *_: self._timer.start())
+        listen(owner, d.reloaded, self._project_replaced)
+        self._timer.start()
+
+    def _project_replaced(self) -> None:
+        """Another project is open: nothing asked about the old one may be built into this one."""
+        self._waiters = []
+        self.model, self.full, self._key = None, False, None
+        self.focus = None
         self._timer.start()
 
     def on_change(self, fn: Callable[[], None]) -> None:
@@ -84,14 +91,21 @@ class Understanding:
         return nodes
 
     def key(self) -> str:
+        """What the model depends on: which tables, and what is in them (their settings, their inputs and the files
+        they read — a step's plan hash). Not whether a step has run yet: that changes where rows are read from,
+        not what they are, so a loader finishing its run never throws a finished model away."""
         p = self.doc.pipeline
+        ex = self.doc.executor
+        memo: dict[str, str] = {}
         parts = []
         for nid in self._nodes():
             n = p.nodes[nid]
-            st = self.doc.state(nid)
-            parts.append([nid, n.type, n.title, n.params, st.status, st.hash])
-        return json.dumps([parts, p.columns, sorted(p.inputs_of(self.focus).items()) if self.focus in p.nodes else None],
-                          sort_keys=True, default=str)
+            try:
+                h = ex.plan_hash(nid, memo)
+            except Exception:  # noqa: BLE001 - a step that cannot be hashed yet: its settings stand in
+                h = json.dumps(n.params, sort_keys=True, default=str)
+            parts.append([nid, n.title, h])
+        return json.dumps([parts, p.columns], sort_keys=True, default=str)
 
     def refresh(self) -> None:
         key = self.key()
@@ -118,6 +132,9 @@ class Understanding:
     def _got(self, model: DataModel, full: bool, key: str) -> None:
         if key != self._key or (self.full and not full):
             return
+        if key != self.key():                  # the project changed while this was read: a newer one is coming
+            self._timer.start()
+            return
         self.model, self.full = model, full
         self._notify()
         if full:
@@ -141,6 +158,9 @@ class Understanding:
             fn(self.model)
         else:
             self._waiters.append(fn)
+
+    def cancel_waiting(self) -> None:
+        self._waiters = []
 
     @property
     def waiting(self) -> bool:
@@ -194,6 +214,10 @@ def preview_of(snapshot: Pipeline, cache, model: DataModel, spec: dict) -> dict[
     return {"kind": "table", "rows": df.height, "cols": df.width}
 
 
+def _num(v: Any) -> bool:
+    return isinstance(v, (int, float)) and v == v and v not in (float("inf"), float("-inf"))
+
+
 class Thumb(QWidget):
     """A tiny chart drawn from a preview (no axes: it only shows the shape)."""
 
@@ -208,14 +232,23 @@ class Thumb(QWidget):
         self.update()
 
     def paintEvent(self, e) -> None:
-        p = QPainter(self); p.setRenderHint(QPainter.Antialiasing)
+        p = QPainter(self)
+        try:
+            self._paint(p)
+        except Exception:  # noqa: BLE001 - a thumbnail must never break painting the window
+            log.exception("Could not draw a suggestion's preview")
+        finally:
+            p.end()
+
+    def _paint(self, p: QPainter) -> None:
+        p.setRenderHint(QPainter.Antialiasing)
         r = QRectF(self.rect()).adjusted(2, 4, -2, -4)
         d = self.data or {}
         kind = d.get("kind")
         accent = QColor(T.accent)
         colors = [accent, QColor(T.warn), QColor(T.ok), QColor(T.danger)]
         if kind == "lines":
-            series = [[v for v in ys if v == v] for ys in d.get("ys") or []]
+            series = [[v for v in ys if _num(v)] for ys in d.get("ys") or []]
             vals = [v for ys in series for v in ys]
             if len(vals) >= 2:
                 lo, hi = min(vals), max(vals)
@@ -230,7 +263,7 @@ class Thumb(QWidget):
                     p.setPen(QPen(colors[i % len(colors)], 1.4)); p.drawPath(path)
                 return
         if kind == "bar":
-            ys = [v for v in d.get("ys") or [] if v == v]
+            ys = [v for v in d.get("ys") or [] if _num(v)]
             if ys:
                 top = max(max(ys), 0) or 1.0
                 w = r.width() / len(ys)
@@ -242,7 +275,7 @@ class Thumb(QWidget):
                 return
         if kind == "scatter":
             xs, ys = d.get("xs") or [], d.get("ys") or []
-            pts = [(x, y) for x, y in zip(xs, ys) if x == x and y == y]
+            pts = [(x, y) for x, y in zip(xs, ys) if _num(x) and _num(y)]
             if len(pts) >= 2:
                 xl, xh = min(x for x, _ in pts), max(x for x, _ in pts)
                 yl, yh = min(y for _, y in pts), max(y for _, y in pts)
@@ -331,6 +364,7 @@ class AskBar(QFrame):
         self.cards: list[SuggestionCard] = []
         self.suggestions: list[Suggestion] = []
         self._previews = Serial(self)
+        self._suggesting = Serial(self, waits_for_run=False)
         self._shown_key: str | None = None
         self.u.on_change(self._model_changed)
 
@@ -343,18 +377,23 @@ class AskBar(QFrame):
         m = self.u.model
         if m is None:
             return
-        try:
-            self._completer_model.setStringList(sorted({" ".join(k) for k in vocabulary(m)}))
-            self.edit.setCompleter(self._completer)
-        except Exception:  # noqa: BLE001
-            log.exception("Could not list the words of this project")
         focus = self.u.focus if self.u.focus in m.tables else None
-        sugs = suggest(m, focus)
-        key = json.dumps([s.spec for s in sugs], sort_keys=True, default=str)
-        if key == self._shown_key and self.cards:
-            return
-        self._shown_key = key
-        self._fill(sugs, focus)
+
+        def work():                               # off the GUI thread: planning every candidate takes a moment
+            return sorted({" ".join(k) for k in vocabulary(m)}), suggest(m, focus)
+
+        def done(result) -> None:
+            if m is not self.u.model:
+                return
+            words, sugs = result
+            self._completer_model.setStringList(words)
+            self.edit.setCompleter(self._completer)
+            key = json.dumps([focus, [x.spec for x in sugs]], sort_keys=True, default=str)
+            if key == self._shown_key and self.cards:
+                return
+            self._shown_key = key
+            self._fill(sugs, focus)
+        self._suggesting.submit(work, done, lambda msg: log.warning("Could not suggest answers: %s", msg))
 
     def _fill(self, sugs: list[Suggestion], focus: str | None) -> None:
         for c in self.cards:
@@ -438,8 +477,8 @@ class AskBar(QFrame):
         self.edit.setText(text)
         self._ask()
 
-    def show_status(self, text: str) -> None:
-        self._set_message(text)
+    def show_status(self, text: str, error: bool = False) -> None:
+        self._set_message(text, error)
 
 
 # =================================================================== the selected answer
@@ -475,12 +514,25 @@ class AnswerPanel(QFrame):
         listen(self, doc.answerChanged, lambda aid: self.refresh() if aid == self.answer_id else None)
 
     def set_answer(self, aid: str | None) -> None:
+        if aid != self.answer_id and self.title.hasFocus():
+            self._renamed()                           # a name being typed belongs to the answer it was typed for
         self.answer_id = aid
+        self._title_for = aid
         self.setVisible(aid is not None)
+        a = self.doc.pipeline.answer(aid) if aid else None
+        self._set_title(a.title if a is not None else "")
         self.refresh()
 
+    def _set_title(self, text: str) -> None:
+        self.title.blockSignals(True)
+        self.title.setText(text)
+        self.title.setCursorPosition(0)
+        self.title.setFixedWidth(min(420, max(160, self.title.fontMetrics().horizontalAdvance(text) + 24)))
+        self.title.blockSignals(False)
+
     def _renamed(self) -> None:
-        a = self.doc.pipeline.answer(self.answer_id) if self.answer_id else None
+        aid = getattr(self, "_title_for", None)
+        a = self.doc.pipeline.answer(aid) if aid else None
         if a is not None and self.title.text().strip() and self.title.text().strip() != a.title:
             self.rename.emit(a.id, self.title.text().strip())
 
@@ -493,9 +545,7 @@ class AnswerPanel(QFrame):
         if a is None:
             return
         if not self.title.hasFocus():
-            self.title.setText(a.title)
-            self.title.setCursorPosition(0)
-            self.title.setFixedWidth(min(420, max(160, self.title.fontMetrics().horizontalAdvance(a.title) + 24)))
+            self._set_title(a.title)
         m = self.u.model
         chips = []
         if m is not None and a.spec.get("table") in m.tables:

@@ -8,7 +8,7 @@ import polars as pl
 
 from ..params import Param
 from ..registry import NodeType, InputSpec, Ctx, NodeResult, registry
-from ._common import first_input, schema_of
+from ._common import private_temp, first_input, schema_of
 from ..dtypes import datetime_literal, temp_name, text_to_bool, text_to_bool_expr, text_to_number_expr, number_from_text, typed_value, is_date
 from .outputs import excel_frame
 
@@ -173,7 +173,7 @@ def _workbook(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str,
     from xlsxwriter import Workbook
     meta = (ctx.upstream_meta or {}).get("items") or []
     out.parent.mkdir(parents=True, exist_ok=True)
-    tmp = out.with_name(f".{out.name}.{os.getpid()}.tmp.xlsx")
+    tmp = private_temp(out)
     used: set[str] = set()
     try:
         with Workbook(str(tmp)) as wb:

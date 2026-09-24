@@ -2,6 +2,7 @@
 reading results. Both front ends call these, so a step is reported the same way wherever it is asked for."""
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +12,10 @@ from .core import Pipeline, registry
 from .core.dtypes import json_safe
 from .core.executor import Executor, NodeState
 from .core.model import Node
+
+
+class StepFailed(ValueError):
+    """A step asked for could not be computed (the CLI exits 1, as for a failed run, not 2 for a usage error)."""
 
 
 def require_node(p: Pipeline, node_id: str) -> str:
@@ -88,7 +93,7 @@ def result_frame(p: Pipeline, ex: Executor, node_id: str, run: bool) -> pl.LazyF
             raise ValueError(f"{node_id} has not been run yet (status: {st.status}). Run the pipeline first, or ask to run it")
         res = ex.run(targets=[node_id])
         if res[node_id].status != "done":
-            raise ValueError(f"{node_id} failed: {res[node_id].error}")
+            raise StepFailed(f"{node_id} failed: {res[node_id].error}")
     return ex.frame(node_id)
 
 
@@ -201,7 +206,8 @@ def build_answer(p: Pipeline, spec: dict[str, Any], answer_id: str | None = None
     from .core import answers
     m = answers.model_for(p, Executor(p), nodes=answers.tables_for(p, spec))
     a, plan = answers.build(p, m, spec, answer_id=answer_id)
-    return {**answers.describe(p, a), "chips": plan.chips, "why": plan.why, "sentence": plan.sentence()}
+    return {**answers.describe(p, a), "chips": plan.chips, "why": plan.why, "sentence": plan.sentence(),
+            "set_aside": plan.set_aside, "note": answers.set_aside_note(plan.set_aside)}
 
 
 def ask_question(p: Pipeline, text: str, build: bool = True) -> dict[str, Any]:
@@ -233,7 +239,22 @@ def change_answer(p: Pipeline, answer_id: str, key: str | None = None, value: An
             raise ValueError(f"That assumption has {len(choices)} alternatives (numbered from 0)")
         spec = apply_choice(a.spec, "set", choices[choice]["set"])
     elif key:
+        _check_choice(p, a, key, value)
         spec = apply_choice(a.spec, key, value)
     else:
         raise ValueError("Say what to change: a chip (key and value) or an assumption's alternative")
     return build_answer(p, spec, answer_id)
+
+
+def _check_choice(p: Pipeline, a, key: str, value: Any) -> None:
+    """A chip may only be set to one of its choices (what the window offers), so a typo never builds a broken answer."""
+    from .core.answers import model_for, tables_for
+    from .core.recipes import chips
+    m = model_for(p, Executor(p), deep=False, nodes=tables_for(p, a.spec))
+    cs = {c["key"]: c for c in chips(m, a.spec)}
+    if key not in cs:
+        raise ValueError(f"This answer has no choice called {key!r}. Choices: {', '.join(cs) or 'none'}")
+    allowed = [ch["value"] for ch in cs[key]["choices"]]
+    if value not in allowed:
+        shown = ", ".join(json.dumps(v) for v in allowed[:12])
+        raise ValueError(f"{key} cannot be {json.dumps(value)}. Choose one of: {shown}")

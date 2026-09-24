@@ -284,12 +284,36 @@ def test_answers_share_steps_and_change_in_place(shop_project):
 def test_hand_edits_survive_a_change(shop_project):
     p, m = shop_project
     a, _ = A.build(p, m, ask(m, "total qty by region").spec)
-    g = a.steps["groups"]["node"]
-    p.nodes[g].params["default_stats"] = ["max"]
-    p.nodes[g].title = "My groups"
+    order = a.steps["order"]["node"]
+    p.nodes[order].params["descending"] = False          # the person's own tweak to a step the change does not touch
+    p.nodes[order].title = "My order"
     A.change(p, m, a.id, "stat", "mean")
-    assert p.nodes[g].params["default_stats"] == ["max"] and p.nodes[g].title == "My groups"
-    assert A.kept_by_hand(p, a) == ["My groups"]
+    assert p.nodes[order].params["descending"] is False and p.nodes[order].title == "My order"
+    assert a.steps["order"]["node"] == order and A.kept_by_hand(p, a) == ["My order"]
+
+
+def test_an_edited_step_the_change_needs_is_set_aside_not_overwritten(shop_project):
+    p, m = shop_project
+    a, _ = A.build(p, m, ask(m, "total qty by region").spec)
+    g = a.steps["groups"]["node"]
+    p.nodes[g].params["default_stats"] = ["max"]; p.nodes[g].title = "My groups"
+    _, pl_ = A.change(p, m, a.id, "measure", None)       # count rows instead: the grouping step must change
+    assert g in p.nodes and p.nodes[g].params["default_stats"] == ["max"]      # left exactly as the person made it
+    assert a.steps["groups"]["node"] != g and pl_.set_aside == ["My groups"]
+    st = Executor(p).run(targets=[a.terminal])[a.terminal]
+    assert st.status == "done", st.error
+
+
+def test_an_answer_never_takes_over_a_step_someone_built(shop_project):
+    p, m = shop_project
+    spec = ask(m, "total qty by region").spec
+    mine = instantiate(p, plan(m, spec))                  # the same steps, built by hand (no answer)
+    a, _ = A.build(p, m, spec)
+    assert not set(a.nodes) & set(mine.values()) - {"orders", "customers"}
+    A.change(p, m, a.id, "stat", "mean")
+    assert p.nodes[mine["groups"]].params["default_stats"] == ["sum"]
+    A.remove(p, a.id, remove_steps=True)
+    assert all(n in p.nodes for n in mine.values())
 
 
 def test_a_step_someone_added_after_an_answer_is_kept(shop_project):
@@ -383,3 +407,105 @@ def test_mcp_answer_tools(shop, tmp_path, monkeypatch):
     assert {r["kind"] for r in model["relations"]} == {"link"}
     assert json.loads(srv.remove_answer("p.json", built["id"], remove_steps=True))["ok"]
     assert len(Pipeline.load(tmp_path / "p.json").answers) == 1
+
+
+def test_row_spacing_is_measured_on_consecutive_rows_of_a_stored_result(probe_dir, tmp_path, monkeypatch):
+    """Once a table has run, samples are spread over the whole result; the pairing tolerance must still come from
+    the true spacing between readings, not the spacing between sampled rows."""
+    import dancr.core.understand as u
+    monkeypatch.setattr(u, "SAMPLE_ROWS", 500)
+    p = project(probe_dir, "probe_A.csv", "probe_B.csv", name=f"r_{tmp_path.name}")
+    Executor(p).run()
+    m = full_model(p)
+    assert m.tables["probe_A"].column("time").cadence == pytest.approx(0.05)
+    assert next(r for r in m.relations if r.kind == "align").tolerance == "50ms"
+
+
+# ------------------------------------------------------------------- review 2026-09-24 (answer engine)
+def _frames(tmp_path, **frames):
+    p = Pipeline("r"); p.path = tmp_path / "r.json"
+    for name, df in frames.items():
+        df.write_csv(tmp_path / f"{name}.csv")
+        p.add_node("load_file", title=name, params={"path": f"{name}.csv"}, id=name)
+    return p, full_model(p)
+
+
+def test_a_bare_id_links_to_the_table_it_is_named_after(tmp_path):
+    p, m = _frames(tmp_path,
+                   orders=pl.DataFrame({"id": list(range(1, 201)), "customer_id": [i % 20 + 1 for i in range(200)],
+                                        "amount": [float(i % 7) for i in range(200)]}),
+                   customers=pl.DataFrame({"id": list(range(1, 21)), "name": [f"c{i}" for i in range(20)],
+                                           "region": ["N", "S", "E", "W"] * 5}))
+    links = [(r.left_on, r.right_on, r.cardinality) for r in m.relations if r.kind == "link"]
+    assert links == [("customer_id", "id", "many-to-one")]
+    a = ask(m, "total amount by region")
+    res = instantiate(p, plan(m, a.spec))
+    ex = Executor(p); ex.run()
+    df = pl.read_parquet(ex.state(res["order"]).output)
+    assert df["amount"].sum() == pytest.approx(sum(float(i % 7) for i in range(200))) and None not in df["region"].to_list()
+
+
+@pytest.fixture
+def sales_model(tmp_path):
+    t0 = datetime(2024, 1, 1)
+    n = 400
+    return _frames(tmp_path, sales=pl.DataFrame({
+        "date": [t0 + timedelta(hours=6 * i) for i in range(n)], "region": (["North", "South", "Total", "West"] * 100),
+        "month": [(t0 + timedelta(hours=6 * i)).month for i in range(n)], "day": [(t0 + timedelta(hours=6 * i)).day for i in range(n)],
+        "sales": [float(i % 13) for i in range(n)]}))
+
+
+@pytest.mark.parametrize("question,expect", [
+    ("average sales per 15 minutes", {"recipe": "trend", "every": "15m"}),           # 15 is a number, not day 15
+    ("sales per 12 hours", {"recipe": "trend", "every": "12h"}),
+    ("sales between 10 and 20", {"recipe": "rows", "filters": [{"column": ["sales", "sales"], "op": "between", "value": 10, "value2": 20}]}),
+    ("sales where day is 3", {"filters": [{"column": ["sales", "day"], "op": "eq", "value": 3}]}),
+    ("total sales by region", {"recipe": "breakdown", "stat": "sum", "by": ["sales", "region"]}),   # a region called Total
+    ("sales where region is Total", {"filters": [{"column": ["sales", "region"], "op": "eq", "value": "Total"}]}),
+    ("average sales per day by region", {"recipe": "trend", "every": "1d", "by": ["sales", "region"]}),
+])
+def test_questions_read_by_context(sales_model, question, expect):
+    _, m = sales_model
+    a = ask(m, question)
+    assert a.ok, a.message
+    for k, v in expect.items():
+        assert a.spec.get(k) == v, (question, a.spec)
+
+
+def test_a_trend_split_by_a_group_runs(sales_model):
+    p, m = sales_model
+    pl_ = plan(m, ask(m, "average sales per day by region").spec)
+    res = instantiate(p, pl_)
+    ex = Executor(p); ex.run()
+    df = pl.read_parquet(ex.state(res["buckets"]).output)
+    assert set(df.columns) == {"date", "region", "sales"} and df["region"].n_unique() == 4
+    assert p.nodes[res["chart"]].params["color_by"] == "region"
+
+
+def test_rows_are_counted_blank_or_not(tmp_path):
+    p, m = _frames(tmp_path, staff=pl.DataFrame({"note": [None, "x"] * 50, "dept": (["HR", "IT", "Ops", None] * 25),
+                                                 "pay": [float(i) for i in range(100)]}))
+    res = instantiate(p, plan(m, ask(m, "how many rows by dept").spec))
+    ex = Executor(p); ex.run()
+    df = pl.read_parquet(ex.state(res["order"]).output)
+    assert df["rows"].to_list() == [25, 25, 25, 25]
+
+
+def test_two_logs_matched_by_unit_are_compared(tmp_path):
+    t0 = datetime(2024, 1, 1)
+    p, m = _frames(tmp_path,
+                   logA=pl.DataFrame({"time": [t0 + timedelta(seconds=i) for i in range(300)], "Pressure (bar)": [1.0 + i / 1000 for i in range(300)]}),
+                   logB=pl.DataFrame({"time": [t0 + timedelta(seconds=i, milliseconds=200) for i in range(300)], "P (bar)": [1.1 + i / 1000 for i in range(300)]}))
+    s = next(s for s in suggest(m) if s.recipe == "compare")
+    res = instantiate(p, plan(m, s.spec))
+    assert all(v.status == "done" for v in Executor(p).run().values())
+
+
+def test_readings_are_averaged_even_in_a_table_with_ids(tmp_path):
+    t0 = datetime(2024, 1, 1)
+    _, m = _frames(tmp_path, sensors=pl.DataFrame({"time": [t0 + timedelta(minutes=i) for i in range(300)],
+                                                   "sensor_id": [f"S{i % 3}" for i in range(300)],
+                                                   "temperature (C)": [20 + (i % 5) / 10 for i in range(300)]}))
+    assert suggest(m)[0].spec["stat"] == "mean"
+    a = ask(m, "average temperature per sensor")
+    assert a.ok and a.spec["by"] == ["sensors", "sensor_id"]

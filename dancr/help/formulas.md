@@ -37,7 +37,7 @@ the row (`MAX(a, b, c)`).
 | `ROUND(x, digits)` `FLOOR(x)` `CEIL(x)` `CEILING(x)` `SIGN(x)` `MOD(a, b)` `CLIP(x, lo, hi)` | Rounding and limits. ROUND works as in Excel: halves away from zero (2.5 → 3), negative digits round to tens, hundreds… |
 | `SIN COS TAN ASIN ACOS ATAN ATAN2(y, x) PI()` | Trigonometry (radians) |
 | `SUM MIN MAX AVERAGE MEAN MEDIAN STDEV STD VAR COUNT` | Column aggregates (one arg) or row-wise (several) |
-| `PERCENTILE(x, 0.95)` `ZSCORE(x)` `RANK(x)` | Statistics. PERCENTILE interpolates like Excel's PERCENTILE.INC; give 0–1, or 0–100 (a number above 1 is a percentage, so 1.5 means 1.5 %) |
+| `PERCENTILE(x, 0.95)` `ZSCORE(x)` `RANK(x)` | Statistics. RANK gives the largest value rank 1, like Excel (`RANK(x, 1)`: the smallest). PERCENTILE interpolates like Excel's PERCENTILE.INC; give 0–1, or 0–100 (a number above 1 is a percentage, so 1.5 means 1.5 %) |
 | `CUMSUM(x)` `CUMMAX(x)` `CUMMIN(x)` | Running totals |
 | `ROW()` | Row number from 1 |
 | `LAG(x, n)` `LEAD(x, n)` `DIFF(x, n)` `PCT_CHANGE(x, n)` | Previous/next rows (n defaults to 1). `DIFF` of a date gives seconds |
@@ -63,3 +63,5 @@ ROLLING_MEDIAN(value, 101, TRUE)
 ZSCORE(value) > 4
 HOUR(time) >= 6 and HOUR(time) < 18
 ```
+
+Dividing by zero gives a blank (Excel shows #DIV/0!), never infinity, so totals and charts stay correct. A NaN read from a file counts as blank everywhere: in filters, statistics and ISBLANK.

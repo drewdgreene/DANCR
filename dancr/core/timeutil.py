@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import re
-
+from decimal import Decimal
 
 import polars as pl
 
@@ -74,13 +74,19 @@ def _parse_duration(text: str) -> tuple[str, float]:
         raise ValueError(f"{text!r} must be greater than zero")
     if value.is_integer():
         return f"{int(value)}{pu}", value * secs
-    # fractional: express in a smaller unit
-    total = value * secs
-    for u in ("d", "h", "m", "s", "ms", "us"):
-        _, us = _UNITS[u]
-        if (total / us).is_integer():
-            return f"{int(total / us)}{u}", total
-    return f"{int(total * 1e6)}us", total
+    # fractional: count it exactly in nanoseconds (decimal arithmetic: 1.001 s is 1001 ms, not 1000.999…)
+    total_ns = Decimal(n) * _NS[pu]
+    if total_ns != total_ns.to_integral_value():
+        total_ns = total_ns.to_integral_value()             # finer than a nanosecond: the nearest one
+    for u in ("w", "d", "h", "m", "s", "ms", "us", "ns"):
+        q = total_ns / _NS[u]
+        if q == q.to_integral_value():
+            return f"{int(q)}{u}", float(total_ns) / 1e9
+    return f"{int(total_ns)}ns", float(total_ns) / 1e9
+
+
+_NS = {k: Decimal(v) for k, v in {"ns": 1, "us": 1_000, "ms": 1_000_000, "s": 1_000_000_000, "m": 60_000_000_000,
+                                   "h": 3_600_000_000_000, "d": 86_400_000_000_000, "w": 604_800_000_000_000}.items()}
 
 
 # Tried in order; the first format that parses every sampled value wins, else the one that parses most.

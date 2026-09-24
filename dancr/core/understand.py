@@ -30,9 +30,11 @@ from .expr import _kind_of_dtype, NUM, TIME, STR, BOOL
 from .registry import registry
 
 SAMPLE_ROWS = 100_000          # rows read per table for column facts
+CADENCE_ROWS = 20_000          # consecutive rows read to measure how often rows arrive
 MAX_VALUES = 5_000             # distinct values kept per key-like column, for link overlap
 CATEGORY_MAX = 50              # a text column with at most this many values (and repeats) is a category
 LINK_MIN_SCORE = 0.60
+LINKS_PER_PAIR = 3             # alternatives kept per pair of tables (the first is used; the others are offered)
 STACK_MIN_SIMILARITY = 0.70
 EXACT_KEY_ROWS = 5_000_000     # up to this many rows, key uniqueness is counted exactly; above, estimated
 EXACT_MATCH_ROWS = 20_000_000  # up to this many rows, link matches are counted exactly
@@ -133,7 +135,8 @@ class Relation:
     exact: bool = False
     score: float = 0.0
     labels: list[str] = field(default_factory=list)
-    shared: list[str] = field(default_factory=list)     # align/stack: the columns both have
+    shared: list[str] = field(default_factory=list)     # align/stack: the columns both have (align: the first table's names)
+    pairs: dict[str, str] = field(default_factory=dict)  # align: first table's column -> the second table's
     tolerance: str = ""
     why: str = ""
 
@@ -190,8 +193,11 @@ def understand(pipe, executor, nodes: Iterable[str] | None = None) -> DataModel:
 
 def _read_table(pipe, executor, nid: str) -> Table:
     node = pipe.nodes[nid]
-    lf, _kind = executor.sample_frame(nid, SAMPLE_ROWS)
+    lf, kind = executor.sample_frame(nid, SAMPLE_ROWS)
     sample = lf.head(SAMPLE_ROWS).collect(engine="streaming")
+    # a spread sample (every k-th row of a stored result) is fair for values but not for timing: how often rows
+    # arrive is measured on consecutive rows
+    run = sample if kind != "spread" else pl.scan_parquet(executor.state(nid).output).head(CADENCE_ROWS).collect()
     st = executor.state(nid)
     rows = st.rows if st.status == "done" and st.rows is not None else None
     nt = registry.get(node.type)
@@ -210,7 +216,7 @@ def _read_table(pipe, executor, nid: str) -> Table:
     if t.complete:
         for c in t.columns:
             c.unique_exact = True
-    _settle_time(t, sample)
+    _settle_time(t, sample, run)
     t.shape = _shape_of(t)
     t.pairs = _pairs(sample, t.measures)
     return t
@@ -307,14 +313,15 @@ def _category_values(s: pl.Series) -> list[Any]:
     return [_clean(v) for v in vc[name].to_list()]
 
 
-def _settle_time(t: Table, sample: pl.DataFrame) -> None:
-    """The main time column (the first date/time column that varies) and how regularly rows arrive."""
+def _settle_time(t: Table, sample: pl.DataFrame, consecutive: pl.DataFrame) -> None:
+    """The main time column (the first date/time column that varies) and how regularly rows arrive, measured on
+    ``consecutive`` rows."""
     times = t.by_role(TIME_ROLE)
     if not times:
         return
     main = times[0]
     t.time = main.name
-    s = sample[main.name].drop_nulls()
+    s = consecutive[main.name].drop_nulls() if main.name in consecutive.columns else sample[main.name].drop_nulls()
     if s.len() >= 3:
         try:
             srt = s.sort()
@@ -380,7 +387,7 @@ def _find_links(tables: list[Table]) -> list[Relation]:
                 for cb in b.columns:
                     if not cb.link_candidate or not cb._keys or _kind_family(ca) != _kind_family(cb):
                         continue
-                    name = name_similarity(ca.name, cb.name)
+                    name = _link_name_score(a, ca, b, cb)
                     if name < 0.34:
                         continue
                     va, vb = _comparable(ca, cb)
@@ -392,7 +399,39 @@ def _find_links(tables: list[Table]) -> list[Relation]:
                         continue
                     out.append(_orient_link(a, ca, b, cb, va, vb, round(score, 3)))
     out.sort(key=lambda r: (-r.score, r.id))
-    return out
+    kept: list[Relation] = []
+    per_pair: dict[frozenset, int] = {}
+    for r in out:                                  # the best few ways to link each pair of tables, not every one
+        k = frozenset(r.tables)
+        if per_pair.get(k, 0) < LINKS_PER_PAIR:
+            per_pair[k] = per_pair.get(k, 0) + 1
+            kept.append(r)
+    return kept
+
+
+BARE_KEYS = ("id", "key", "code", "ref", "uuid", "guid", "no", "number")
+ROW_IDS = ("id", "uuid", "guid")            # a table's own row number, not a key it shares
+
+
+def _singular(word: str) -> str:
+    w = norm(word)
+    for end, rep in (("ies", "y"), ("ses", "s"), ("s", "")):
+        if w.endswith(end) and len(w) > len(end) + 2:
+            return w[: -len(end)] + rep
+    return w
+
+
+def _link_name_score(a: Table, ca: Column, b: Table, cb: Column) -> float:
+    """How much two column names say they are the same key. A bare 'id' is a table's own row id: it matches
+    '<that table>_id' in another table (customers.id and orders.customer_id), never another table's bare 'id'."""
+    bare_a, bare_b = norm(ca.name) in BARE_KEYS, norm(cb.name) in BARE_KEYS
+    if norm(ca.name) in ROW_IDS and norm(cb.name) in ROW_IDS:
+        return 0.0 if _singular(a.title) != _singular(b.title) else 1.0
+    if bare_b and _stem(ca.name) == _singular(b.title):
+        return 0.95
+    if bare_a and _stem(cb.name) == _singular(a.title):
+        return 0.95
+    return name_similarity(ca.name, cb.name)
 
 
 def _kind_family(c: Column) -> str:
@@ -463,11 +502,13 @@ def _find_aligns(tables: list[Table]) -> list[Relation]:
     series = [t for t in tables if t.time and t.measures]
     for i, a in enumerate(series):
         for b in series[i + 1:]:
-            shared = [m.name for m in a.measures if b.column(m.name) is not None and b.column(m.name).role == MEASURE]
-            if not shared:
-                shared = [m.name for m in a.measures for n in b.measures if m.unit and m.unit == n.unit][:1]
-            if not shared:
+            pairs = {m.name: m.name for m in a.measures if b.column(m.name) is not None and b.column(m.name).role == MEASURE}
+            if not pairs:
+                pairs = {m.name: n.name for m in a.measures for n in b.measures if m.unit and m.unit == n.unit}
+                pairs = dict(list(pairs.items())[:1])
+            if not pairs:
                 continue
+            shared = list(pairs)
             ca, cb = a.column(a.time), b.column(b.time)
             cad = max(x for x in (ca.cadence, cb.cadence, 0.0) if x is not None)
             overlap = _time_overlap(a, b)
@@ -476,7 +517,7 @@ def _find_aligns(tables: list[Table]) -> list[Relation]:
             tol = duration_text(cad) if cad else ""
             score = 0.7 + 0.3 * (overlap if overlap is not None else 0.5)
             rel = Relation(id=f"align:{a.node}~{b.node}", kind="align", tables=[a.node, b.node], left_on=a.time,
-                           right_on=b.time, shared=shared, tolerance=tol, score=round(score, 3), exact=False)
+                           right_on=b.time, shared=shared, pairs=pairs, tolerance=tol, score=round(score, 3), exact=False)
             rel.why = (f"both record {', '.join(shared[:3])} over time; each reading of {a.title} is paired with the "
                        f"nearest reading of {b.title}" + (f" within {tol}" if tol else ""))
             out.append(rel)
@@ -507,21 +548,23 @@ def _kinds_agree(a: Table, b: Table) -> bool:
 def deepen(pipe, executor, model: DataModel, cancel=None) -> DataModel:
     """Read every row of each table once (streaming) to replace sample facts by exact ones: row counts, time
     spans, key uniqueness and link matches. Tables that cannot be read in full keep their sample facts."""
+    frames: dict[str, pl.LazyFrame | None] = {}          # each table is opened once (an Excel file is parsed once)
     for t in model.tables.values():
         if cancel is not None and cancel():
             return model
         try:
-            lf = full_frame(pipe, executor, t.node)
+            frames[t.node] = lf = full_frame(pipe, executor, t.node)
             if lf is not None:
                 _deepen_table(t, lf)
         except Exception:  # noqa: BLE001 - the sample facts stay; the answer says they are estimates
+            frames[t.node] = None
             continue
     for r in model.relations:
         if cancel is not None and cancel():
             return model
         if r.kind == "link":
             try:
-                _deepen_link(pipe, executor, model, r)
+                _deepen_link(model, r, frames)
             except Exception:  # noqa: BLE001
                 continue
     # shapes can change once exact uniqueness and spans are known; relations are re-oriented accordingly
@@ -566,29 +609,34 @@ def _deepen_table(t: Table, lf: pl.LazyFrame) -> None:
         col = t.column(t.time)
         if col is not None:
             col.minimum, col.maximum = t.start, t.end
+    # the columns that looked unique in the sample are counted exactly, all in one more pass
+    check = [c for c in t.columns if f"__u_{c.name}" in row and c.unique and not t.complete and t.rows <= EXACT_KEY_ROWS
+             and c.role == ID]
+    exact_counts = {}
+    if check:
+        r2 = lf.select([pl.col(c.name).drop_nulls().n_unique().alias(c.name) for c in check]).collect(engine="streaming")
+        exact_counts = r2.row(0, named=True)
     for c in t.columns:
         if f"__u_{c.name}" not in row:
             continue
         est, filled = int(row[f"__u_{c.name}"]), int(row[f"__n_{c.name}"])
         c.distinct = max(c.distinct, est)
-        if c.unique and not t.complete:
-            if t.rows <= EXACT_KEY_ROWS:
-                exact = int(lf.select(pl.col(c.name).drop_nulls().n_unique()).collect(engine="streaming")[0, 0])
-                c.unique, c.unique_exact = exact == filled, True
-                c.distinct = exact
-            else:
-                c.unique = est >= 0.98 * filled           # HyperLogLog is within about 2%
+        if c.name in exact_counts:
+            exact = int(exact_counts[c.name])
+            c.unique, c.unique_exact, c.distinct = exact == filled, True, exact
+        elif c.unique and not t.complete:
+            c.unique = est >= 0.98 * filled           # HyperLogLog is within about 2% (free text, or a very long table)
         elif t.complete:
             c.unique_exact = True
         if c.role == CATEGORY and c.distinct > CATEGORY_MAX * 2:
             c.role, c.values = TEXT, []                    # the sample looked like a category; the whole table does not
 
 
-def _deepen_link(pipe, executor, model: DataModel, r: Relation) -> None:
+def _deepen_link(model: DataModel, r: Relation, frames: dict[str, pl.LazyFrame | None]) -> None:
     left, right = model.tables[r.tables[0]], model.tables[r.tables[1]]
     if (left.rows or 0) > EXACT_MATCH_ROWS:
         return
-    lf, rf = full_frame(pipe, executor, left.node), full_frame(pipe, executor, right.node)
+    lf, rf = frames.get(left.node), frames.get(right.node)
     if lf is None or rf is None:
         return
     lk = lf.select(pl.col(r.left_on).cast(pl.Utf8).alias("k")).drop_nulls().unique()
