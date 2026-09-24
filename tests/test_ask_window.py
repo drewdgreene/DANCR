@@ -6,7 +6,6 @@ import polars as pl
 import pytest
 
 from PySide6.QtCore import QSettings
-from PySide6.QtWidgets import QMessageBox
 
 from helpers import pump
 

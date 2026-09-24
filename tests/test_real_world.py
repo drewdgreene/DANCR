@@ -8,7 +8,6 @@ import polars as pl
 import pytest
 
 from dancr.core import Pipeline
-from dancr.core import answers as A
 from dancr.core.ask import ask
 from dancr.core.executor import Executor
 from dancr.core.planner import instantiate

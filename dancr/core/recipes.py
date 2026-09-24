@@ -17,12 +17,11 @@ from __future__ import annotations
 import copy
 import json
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from .planner import Plan, PlanStep
-from .understand import (DataModel, Table, Column, Relation, MEASURE, CATEGORY, ID, TEXT, TIME_ROLE, SERIES, LOOKUP,
-                         EVENTS, bucket_for, norm)
+from .understand import (DataModel, Table, Column, Relation, ID, TEXT, SERIES, LOOKUP, bucket_for, norm)
 
 RULES_VERSION = 1           # bump when a change to these rules would build a different plan from the same spec
 
@@ -39,12 +38,6 @@ TOP_CHOICES = [5, 10, 20, 50]
 # the recipes, in the order that breaks ties
 RECIPES = ["compare", "trend", "breakdown", "top", "toprows", "relationship", "gaps", "outliers", "single", "distribution",
            "linked", "stacked", "rows", "describe"]
-RECIPE_LABELS = {"compare": "Compare two series", "trend": "Change over time", "breakdown": "Totals by group",
-                 "top": "Top items", "relationship": "How two numbers relate", "gaps": "Gaps in the data",
-                 "outliers": "Unusual readings", "single": "One number", "distribution": "Spread of values",
-                 "linked": "Tables linked together", "stacked": "Tables stacked together", "rows": "Matching rows",
-                 "toprows": "Biggest rows",
-                 "describe": "Describe the table"}
 WEIGHT = {"compare": 100, "trend": 95, "breakdown": 90, "top": 75, "relationship": 60, "gaps": 65, "outliers": 55,
           "single": 30, "distribution": 45, "linked": 50, "stacked": 60, "rows": 25, "toprows": 40, "describe": 20}
 GROUP_MAX = 12              # a group with more values than this is a "top N" question rather than a breakdown

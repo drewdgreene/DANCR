@@ -1,4 +1,4 @@
-"""Regression tests for the 2026-09-23 engine review (docs/REVIEW_2026-09-23.md, items E1-E18, Q1-Q3)."""
+"""Regression tests for the 2026-09-23 engine review (docs/history/REVIEW_2026-09-23.md, items E1-E18, Q1-Q3)."""
 from datetime import datetime, timedelta, date
 
 import numpy as np

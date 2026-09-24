@@ -20,7 +20,7 @@ A **spec** is JSON: `{"recipe", "table", "measure"|"measures", "by", "by_part", 
 
 ## Adding to it
 
-- A new kind of answer: a `_plan_<name>` function in `recipes.py`, its name in `RECIPES`/`WEIGHT`/`RECIPE_LABELS`,
+- A new kind of answer: a `_plan_<name>` function in `recipes.py`, its name in `RECIPES` and `WEIGHT`,
   a candidate in `_candidates`, chips in `chips()`, and the words that ask for it in `ask.py`.
 - A new word: `STATS`, `RECIPE_WORDS`, `OPS`, `PARTS`, `SYNONYMS`, `ADJECTIVES` in `ask.py`.
 - Every change to what is understood or suggested shows in `tests/test_corpus.py`; if the new result is better,
@@ -28,8 +28,4 @@ A **spec** is JSON: `{"recipe", "table", "measure"|"measures", "by", "by_part", 
 
 ## Not yet
 
-- Two groupings at once (a cross-tab: "q1 by department", "hour of day by server").
-- Keys written differently in two tables (`#10234` against `10234`) are not linked.
-- Ordered answers (Likert scales) are treated as plain categories.
-- "Which month was over budget" (a difference per group between two stacked tables).
-- Times with a UTC offset are bucketed in UTC.
+See `docs/OPEN.md`.

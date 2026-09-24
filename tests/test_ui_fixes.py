@@ -1,7 +1,6 @@
 """The window shows the right thing and undo puts things back exactly (review 2026-09-24, phase 5)."""
 import sys
 import threading
-import time
 
 import polars as pl
 import pytest

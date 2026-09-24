@@ -9,7 +9,7 @@ import polars as pl
 from ..params import Param
 from ..registry import NodeType, InputSpec, Ctx, NodeResult, registry
 from ._common import private_temp, first_input, schema_of
-from ..dtypes import datetime_literal, temp_name, text_to_bool, text_to_bool_expr, text_to_number_expr, number_from_text, typed_value, is_date
+from ..dtypes import datetime_literal, temp_name, text_to_bool, text_to_bool_expr, text_to_number_expr, typed_value, is_date
 from .outputs import excel_frame
 
 TYPE_CHOICES = [("number", "number"), ("text", "text"), ("datetime", "date / time"), ("bool", "true / false")]

@@ -9,7 +9,7 @@ from dancr.core import Pipeline
 from dancr.core import answers as A
 from dancr.core.ask import ask
 from dancr.core.executor import Executor
-from dancr.core.planner import apply_plan, PipelineEdits, instantiate
+from dancr.core.planner import instantiate
 from dancr.core.recipes import suggest, plan, chips, apply_choice, PlanError
 from dancr.core.understand import understand, deepen, bucket_for, distinct_labels, SERIES, LOOKUP, EVENTS
 
@@ -497,7 +497,7 @@ def test_two_logs_matched_by_unit_are_compared(tmp_path):
                    logA=pl.DataFrame({"time": [t0 + timedelta(seconds=i) for i in range(300)], "Pressure (bar)": [1.0 + i / 1000 for i in range(300)]}),
                    logB=pl.DataFrame({"time": [t0 + timedelta(seconds=i, milliseconds=200) for i in range(300)], "P (bar)": [1.1 + i / 1000 for i in range(300)]}))
     s = next(s for s in suggest(m) if s.recipe == "compare")
-    res = instantiate(p, plan(m, s.spec))
+    instantiate(p, plan(m, s.spec))
     assert all(v.status == "done" for v in Executor(p).run().values())
 
 

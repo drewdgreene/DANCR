@@ -161,9 +161,6 @@ class DataModel:
     def relation(self, rid: str) -> Relation | None:
         return next((r for r in self.relations if r.id == rid), None)
 
-    def links_from(self, node: str) -> list[Relation]:
-        return [r for r in self.relations if r.kind == "link" and r.tables[0] == node]
-
     def stack_of(self, node: str) -> Relation | None:
         return next((r for r in self.relations if r.kind == "stack" and node in r.tables), None)
 

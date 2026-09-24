@@ -15,15 +15,15 @@ import json
 import logging
 from typing import Any, Callable
 
-from PySide6.QtCore import Qt, Signal, QTimer, QRectF, QPointF, QStringListModel, QSize
-from PySide6.QtGui import QPainter, QColor, QPen, QPainterPath, QFont
+from PySide6.QtCore import Qt, Signal, QTimer, QRectF, QPointF, QStringListModel
+from PySide6.QtGui import QPainter, QColor, QPen, QPainterPath
 from PySide6.QtWidgets import (QWidget, QHBoxLayout, QVBoxLayout, QLabel, QLineEdit, QPushButton, QToolButton, QFrame,
                                QScrollArea, QMenu, QCompleter, QSizePolicy)
 
 from ..core import Pipeline
 from ..core.executor import Executor
 from ..core.understand import DataModel, understand, deepen, default_tables
-from ..core.recipes import suggest, plan as make_plan, chips as make_chips, apply_choice, PlanError, Suggestion
+from ..core.recipes import suggest, plan as make_plan, chips as make_chips, Suggestion
 from ..core.ask import ask, vocabulary
 from .common import listen
 from .icons import icon
@@ -158,9 +158,6 @@ class Understanding:
             fn(self.model)
         else:
             self._waiters.append(fn)
-
-    def cancel_waiting(self) -> None:
-        self._waiters = []
 
     @property
     def waiting(self) -> bool:

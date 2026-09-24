@@ -19,7 +19,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from .recipes import PlanError, plan, groupables, RECIPES
+from .recipes import PlanError, plan, groupables
 from .understand import DataModel, MEASURE, CATEGORY, TIME_ROLE, ID, TEXT, FLAG, BLANK, CONSTANT, STR, norm, _words
 
 STATS = {"total": "sum", "totals": "sum", "sum": "sum", "sums": "sum", "add up": "sum", "added up": "sum",

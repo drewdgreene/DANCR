@@ -9,7 +9,7 @@ import polars as pl
 from ..params import Param
 from ..registry import NodeType, InputSpec, Ctx, NodeResult, registry
 from ..timeutil import parse_duration, parse_bucket, format_seconds
-from ._common import first_input, schema_of, require_column, number_param, temporal_columns, build_aggregations, stat_expr, check_stats, STAT_HELP, STAT_CHOICES
+from ._common import first_input, schema_of, require_column, number_param, temporal_columns, build_aggregations, stat_expr, check_stats, STAT_HELP
 from ..expr import TIME, NUM
 from ..dtypes import is_date, align_time_column, temp_name
 

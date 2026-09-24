@@ -45,8 +45,9 @@ def _in_helper(doc: str, out: Path) -> Path:
 
 def _main(argv: list[str]) -> int:
     from PySide6.QtWidgets import QApplication
-    app = QApplication([])                                      # noqa: F841 - this process's main thread
+    app = QApplication([])                                      # kept alive (this process's main thread) while laying out
     _write(sys.stdin.read(), Path(argv[0]))
+    app.quit()
     return 0
 
 

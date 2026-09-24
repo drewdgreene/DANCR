@@ -1,8 +1,9 @@
 """Plans: the steps an answer needs, and how they land on the map.
 
-A :class:`Plan` names steps and wires them; ``resolve_plan`` maps each step to a node of the project, reusing
-one that already computes the same thing (so two answers over the same files share their links and
-loaders) and creating the rest. A step of type ``"@"`` is an existing node, named by ``params["node"]``.
+A :class:`Plan` names steps and wires them; ``apply_plan`` maps each step to a node of the project, reusing
+one that already computes the same thing (so two answers over the same files share their links) and
+creating the rest, or updating an answer's own steps in place. A step of type ``"@"`` is an existing node,
+named by ``params["node"]``.
 No execution happens here, and nothing touches Qt. The plans themselves come from ``recipes.py``.
 """
 from __future__ import annotations
@@ -10,7 +11,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 
 @dataclass
@@ -92,35 +93,6 @@ def place_near(pipe, inputs: list[str], taken: list[tuple[float, float]] | None 
     while any(abs(sx - x) < 230 and abs(sy - y) < 130 for sx, sy in spots):
         y += 155.0
     return x, y
-
-
-CreateFn = Callable[[PlanStep, dict[str, list[str]], float, float], str]
-
-
-def resolve_plan(pipe, plan: Plan, create: CreateFn, avoid_reuse: set[str] | None = None) -> dict[str, str]:
-    """Map every step of a plan to a node of ``pipe``, reusing what is already there and calling
-    ``create(step, inputs, x, y)`` for the rest (the window makes that undoable). Returns {plan key: node id}.
-
-    Reused: any step with the same type, settings and upstream nodes, so a second answer that reads the same
-    tables branches off the first answer's links instead of duplicating them. ``avoid_reuse`` are node ids
-    that must not be taken over (none by default)."""
-    sigs = signatures_of(pipe)
-    resolved: dict[str, str] = {}
-    for step in plan.steps:
-        if step.type == "@":
-            if step.params["node"] not in pipe.nodes:
-                raise KeyError(f"The step {step.params['node']!r} is not in the project any more")
-            resolved[step.key] = step.params["node"]
-            continue
-        ins = {port: [resolved[k] for k in keys] for port, keys in step.inputs.items()}
-        sig = signature(step.type, step.params, ins, pipe.directory)
-        existing = sigs.get(sig)
-        if existing and existing in pipe.nodes and existing not in (avoid_reuse or set()):
-            resolved[step.key] = existing
-            continue
-        x, y = place_near(pipe, [n for srcs in ins.values() for n in srcs])
-        resolved[step.key] = sigs[sig] = create(step, ins, x, y)
-    return resolved
 
 
 class Edits:

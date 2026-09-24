@@ -1,5 +1,4 @@
 import os
-import time
 import polars as pl
 
 from dancr.core import Pipeline
