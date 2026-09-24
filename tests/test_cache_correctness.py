@@ -213,3 +213,17 @@ def test_pid_probe():
     assert _pid_alive(os.getpid())
     assert not _pid_alive(999999999)
     assert not _pid_alive(0)
+
+
+def test_a_failed_save_as_leaves_the_project_as_it_was(tmp_path):
+    a = tmp_path / "A"; a.mkdir()
+    p = _table(a)
+    locked = tmp_path / "locked"; locked.mkdir(); locked.chmod(0o500)
+    try:
+        with pytest.raises(OSError):
+            p.save(locked / "p.json", auto=True)
+    finally:
+        locked.chmod(0o700)
+    assert p.path == a / "p.json"
+    assert p.nodes["src"].params["path"] == "in.csv"                    # still the same file
+    assert "autosaved" not in p.meta

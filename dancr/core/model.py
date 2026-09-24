@@ -116,6 +116,24 @@ class Input:
         return {"name": self.name, "value": self.value, "unit": self.unit, "note": self.note}
 
 
+def rebase_params(node_type: str, params: dict[str, Any], old_dir: Path, new_dir: Path) -> dict[str, Any]:
+    """``params`` with every path setting rewritten for a project moving from ``old_dir`` to ``new_dir``,
+    so it still points at the same file (relative when that file is inside ``new_dir``, else absolute)."""
+    try:
+        nt = registry.get(node_type)
+    except KeyError:
+        return params
+    out = params
+    for prm in nt.params:
+        v = params.get(prm.name)
+        if prm.kind != "path" or not isinstance(v, str) or not v.strip():
+            continue
+        p = Path(v).expanduser()
+        full = p if p.is_absolute() else Path(os.path.normpath(old_dir.resolve() / p))
+        out = {**out, prm.name: portable_path(full, new_dir)}
+    return out
+
+
 def portable_path(path: Path, base: Path) -> str:
     """How a file is written into a path setting: relative when it is inside the project folder
     (so the folder can be moved or shared), else absolute."""
@@ -462,17 +480,7 @@ class Pipeline:
         """Save As to another folder: every path setting keeps pointing at the same file (relative when
         that file is inside the new folder, absolute otherwise)."""
         for node in self.nodes.values():
-            try:
-                nt = registry.get(node.type)
-            except KeyError:
-                continue
-            for prm in nt.params:
-                v = node.params.get(prm.name)
-                if prm.kind != "path" or not isinstance(v, str) or not v.strip():
-                    continue
-                p = Path(v).expanduser()
-                full = p if p.is_absolute() else Path(os.path.normpath(old_dir.resolve() / p))
-                node.params = {**node.params, prm.name: portable_path(full, new_dir)}
+            node.params = rebase_params(node.type, node.params, old_dir, new_dir)
 
     def dumps(self) -> str:
         return json.dumps(self.to_dict(), indent=2, ensure_ascii=False) + "\n"
@@ -487,6 +495,7 @@ class Pipeline:
             raise PipelineError(f"{target} is a folder; choose a file name")
         old_path = self.path
         old_dir = self.directory
+        before = ({nid: n.params for nid, n in self.nodes.items()}, dict(self.meta))   # restored if the write fails
         if auto:
             self.meta["autosaved"] = True
         else:
@@ -511,6 +520,9 @@ class Pipeline:
                 tmp.unlink(missing_ok=True)
         except Exception:
             self.path = old_path
+            params, self.meta = before
+            for nid, prm in params.items():
+                self.nodes[nid].params = prm
             raise
         return target
 

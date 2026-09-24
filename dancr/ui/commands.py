@@ -13,12 +13,20 @@ from ..core.model import Node, Edge, Note, Input, Answer
 if TYPE_CHECKING:
     from .document import Document
 
+# Commands that hold settings implement ``rebase(fn)``: after Save As into another folder, fn(type, params)
+# rewrites path settings so undo and redo still point at the same files. Nodes that are in the project
+# right now were already rewritten by the save and are left alone.
+
 
 class AddNode(QUndoCommand):
     def __init__(self, doc: Document, node: Node, connect_from: str | None, port: str | None) -> None:
         super().__init__(f"Add {node.title}")
         self.doc, self.node, self.connect_from, self.port = doc, node, connect_from, port
         self.edge: Edge | None = None
+
+    def rebase(self, fn) -> None:
+        if self.doc.pipeline.nodes.get(self.node.id) is not self.node:
+            self.node.params = fn(self.node.type, self.node.params)
 
     def redo(self) -> None:
         p = self.doc.pipeline
@@ -50,6 +58,11 @@ class RemoveNodes(QUndoCommand):
         # inputs (stack, workbook, report) is the order of the list, so undo puts each one back in place
         self.removed: list[list[tuple[int, Edge]]] = []
 
+    def rebase(self, fn) -> None:
+        for n in self.nodes:
+            if self.doc.pipeline.nodes.get(n.id) is not n:
+                n.params = fn(n.type, n.params)
+
     def redo(self) -> None:
         p = self.doc.pipeline
         self.removed = []
@@ -80,7 +93,11 @@ class SetParams(QUndoCommand):
     def __init__(self, doc: Document, nid: str, old: dict, new: dict, keys: set[str]) -> None:
         super().__init__(f"Edit {doc.pipeline.nodes[nid].title}")
         self.doc, self.nid, self.old, self.new, self.keys = doc, nid, old, new, keys
+        self.type = doc.pipeline.nodes[nid].type
         self.at = time.time()
+
+    def rebase(self, fn) -> None:
+        self.old, self.new = fn(self.type, self.old), fn(self.type, self.new)
 
     def id(self) -> int:
         return 1001
@@ -114,6 +131,7 @@ class Rename(QUndoCommand):
         if self.nid in self.doc.pipeline.nodes:
             self.doc.pipeline.nodes[self.nid].title = title
             self.doc.nodeChanged.emit(self.nid)
+            self.doc.refresh_states()          # titles shape what file-writing steps write
 
     def redo(self) -> None:
         self._apply(self.new)
@@ -264,6 +282,7 @@ class SetColumns(QUndoCommand):
     def _apply(self, cols: dict) -> None:
         self.doc.pipeline.columns = json.loads(json.dumps(cols))
         self.doc.columnsChanged.emit()
+        self.doc.refresh_states()          # labels shape what file-writing steps write
 
     def redo(self) -> None:
         self._apply(self.after)

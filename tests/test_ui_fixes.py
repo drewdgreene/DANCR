@@ -228,3 +228,37 @@ def test_the_periodic_state_check_runs_off_the_gui_thread_and_drops_stale_answer
     before = dict(doc._states_cache)
     settle(app, lambda: doc._poll_task is None)
     assert doc._states_cache == before
+
+
+# ------------------------------------------------------------------ undo after Save As into another folder
+def test_undo_after_save_as_elsewhere_still_points_at_the_same_files(doc, tmp_path):
+    a, b = tmp_path / "A", tmp_path / "B"
+    a.mkdir(); b.mkdir()
+    pl.DataFrame({"v": [1.0]}).write_csv(a / "data.csv")
+    pl.DataFrame({"v": [1.0]}).write_csv(a / "other.csv")
+    doc.save(a / "p.json")
+    keep = doc.add_node("load_file", 0, 0, params={"path": "data.csv"})
+    gone = doc.add_node("load_file", 0, 100, params={"path": "other.csv"})
+    doc.set_params(keep, {"path": "other.csv"})
+    doc.remove_nodes([gone])
+    doc.save(b / "p.json")
+    assert doc.pipeline.nodes[keep].params["path"] == str(a / "other.csv")
+    doc.undo.undo()                                     # the delete
+    assert doc.pipeline.nodes[gone].params["path"] == str(a / "other.csv")
+    doc.undo.undo()                                     # the setting
+    assert doc.pipeline.nodes[keep].params["path"] == str(a / "data.csv")
+    doc.undo.redo()
+    assert doc.pipeline.nodes[keep].params["path"] == str(a / "other.csv")
+
+
+def test_save_as_leaves_no_lease_behind(doc, tmp_path):
+    from dancr.core.executor import LIVE_DIR
+    pl.DataFrame({"v": [1.0]}).write_csv(tmp_path / "a.csv")
+    doc.add_node("load_file", 0, 0, params={"path": str(tmp_path / "a.csv")})
+    doc.save(tmp_path / "one.json")
+    doc.executor.run()
+    doc.refresh_states()                                # holds its results
+    assert list((doc.executor.cache_dir / LIVE_DIR).glob("*.json"))
+    doc.save(tmp_path / "two.json")
+    doc.executor.release()
+    assert not list((doc.executor.cache_dir / LIVE_DIR).glob("*.json"))

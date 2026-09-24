@@ -155,3 +155,11 @@ def test_blank_numbers_are_not_equal_to_a_value(tmp_path):
     p.add_node("keep_rows", params={"conditions": {"match": "all", "rules": [{"column": "n", "op": "ne", "value": "2"}]}}, id="k")
     p.connect("src", "k")
     assert run_one(p, "k")["n"].to_list() == [1.0, None]
+
+
+def test_uint64_arithmetic_stays_exact():
+    df = pl.DataFrame({"u": pl.Series([2 ** 60 + 1, 2 ** 60 + 3, 2 ** 64 - 1], dtype=pl.UInt64)})
+    e, _, _ = compile_formula("u + 1", dict(df.schema), {})
+    assert df.select(e.alias("r"))["r"].to_list() == [2 ** 60 + 2, 2 ** 60 + 4, 2 ** 64]
+    e, _, _ = compile_formula("-u", dict(df.schema), {})
+    assert df.select(e.alias("r"))["r"][2] == -(2 ** 64 - 1)

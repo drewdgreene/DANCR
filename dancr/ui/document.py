@@ -25,7 +25,7 @@ from PySide6.QtGui import QUndoStack
 from PySide6.QtWidgets import QApplication
 
 from ..core import Pipeline, PipelineError, registry
-from ..core.model import Edge, Answer
+from ..core.model import Edge, Answer, rebase_params
 from ..core.planner import signature, signatures_of, plan_layout
 from ..core.executor import Executor, NodeState, _pid_alive
 from .workers import RunThread, Task, view_pool
@@ -307,6 +307,7 @@ class Document(QObject):
     def write_recovery(self) -> None:
         """Keep a copy of edits that are not in the project file (an unsaved project, or unsaved changes to a
         saved one) so a crash, a force-quit or a logout loses nothing. Clears the copy when there are none."""
+        self.flush_edits()
         if not self.pipeline.nodes or (self.pipeline.path is not None and not self.dirty):
             self.clear_recovery()
             return
@@ -409,6 +410,18 @@ class Document(QObject):
         if self.pipeline.path is None and self.executor.cache_dir.exists():
             shutil.rmtree(self.executor.cache_dir, ignore_errors=True)
 
+    def _rebase_undo(self, old_dir: Path, new_dir: Path) -> None:
+        """Save As moved the project: settings kept by undo commands must keep pointing at the same files."""
+        fn = lambda node_type, params: rebase_params(node_type, params, old_dir, new_dir)  # noqa: E731
+
+        def visit(c) -> None:
+            if hasattr(c, "rebase"):
+                c.rebase(fn)
+            for j in range(c.childCount()):
+                visit(c.child(j))
+        for i in range(self.undo.count()):
+            visit(self.undo.command(i))
+
     def _set_executor(self, ex: Executor) -> None:
         self.executor.release()
         self.executor = ex
@@ -419,11 +432,15 @@ class Document(QObject):
             raise PipelineError("Wait for the run to finish before saving under a new name")
         self.flush_edits()
         old = self.pipeline.path
+        old_dir = self.pipeline.directory.resolve()
         old_cache = self.executor.cache_dir
         p = self.pipeline.save(path, auto=auto)
+        if p.parent != old_dir:
+            self._rebase_undo(old_dir, p.parent)
         self._last_saved_text = self.pipeline.dumps()       # so the watcher knows this write was ours
         if old != p:
             new_exec = Executor(self.pipeline)
+            self.executor.release()                         # before the move: the lease must not travel with the cache
             try:
                 if old_cache.exists() and not new_exec.cache_dir.exists():
                     new_exec.cache_dir.parent.mkdir(parents=True, exist_ok=True)
@@ -765,6 +782,7 @@ class Document(QObject):
             self.runProgress.emit(e.get("index", 0), e.get("total", 0), title)
         elif t in ("node_finished", "node_failed", "node_cached"):
             st = e["state"]
+            self._states_token += 1                          # a background poll read before this is older
             self._states_cache[st.node_id] = st
             self.nodeState.emit(st.node_id, st)
 

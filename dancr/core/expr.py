@@ -329,7 +329,8 @@ class Compiler:
         if n.op == "-":
             if v.kind in (STR, TIME, BOOL):
                 raise FormulaError(f"Cannot negate a {v.kind} value")
-            return Typed(-_wide(v), NUM)
+            # 0 - x rather than -x: Polars cannot negate Int128 (a widened UInt64)
+            return Typed(pl.lit(0, pl.Int64) - _wide(v) if v.kind == NUM else -v.expr, v.kind if v.kind == DUR else NUM)
         if n.op == "not":
             return Typed(~self.as_bool(v), BOOL)
         raise FormulaError(f"Unknown operator {n.op}")
@@ -431,15 +432,16 @@ class Compiler:
 def _wide(t: Typed) -> pl.Expr:
     """A number for + - * and negation, in at least 64 bits. Small and unsigned integers (Parquet files,
     MONTH(), LEN()) would otherwise wrap around: UInt32 1 - 3 is 4294967294, Int8 100 + 100 is -56.
-    UInt64 becomes a decimal, since its large values do not fit Int64. Floats and literals are unchanged."""
+    UInt64 becomes Int128, which holds every value exactly (ids and hashes stay exact). Int64, Int128,
+    floats and literals are unchanged."""
     if t.kind != NUM or t.literal is not None:
         return t.expr
     dt = t.dtype
     if dt is None:                                  # a computed value: the Int64 supertype widens only what needs it
         return t.expr + pl.lit(0, pl.Int64)
     if dt == pl.UInt64:
-        return t.expr.cast(pl.Float64)
-    if dt.is_integer() and dt != pl.Int64:
+        return t.expr.cast(pl.Int128)
+    if dt.is_integer() and dt not in (pl.Int64, pl.Int128):
         return t.expr.cast(pl.Int64)
     return t.expr
 
