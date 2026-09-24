@@ -571,6 +571,11 @@ def plan(model: DataModel, spec: dict) -> Plan:
             not spec.get("together", True)):
         title += f" in {model.tables[spec['table']].title}"      # one of several tables with the same columns
     title = (spec.get("title") or "").strip() or title
+    last = next((st for st in b.steps if st.key == terminal), None)
+    if last is not None and last.type != "@":
+        last.title = title                        # the answer's own step, and a chart's heading, say the whole question
+        if last.type == "chart":
+            last.params["title"] = title
     return Plan(steps=b.steps, terminal=terminal, title=title, config=spec, view=view,
                 assumptions=b.assumptions, why=why, chips=chips(model, spec))
 
