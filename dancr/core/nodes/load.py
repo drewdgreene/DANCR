@@ -193,6 +193,21 @@ def _leading_zero_columns(path: Path, sep: str, has_header: bool, skip_rows: int
 _NUMBER_TEXT = r"^[(\-+]?\s*[$€£¥]?\s*[+-]?[\d.,' ]*\d[\d.,' ]*\s*%?\s*[)]?$"
 
 
+CODE_WORDS = {"phone", "tel", "telephone", "mobile", "cell", "fax", "zip", "zipcode", "postcode", "postal", "code", "id",
+              "sku", "ref", "reference", "account", "iban", "sort", "vat", "ean", "upc", "isbn", "barcode", "pin"}
+
+
+def _looks_like_a_code(name: str, v: pl.Series) -> bool:
+    """Phone numbers, postcodes, account and reference numbers are written with digits but are not quantities:
+    their name says so, or they start with + or 0 once spaces are taken out."""
+    import re
+    words = {w.lower() for w in re.findall(r"[A-Za-z]+", name)}
+    if words & CODE_WORDS:
+        return True
+    squeezed = v.str.replace_all(r"[\s\-]", "")
+    return bool(squeezed.str.contains(r"^\+\d{6,}$").any() or squeezed.str.contains(r"^0\d{5,}$").any())
+
+
 def _number_expr(col: str, decimal_comma: bool) -> pl.Expr:
     """Text like '£1,234.50', '(1,234)', '31.5%', '1 234,5' as the number a person means (a percent stays 31.5)."""
     from ..dtypes import text_to_number_expr
@@ -217,7 +232,7 @@ def _numbers_in_text(lf: pl.LazyFrame, schema, messages: list[str], decimal_comm
     for c in text_cols:
         v = sample[c].drop_nulls().str.strip_chars()
         v = v.filter(v != "")
-        if len(v) < 3 or v.str.contains(_LEADING_ZERO).any():
+        if len(v) < 3 or v.str.contains(_LEADING_ZERO).any() or _looks_like_a_code(c, v):
             continue
         looks = v.str.contains(_NUMBER_TEXT)
         parsed = pl.DataFrame({c: v}).select(_number_expr(c, decimal_comma))[c]
