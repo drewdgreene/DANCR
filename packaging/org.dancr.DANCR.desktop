@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=DANCR
+Comment=Visual data pipelines for very large tables and time series
+Exec=dancr gui %f
+Icon=org.dancr.DANCR
+Terminal=false
+Type=Application
+Categories=Science;DataVisualization;Office;

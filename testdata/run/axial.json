@@ -1,0 +1,504 @@
+{
+  "dancr": 2,
+  "name": "Axial Seamount two-probe comparison",
+  "nodes": [
+    {
+      "id": "probe_f",
+      "type": "load_file",
+      "title": "Central caldera (MJ03F)",
+      "x": -50.0,
+      "y": -39.0,
+      "params": {
+        "path": "../probe_MJ03F.csv",
+        "sheet": "",
+        "has_header": true,
+        "skip_rows": 0,
+        "separator": "auto",
+        "parse_dates": true,
+        "date_format": "",
+        "decimal_comma": false,
+        "encoding": "utf8",
+        "infer_rows": 10000,
+        "ignore_errors": false,
+        "columns": []
+      }
+    },
+    {
+      "id": "probe_e",
+      "type": "load_file",
+      "title": "Eastern caldera (MJ03E)",
+      "x": -84.0,
+      "y": 146.0,
+      "params": {
+        "path": "../probe_MJ03E.csv",
+        "sheet": "",
+        "has_header": true,
+        "skip_rows": 0,
+        "separator": "auto",
+        "parse_dates": true,
+        "date_format": "",
+        "decimal_comma": false,
+        "encoding": "utf8",
+        "infer_rows": 10000,
+        "ignore_errors": false,
+        "columns": []
+      }
+    },
+    {
+      "id": "gaps_f",
+      "type": "find_gaps",
+      "title": "Gaps in F",
+      "x": 255.0,
+      "y": -90.0,
+      "params": {
+        "time_column": null,
+        "expected": "",
+        "factor": 1.5
+      }
+    },
+    {
+      "id": "gaps_e",
+      "type": "find_gaps",
+      "title": "Gaps in E",
+      "x": 237.0,
+      "y": 160.0,
+      "params": {
+        "time_column": null,
+        "expected": "",
+        "factor": 1.5
+      }
+    },
+    {
+      "id": "aligned",
+      "type": "combine",
+      "title": "Line up probez",
+      "x": 264.0,
+      "y": 53.0,
+      "params": {
+        "method": "nearest_time",
+        "on": [],
+        "right_on": [],
+        "how": "left",
+        "left_time": null,
+        "right_time": null,
+        "direction": "nearest",
+        "tolerance": "40ms",
+        "suffix": "_2"
+      }
+    },
+    {
+      "id": "despiked",
+      "type": "remove_outliers",
+      "title": "Remove spikes",
+      "x": 542.0,
+      "y": -52.0,
+      "params": {
+        "columns": [
+          "pressure_psia",
+          "pressure_psia_2"
+        ],
+        "method": "rolling",
+        "window": 101,
+        "threshold": 8.0,
+        "iqr_factor": 1.5,
+        "local_spread": false,
+        "min": "",
+        "max": "",
+        "action": "remove",
+        "flag_column": "is_outlier"
+      }
+    },
+    {
+      "id": "fit",
+      "type": "fit_curve",
+      "title": "E vs F fit",
+      "x": 744.0,
+      "y": 71.0,
+      "params": {
+        "x": "pressure_psia",
+        "y": "pressure_psia_2",
+        "kind": "linear",
+        "degree": 2,
+        "group": null,
+        "predicted_column": ""
+      }
+    },
+    {
+      "id": "calc",
+      "type": "calculate",
+      "title": "Difference",
+      "x": 1001.0,
+      "y": -17.0,
+      "params": {
+        "formulas": [
+          {
+            "name": "diff_psi",
+            "expr": "[pressure_psia_2] - [pressure_psia]"
+          }
+        ],
+        "only_new": false
+      }
+    },
+    {
+      "id": "per_min",
+      "type": "time_buckets",
+      "title": "Per minute",
+      "x": 1552.7,
+      "y": -182.2,
+      "params": {
+        "every": "1m",
+        "columns": [],
+        "default_stats": [
+          "mean",
+          "min",
+          "max"
+        ],
+        "time_column": null,
+        "aggregations": [],
+        "count_column": "n"
+      }
+    },
+    {
+      "id": "chart",
+      "type": "chart",
+      "title": "j;klj;lk",
+      "x": 1590.0,
+      "y": 180.0,
+      "params": {
+        "kind": "line",
+        "x": "time",
+        "series": [
+          {
+            "column": "pressure_psia_mean"
+          },
+          {
+            "column": "pressure_psia_2_mean"
+          }
+        ],
+        "column": null,
+        "bins": 50,
+        "category": null,
+        "value": null,
+        "stat": "mean",
+        "color_by": null,
+        "split_by": null,
+        "limits": [],
+        "fit": "",
+        "mean_line": false,
+        "title": "j;klj;lk",
+        "y_label": "",
+        "break_gaps": true,
+        "log_y": false
+      }
+    },
+    {
+      "id": "summary",
+      "type": "summarize",
+      "title": "Summary statistics",
+      "x": 1405.0,
+      "y": -108.6,
+      "params": {
+        "columns": []
+      }
+    },
+    {
+      "id": "export",
+      "type": "export",
+      "title": "Save to file",
+      "x": 1682.0,
+      "y": -65.0,
+      "params": {
+        "path": "per_minute.csv"
+      }
+    },
+    {
+      "id": "per_day",
+      "type": "time_buckets",
+      "title": "Per day",
+      "x": 1377.5,
+      "y": 27.8,
+      "params": {
+        "every": "1d",
+        "columns": [],
+        "default_stats": [
+          "mean",
+          "min",
+          "max",
+          "std"
+        ],
+        "time_column": null,
+        "aggregations": [],
+        "count_column": "readings"
+      }
+    },
+    {
+      "id": "daily_range",
+      "type": "calculate",
+      "title": "Daily tidal range",
+      "x": 1665.3,
+      "y": 53.3,
+      "params": {
+        "formulas": [
+          {
+            "name": "tidal_range_psi",
+            "expr": "[pressure_psia_max] - [pressure_psia_min]"
+          },
+          {
+            "name": "",
+            "expr": ""
+          }
+        ],
+        "only_new": false
+      }
+    },
+    {
+      "id": "chart_resid",
+      "type": "chart",
+      "title": "Residual per minute",
+      "x": 1971.0,
+      "y": -51.0,
+      "params": {
+        "kind": "line",
+        "x": "time",
+        "series": [
+          {
+            "column": "pressure_psia_2_residual_mean"
+          }
+        ],
+        "column": null,
+        "bins": 50,
+        "category": null,
+        "value": null,
+        "stat": "mean",
+        "color_by": null,
+        "split_by": null,
+        "limits": [],
+        "fit": "",
+        "mean_line": false,
+        "title": "E minus fitted F, 1-minute mean (psi)",
+        "y_label": "",
+        "break_gaps": true,
+        "log_y": false
+      }
+    },
+    {
+      "id": "chart_hist",
+      "type": "chart",
+      "title": "Residual histogram",
+      "x": 1133.8,
+      "y": 208.7,
+      "params": {
+        "kind": "line",
+        "x": "diff_psi",
+        "series": [
+          {
+            "column": "pressure_psia",
+            "color": "#2563eb"
+          }
+        ],
+        "column": "pressure_psia",
+        "bins": 120,
+        "category": "",
+        "value": null,
+        "stat": "mean",
+        "color_by": null,
+        "split_by": "",
+        "limits": [],
+        "fit": "",
+        "mean_line": false,
+        "title": "Distribution of residual (psi)",
+        "y_label": "",
+        "break_gaps": true,
+        "log_y": false
+      }
+    },
+    {
+      "id": "chart_scatter",
+      "type": "chart",
+      "title": "E vs F",
+      "x": 1305.0,
+      "y": -168.7,
+      "params": {
+        "kind": "scatter",
+        "x": "pressure_psia",
+        "series": [
+          {
+            "column": "pressure_psia_2"
+          }
+        ],
+        "column": null,
+        "bins": 50,
+        "category": null,
+        "value": null,
+        "stat": "mean",
+        "color_by": null,
+        "split_by": null,
+        "limits": [],
+        "fit": "",
+        "mean_line": false,
+        "title": "Probe E vs probe F (psia)",
+        "y_label": "",
+        "break_gaps": true,
+        "log_y": false
+      }
+    },
+    {
+      "id": "xlsx",
+      "type": "export",
+      "title": "Report workbook",
+      "x": 1905.0,
+      "y": 124.0,
+      "params": {
+        "path": "report/daily.xlsx"
+      }
+    },
+    {
+      "id": "chart_1",
+      "type": "chart",
+      "title": "Chart",
+      "x": 1234.3,
+      "y": 121.2,
+      "params": {
+        "kind": "histogram",
+        "x": "",
+        "series": [
+          {
+            "column": "pressure_psia_2",
+            "color": "#2563eb"
+          }
+        ],
+        "column": null,
+        "bins": 50,
+        "category": "",
+        "value": null,
+        "stat": "mean",
+        "color_by": "",
+        "split_by": "pressure_psia_2",
+        "limits": [],
+        "fit": "",
+        "mean_line": false,
+        "title": "",
+        "y_label": "",
+        "break_gaps": true,
+        "log_y": false
+      }
+    },
+    {
+      "id": "load_file_1",
+      "type": "load_file",
+      "title": "calc_full",
+      "x": 700.3,
+      "y": -304.7,
+      "params": {
+        "path": "calc_full.csv",
+        "sheet": "",
+        "has_header": true,
+        "skip_rows": 0,
+        "separator": "auto",
+        "parse_dates": true,
+        "date_format": "",
+        "decimal_comma": false,
+        "encoding": "utf8",
+        "infer_rows": 10000,
+        "ignore_errors": false,
+        "columns": []
+      }
+    }
+  ],
+  "edges": [
+    {
+      "source": "probe_f",
+      "target": "gaps_f",
+      "port": "in"
+    },
+    {
+      "source": "probe_e",
+      "target": "gaps_e",
+      "port": "in"
+    },
+    {
+      "source": "probe_f",
+      "target": "aligned",
+      "port": "left"
+    },
+    {
+      "source": "probe_e",
+      "target": "aligned",
+      "port": "right"
+    },
+    {
+      "source": "aligned",
+      "target": "despiked",
+      "port": "in"
+    },
+    {
+      "source": "despiked",
+      "target": "fit",
+      "port": "in"
+    },
+    {
+      "source": "fit",
+      "target": "calc",
+      "port": "in"
+    },
+    {
+      "source": "calc",
+      "target": "per_min",
+      "port": "in"
+    },
+    {
+      "source": "per_min",
+      "target": "chart",
+      "port": "in"
+    },
+    {
+      "source": "calc",
+      "target": "summary",
+      "port": "in"
+    },
+    {
+      "source": "per_min",
+      "target": "export",
+      "port": "in"
+    },
+    {
+      "source": "calc",
+      "target": "per_day",
+      "port": "in"
+    },
+    {
+      "source": "per_day",
+      "target": "daily_range",
+      "port": "in"
+    },
+    {
+      "source": "per_min",
+      "target": "chart_resid",
+      "port": "in"
+    },
+    {
+      "source": "calc",
+      "target": "chart_hist",
+      "port": "in"
+    },
+    {
+      "source": "calc",
+      "target": "chart_scatter",
+      "port": "in"
+    },
+    {
+      "source": "daily_range",
+      "target": "xlsx",
+      "port": "in"
+    },
+    {
+      "source": "fit",
+      "target": "chart_1",
+      "port": "in"
+    }
+  ],
+  "notes": [],
+  "inputs": [],
+  "columns": {},
+  "meta": {}
+}

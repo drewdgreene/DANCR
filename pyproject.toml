@@ -1,0 +1,43 @@
+[project]
+name = "dancr"
+dynamic = ["version"]
+description = "DANCR: Data Analysis Node-based Canvas for Research. Visual pipelines over very large tabular and time-series data, with a headless CLI and MCP server for AI agents."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+authors = [{ name = "Drew Greene", email = "drewdgreene@gmail.com" }]
+dependencies = [
+    "polars>=1.30",
+    "numpy>=1.26",
+    "scipy>=1.12",
+    "PySide6>=6.7",
+    "pyqtgraph>=0.13.7",
+    "matplotlib>=3.8",
+    "fastexcel>=0.12",
+    "xlsxwriter>=3.2",
+    "mcp>=2",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-qt>=4.4"]
+build = ["pyinstaller", "pillow"]
+
+[project.scripts]
+dancr = "dancr.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.dynamic]
+version = { attr = "dancr.__version__" }
+
+[tool.setuptools.packages.find]
+include = ["dancr*"]
+
+[tool.setuptools.package-data]
+dancr = ["assets/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+qt_api = "pyside6"
