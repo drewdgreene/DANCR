@@ -2,7 +2,7 @@
 rem Build DANCR for Windows: a one-folder app, a zip, and (if NSIS is installed) a Setup wizard.
 cd /d %~dp0\..
 if not defined PY set PY=.venv\Scripts\python.exe
-%PY% -c "import PyInstaller, PIL" 2>nul || %PY% -m pip install --quiet -e ".[build]" || exit /b 1
+%PY% -c "import PyInstaller, PIL" 2>nul || (echo PyInstaller and Pillow are missing. Install the build tools first: uv sync --extra build & exit /b 1)
 if not exist packaging\icon.ico %PY% packaging\make_icons.py || exit /b 1
 %PY% -m PyInstaller --noconfirm --clean packaging\dancr.spec || exit /b 1
 powershell -Command "Compress-Archive -Force -Path dist\DANCR -DestinationPath dist\DANCR-windows.zip"

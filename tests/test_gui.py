@@ -3,19 +3,12 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
+
+from helpers import pump
 from PySide6.QtCore import QPointF, Qt
 from PySide6.QtWidgets import QApplication
 
 from dancr.core import Pipeline
-
-
-
-@pytest.fixture(scope="module")
-def app():
-    from dancr.ui.theme import apply_app_style
-    a = QApplication.instance() or QApplication([])
-    apply_app_style(a)
-    return a
 
 
 @pytest.fixture
@@ -33,13 +26,6 @@ def window(app, tmp_path, probe_dir):
     yield w
     w.doc.undo.setClean()
     w.close()
-
-
-def pump(app, ms=50):
-    import time
-    t = time.time()
-    while time.time() - t < ms / 1000:
-        app.processEvents()
 
 
 def test_open_builds_scene(window, app):

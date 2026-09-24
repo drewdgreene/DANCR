@@ -8,11 +8,6 @@ from PySide6.QtWidgets import QApplication
 from dancr.core import Pipeline
 
 
-@pytest.fixture(scope="module")
-def app():
-    return QApplication.instance() or QApplication([])
-
-
 @pytest.fixture
 def doc(app, tmp_path):
     from dancr.ui.document import Document, recovery_path

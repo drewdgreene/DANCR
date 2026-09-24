@@ -270,4 +270,9 @@ def test_cli_run_json_reports_failed_nodes(probe_dir, tmp_path):
     r = subprocess.run([sys.executable, "-m", "dancr.cli", "--json", "run", str(pj)], capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
     assert json.loads(r.stdout)["failed"] == []
+    subprocess.run([sys.executable, "-m", "dancr.cli", "add", str(pj), "calculate", "--id", "bad", "--after", "a",
+                    "--params", '{"formulas":[{"name":"z","expr":"no_such_column * 2"}]}'], capture_output=True, text=True)
+    r = subprocess.run([sys.executable, "-m", "dancr.cli", "--json", "run", str(pj)], capture_output=True, text=True)
+    assert r.returncode == 1
+    assert json.loads(r.stdout)["failed"] == ["bad"]
 

@@ -71,7 +71,8 @@ def test_synth_parquet_streams_and_matches_csv(tmp_path):
 
 def test_synth_low_rate_does_not_crash(tmp_path):
     from dancr.synth import write_dataset
-    write_dataset(tmp_path, hours=1.0, rate=0.001, seed=1, fmt="parquet")
+    t = write_dataset(tmp_path, hours=1.0, rate=0.001, seed=1, fmt="parquet")
+    assert pl.read_parquet(tmp_path / "probe_A.parquet").height == t["rows_a"]
 
 
 # ------------------------------------------------------------------ map dot grid

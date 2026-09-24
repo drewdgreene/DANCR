@@ -8,7 +8,7 @@ from dancr.core import Pipeline
 from dancr.core.executor import Executor
 from dancr.core.expr import compile_formula
 from dancr.core.timeutil import detect_datetime_format, day_month_ambiguous
-from tests.conftest import run_one
+from conftest import run_one
 
 
 def _pipe_on(df: pl.DataFrame, tmp_path, name: str = "in.parquet") -> Pipeline:

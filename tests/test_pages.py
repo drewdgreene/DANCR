@@ -6,34 +6,14 @@ from pathlib import Path
 
 import pytest
 
+from helpers import pump, wait_run
+
 from PySide6.QtCore import Qt, QSettings
 from PySide6.QtWidgets import QApplication, QInputDialog
 
 from dancr.core import Pipeline
 from dancr.core.samples import write_sample, build_template, TEMPLATES
 from dancr.ui.rail import KIND_ROLE, INPUTS_ROLE
-
-
-@pytest.fixture(scope="module")
-def app():
-    from dancr.ui.theme import apply_app_style
-    a = QApplication.instance() or QApplication([])
-    apply_app_style(a)
-    return a
-
-
-def pump(app, ms=50):
-    t = time.time()
-    while time.time() - t < ms / 1000:
-        app.processEvents()
-
-
-def wait_run(window, app, secs=30):
-    """Wait for a pending auto-run to start and every run to settle."""
-    t = time.time()
-    while (window.doc._auto_pending or window.doc.running) and time.time() - t < secs:
-        app.processEvents()
-    assert not window.doc.running and not window.doc._auto_pending
 
 
 @pytest.fixture

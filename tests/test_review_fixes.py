@@ -374,9 +374,16 @@ def test_watchdog_dumps_stack(tmp_path, monkeypatch):
     ls.configure()
     ls.start_watchdog(0.6)
     ls.gui_tick()
-    time.sleep(2.0)          # no ticks -> stall
-    faults = (tmp_path / "logs" / "faults.log").read_text()
-    assert "GUI stalled" in faults and "thread MainThread" in faults
+    faults_log = tmp_path / "logs" / "faults.log"
+    try:
+        t = time.time()                          # no ticks -> a stall is reported within about a second
+        while not (faults_log.exists() and "GUI stalled" in faults_log.read_text()) and time.time() - t < 10:
+            time.sleep(0.1)
+        faults = faults_log.read_text()
+        assert "GUI stalled" in faults and "thread MainThread" in faults
+    finally:
+        monkeypatch.undo()
+        importlib.reload(ls)                     # later tests get the module configured for the test home again
 
 
 # ---------------------------------------------------------------- view pool and runs
@@ -389,14 +396,16 @@ def test_waiting_task_does_not_block_a_page_fetch():
     pool = view_pool()
     pool.hold()
     got = []
-    waiting = Task(lambda: "later"); waiting.signals.done.connect(got.append)
-    quick = Task(lambda: "now"); quick.waits_for_run = False; quick.signals.done.connect(got.append)
-    pool.start(waiting); pool.start(quick)
-    t = time.time()
-    while "now" not in got and time.time() - t < 5:
-        app.processEvents()
-    assert got == ["now"] and not run_gate.is_set()         # the held task never ran while the gate was closed
-    pool.release()
+    try:
+        waiting = Task(lambda: "later"); waiting.signals.done.connect(got.append)
+        quick = Task(lambda: "now"); quick.waits_for_run = False; quick.signals.done.connect(got.append)
+        pool.start(waiting); pool.start(quick)
+        t = time.time()
+        while "now" not in got and time.time() - t < 5:
+            app.processEvents()
+        assert got == ["now"] and not run_gate.is_set()     # the held task never ran while the gate was closed
+    finally:
+        pool.release()                                      # never leave the gate closed for later tests
     t = time.time()
     while "later" not in got and time.time() - t < 5:
         app.processEvents()

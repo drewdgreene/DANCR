@@ -1,3 +1,4 @@
+import os
 import time
 import polars as pl
 
@@ -20,8 +21,8 @@ def test_cache_and_invalidation(pipe, probe_dir):
     assert r3[k.id].rows + r2[k.id].rows == r3["a"].rows
     # touching the source file invalidates everything downstream
     src = probe_dir / "probe_A.csv"
-    src.touch()
-    time.sleep(0.01)
+    st = src.stat()
+    os.utime(src, ns=(st.st_atime_ns, st.st_mtime_ns + 2_000_000_000))   # a clearly later time, whatever the filesystem's resolution
     r4 = ex.run()
     assert not r4["a"].from_cache and not r4[k.id].from_cache and r4["b"].from_cache
     # gc keeps only current outputs

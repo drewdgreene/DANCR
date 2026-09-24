@@ -5,31 +5,12 @@ import time
 
 import polars as pl
 import pytest
+
+from helpers import pump, settle
 from PySide6.QtCore import QCoreApplication, QEvent, QItemSelectionModel
 from PySide6.QtWidgets import QApplication
 
 from dancr.core import Pipeline, PipelineError
-
-
-@pytest.fixture(scope="module")
-def app():
-    from dancr.ui.theme import apply_app_style
-    a = QApplication.instance() or QApplication([])
-    apply_app_style(a)
-    return a
-
-
-def pump(app, ms=50):
-    t = time.time()
-    while time.time() - t < ms / 1000:
-        app.processEvents()
-
-
-def settle(app, until, secs=10):
-    t = time.time()
-    while not until() and time.time() - t < secs:
-        app.processEvents()
-    assert until()
 
 
 @pytest.fixture

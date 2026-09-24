@@ -1,10 +1,14 @@
+import atexit
 import json
 import os
+import shutil
+import sys
 import tempfile
 from pathlib import Path
 
 # keep the tests' log, watchdog and untitled-cache files away from the person's real folders on every platform, and their windows off the screen
 os.environ["DANCR_HOME"] = tempfile.mkdtemp(prefix="dancr-test-home-")
+atexit.register(shutil.rmtree, os.environ["DANCR_HOME"], True)
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import polars as pl
@@ -34,6 +38,41 @@ def pipe(probe_dir, tmp_path) -> Pipeline:
     p.add_node("load_file", "B", {"path": str(probe_dir / "probe_B.csv")}, id="b")
     p.path = tmp_path / "p.json"
     return p
+
+
+@pytest.fixture(scope="session")
+def app():
+    """The one QApplication, styled as the app styles it."""
+    from PySide6.QtWidgets import QApplication
+    from dancr.ui.theme import apply_app_style
+    a = QApplication.instance() or QApplication([])
+    apply_app_style(a)
+    return a
+
+
+@pytest.fixture(autouse=True)
+def _dispose_windows():
+    """Delete every window a test leaves behind. Closed windows are otherwise only hidden: hundreds stay
+    alive, keep their timers and signal connections, and slow down and entangle every later test."""
+    yield
+    if "PySide6.QtWidgets" not in sys.modules:
+        return
+    from PySide6.QtCore import QCoreApplication, QEvent
+    from PySide6.QtWidgets import QApplication
+    app = QApplication.instance()
+    if app is None:
+        return
+    mw = sys.modules.get("dancr.ui.mainwindow")
+    if mw is None:
+        return
+    # only DANCR's own windows: other parentless widgets (pyqtgraph's menus) are still referenced from Python
+    for w in [w for w in app.topLevelWidgets() if isinstance(w, mw.MainWindow)]:
+        if w.isVisible():
+            w.doc.stop(wait=True)
+            w.doc.undo.setClean()
+            w.close()
+        w.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
 
 
 @pytest.fixture
