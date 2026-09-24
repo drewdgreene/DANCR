@@ -21,6 +21,7 @@ KINDS = {
     "columns",       # list of column names
     "path",          # file path (str)
     "duration",      # str like "1m", "30s", "2h", "1d" (Polars duration syntax)
+    "bucket",        # a duration, or calendar months, quarters and years ("1mo", "1q", "1y")
     "expr",          # formula text in the DANCR expression language
     "conditions",    # {"match": "all"|"any", "rules": [{"column","op","value","value2"}]}
     "aggregations",  # [{"column": str, "stats": [str], "alias": str|None}]
@@ -100,11 +101,11 @@ class Param:
                     from .dtypes import text_to_bool
                     return text_to_bool(value)
                 return bool(value)
-            if k == "duration":
+            if k in ("duration", "bucket"):
                 text = str(value).strip()
                 if text:
-                    from .timeutil import parse_duration
-                    parse_duration(text)   # raises with a helpful message
+                    from .timeutil import parse_duration, parse_bucket
+                    (parse_bucket if k == "bucket" else parse_duration)(text)   # raises with a helpful message
                 return text
             if k in ("text", "path", "expr", "column"):
                 return str(value)

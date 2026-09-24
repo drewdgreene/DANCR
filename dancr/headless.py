@@ -156,3 +156,84 @@ def output_paths_outside(p: Pipeline, node_id: str, folder: Path) -> list[str]:
             if not target.is_relative_to(folder):
                 out.append(str(target))
     return out
+
+
+# ----------------------------------------------------------------- answers (shared by `dancr ask/suggest/answer` and MCP)
+def add_files(p: Pipeline, files: list[str] | None) -> list[str]:
+    """A load step for each file not loaded yet (a file already loaded keeps its step and its settings).
+    Returns the load steps' ids, in the order given."""
+    from .core.registry import resolve_path
+    out = []
+    for f in files or []:
+        target = resolve_path(p.directory, str(f)).resolve()
+        if not target.exists():
+            raise ValueError(f"File not found: {target}")
+        existing = next((nid for nid, n in p.nodes.items() if n.type == "load_file" and n.params.get("path")
+                         and resolve_path(p.directory, str(n.params["path"])).resolve() == target), None)
+        if existing is None:
+            try:
+                rel = str(target.relative_to(p.directory.resolve()))
+            except ValueError:
+                rel = str(target)
+            existing = add_step(p, "load_file", {"path": rel}, title=target.stem).id
+        out.append(existing)
+    return out
+
+
+def data_model(p: Pipeline, deep: bool = True):
+    from .core.answers import model_for
+    return model_for(p, Executor(p), deep=deep)
+
+
+def suggestions(p: Pipeline, focus: str | None = None) -> list[dict[str, Any]]:
+    from .core.recipes import suggest
+    from .core.answers import model_for
+    from .core.understand import default_tables
+    if focus:
+        require_node(p, focus)
+    nodes = default_tables(p) + ([focus] if focus and focus not in default_tables(p) else [])
+    m = model_for(p, Executor(p), nodes=nodes)
+    return [{"index": i, **s.to_dict()} for i, s in enumerate(suggest(m, focus))]
+
+
+def build_answer(p: Pipeline, spec: dict[str, Any], answer_id: str | None = None) -> dict[str, Any]:
+    """Build (or rebuild) an answer from a spec; the caller saves the project."""
+    from .core import answers
+    m = answers.model_for(p, Executor(p), nodes=answers.tables_for(p, spec))
+    a, plan = answers.build(p, m, spec, answer_id=answer_id)
+    return {**answers.describe(p, a), "chips": plan.chips, "why": plan.why, "sentence": plan.sentence()}
+
+
+def ask_question(p: Pipeline, text: str, build: bool = True) -> dict[str, Any]:
+    """Read a question; with ``build`` add its answer to the project. ``ok`` is False (with a message and any
+    "did you mean" hints) when the question could not be read."""
+    from .core.ask import ask
+    from .core.answers import model_for
+    m = model_for(p, Executor(p))
+    asked = ask(m, text)
+    out: dict[str, Any] = {"question": asked.to_dict()}
+    if asked.ok and build:
+        out["answer"] = build_answer(p, asked.spec)
+    return out
+
+
+def change_answer(p: Pipeline, answer_id: str, key: str | None = None, value: Any = None,
+                  assumption: int | None = None, choice: int = 0) -> dict[str, Any]:
+    """Change an answer by one chip (``key`` = ``value``) or by choosing an alternative of one of its
+    assumptions (``assumption`` index, ``choice`` index), and rebuild it in place."""
+    from .core.recipes import apply_choice
+    a = p.answer(answer_id)
+    if a is None:
+        raise ValueError(f"No answer called {answer_id!r}. Answers: {[x.id for x in p.answers]}")
+    if assumption is not None:
+        if not 0 <= assumption < len(a.assumptions):
+            raise ValueError(f"The answer has {len(a.assumptions)} assumptions (numbered from 0)")
+        choices = a.assumptions[assumption].get("choices") or []
+        if not 0 <= choice < len(choices):
+            raise ValueError(f"That assumption has {len(choices)} alternatives (numbered from 0)")
+        spec = apply_choice(a.spec, "set", choices[choice]["set"])
+    elif key:
+        spec = apply_choice(a.spec, key, value)
+    else:
+        raise ValueError("Say what to change: a chip (key and value) or an assumption's alternative")
+    return build_answer(p, spec, answer_id)

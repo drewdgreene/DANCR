@@ -35,9 +35,9 @@ log = logging.getLogger("dancr.executor")
 IMPL_VERSION = "4"     # bump to invalidate every cache
 
 
-# engine modules that never shape a step's output (help text, the wizard's planning, sample data):
-# editing them must not throw every cached result away
-NOT_SEMANTIC = {"examples.py", "profile.py", "planner.py", "samples.py"}
+# engine modules that never shape a step's output (help text, reading tables and planning answers, sample
+# data): editing them must not throw every cached result away
+NOT_SEMANTIC = {"examples.py", "understand.py", "recipes.py", "ask.py", "answers.py", "planner.py", "samples.py"}
 
 
 def _version_of(package: str) -> str:

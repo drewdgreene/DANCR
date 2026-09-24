@@ -26,6 +26,24 @@ def parse_duration(text: str) -> tuple[str, float]:
     return out, secs
 
 
+_CALENDAR = {"mo": "mo", "mon": "mo", "month": "mo", "months": "mo", "q": "q", "quarter": "q", "quarters": "q",
+             "y": "y", "yr": "y", "year": "y", "years": "y"}
+_CALENDAR_SECS = {"mo": 30.436875 * 86400, "q": 91.310625 * 86400, "y": 365.2425 * 86400}
+
+
+def parse_bucket(text: str) -> tuple[str, float]:
+    """A time bucket: any duration, or calendar months, quarters and years ('1mo', '3 months', '1q', '1y').
+    Calendar buckets follow the calendar (January, February …), so their seconds are only an average."""
+    m = _DUR_RE.match(str(text or "").strip().lower())
+    if m and m.group(2) in _CALENDAR:
+        n = float(m.group(1))
+        if not n.is_integer() or n <= 0:
+            raise ValueError(f"{text!r}: calendar buckets are whole months, quarters or years")
+        unit = _CALENDAR[m.group(2)]
+        return f"{int(n)}{unit}", n * _CALENDAR_SECS[unit]
+    return parse_duration(text)
+
+
 def _parse_duration(text: str) -> tuple[str, float]:
     if not text or not str(text).strip():
         raise ValueError("Enter a time span like 30s, 5m, 1h or 1d")

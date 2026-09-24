@@ -1,0 +1,60 @@
+{
+ "tables": {
+  "orders": {
+   "shape": "events",
+   "rows": 400,
+   "time": "ordered_at",
+   "columns": {
+    "order_id": "id",
+    "customer_id": "id",
+    "product_id": "id",
+    "quantity": "measure",
+    "price": "measure",
+    "ordered_at": "time"
+   }
+  },
+  "customers": {
+   "shape": "lookup",
+   "rows": 40,
+   "time": null,
+   "columns": {
+    "customer_id": "id",
+    "customer_name": "text",
+    "region": "category",
+    "segment": "category"
+   }
+  },
+  "products": {
+   "shape": "lookup",
+   "rows": 8,
+   "time": null,
+   "columns": {
+    "product_id": "id",
+    "product": "id",
+    "category": "category"
+   }
+  }
+ },
+ "relations": [
+  "link orders / customers on customer_id=customer_id (many-to-one)",
+  "link orders / products on product_id=product_id (many-to-one)"
+ ],
+ "suggestions": [
+  "trend: Total quantity per day",
+  "breakdown: Total quantity by region",
+  "top: Top 10 customers by total quantity",
+  "linked: orders with customers, products",
+  "distribution: Spread of quantity",
+  "gaps: Gaps in orders",
+  "describe: What is in orders",
+  "describe: What is in customers"
+ ],
+ "questions": {
+  "total quantity by region": "Total quantity by region",
+  "top 5 customers by quantity": "Top 5 customers by total quantity",
+  "average price per month": "Average price per month",
+  "quantity by category for North": "Total quantity by category where region is North",
+  "orders where price above 30": "orders where price above 30",
+  "how many orders by segment": "Rows by segment"
+ }
+}

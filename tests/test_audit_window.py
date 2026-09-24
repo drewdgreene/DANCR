@@ -121,12 +121,6 @@ def test_escape_does_not_stop_a_run(window):
     assert window.a_stop.shortcut() != QKeySequence("Escape")
 
 
-def test_the_wizard_starts_from_the_current_projects_files(window, app, tmp_path):
-    window.wizard.paths = [str(tmp_path / "from-an-earlier-project.csv")]
-    window.wizard.begin()
-    assert str(tmp_path / "from-an-earlier-project.csv") not in window.wizard.paths
-
-
 def test_zoned_axis_labels_follow_daylight_saving(app):
     from dancr.ui.chartview import ZonedDateAxis
     axis = ZonedDateAxis("Europe/Oslo")

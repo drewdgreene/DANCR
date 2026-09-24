@@ -22,9 +22,13 @@ The app is self-contained; nothing else needs to be installed first.
 
 - Open CSV, text, Excel or Parquet files, however large, and work on them as a
   table with sorting, filtering, find, and per-column statistics.
-- Have a pile of different spreadsheets? Drop them on the window and press
-  **Build it for me**: answer a couple of questions and it links them together,
-  builds the pipeline and shows the answer.
+- Drop a pile of spreadsheets on the window and DANCR works out how they fit
+  together (which files link on a key, which are the same table split up, which
+  logs record the same thing) and offers the answers it can give straight away.
+  Or ask in your own words — “total sales by region”, “average pressure per
+  hour”, “compare A and B” — and it builds the steps, says what it assumed, and
+  lets you change any choice with a click. Deterministic: the same files and the
+  same question always build the same steps.
 - Build an analysis as a chain of steps on the map: filter rows, make columns
   with formulas, average over time, smooth, find gaps, fit a curve, predict,
   check against limits, chart, and assemble a one-page report.

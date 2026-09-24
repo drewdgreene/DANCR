@@ -1,0 +1,50 @@
+{
+ "tables": {
+  "sales_2024-01": {
+   "shape": "events",
+   "rows": 84,
+   "time": "date",
+   "columns": {
+    "date": "time",
+    "store": "category",
+    "sales": "measure"
+   }
+  },
+  "sales_2024-02": {
+   "shape": "events",
+   "rows": 84,
+   "time": "date",
+   "columns": {
+    "date": "time",
+    "store": "category",
+    "sales": "measure"
+   }
+  },
+  "sales_2024-03": {
+   "shape": "events",
+   "rows": 84,
+   "time": "date",
+   "columns": {
+    "date": "time",
+    "store": "category",
+    "sales": "measure"
+   }
+  }
+ },
+ "relations": [
+  "stack sales_2024-01 / sales_2024-02 / sales_2024-03 labels ['2024-01', '2024-02', '2024-03']"
+ ],
+ "suggestions": [
+  "trend: Total sales per day",
+  "breakdown: Total sales by store",
+  "stacked: 2024-01, 2024-02, 2024-03 in one table",
+  "distribution: Spread of sales",
+  "gaps: Gaps in sales_2024-01",
+  "describe: What is in sales_2024-01"
+ ],
+ "questions": {
+  "total sales by store": "Total sales by store",
+  "sales per week": "Total sales per week",
+  "sales by store for 2024-02": "Total sales by store in sales_2024-02"
+ }
+}

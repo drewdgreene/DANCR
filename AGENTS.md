@@ -10,13 +10,16 @@ Two interfaces, same engine:
 
 - **MCP server** (preferred): `dancr mcp` (stdio). Register it once in your MCP
   client (for example: `claude mcp add dancr -- dancr mcp`); `--root DIR` sets the
-  folder pipelines may be created in (default: the folder it starts in). Tools: `list_node_types`,
+  folder pipelines may be created in (default: the folder it starts in). Tools: `ask`,
+  `suggest_answers`, `change_answer`, `remove_answer`, `understand_data`, `list_node_types`,
   `formula_reference`, `inspect_file`, `create_pipeline`, `build_template`,
   `describe_pipeline`, `add_node`, `set_params`, `connect_nodes`,
   `disconnect_nodes`, `remove_node`, `rename_node`, `set_input`, `remove_input`,
   `set_column_label`, `run_pipeline`, `node_status`, `get_schema`, `get_sample`,
   `get_stats`, `render_chart` (returns a PNG image), `export_node`, `open_in_gui`.
-- **CLI**: `dancr --json <command> …` prints JSON. `dancr nodes -v` documents
+- **CLI**: `dancr --json <command> …` prints JSON. `dancr ask p.json "total sales by region" --file a.csv`,
+  `dancr suggest p.json [--build N]`, `dancr answer p.json [ID] [--set stat=mean] [--choose N M] [--remove --steps]`
+  and `dancr understand p.json` are the answer commands. `dancr nodes -v` documents
   every step type and setting; `dancr formulas` documents the formula language;
   `dancr template --list` lists starter projects. `KEY=VALUE` settings are
   parsed as JSON when they look like JSON (`sheet=1` is the number 1).
@@ -73,12 +76,39 @@ want. Reading (`inspect_file`, `load_file` paths) is not confined.
   `[name]`, as filter values, and as `min`/`max` of `check_limits` or chart
   `limits`. Changing one recomputes only the steps that use it.
 - Errors are plain English and name the column or setting. Fix and re-run.
-- A project may also hold **Answers**: guided-build bookmarks. An Answer has an
-  `id`, a `title`, a `terminal` node id (the step whose output answers the
-  question), a `view`, and the wizard's `config`. Answers are *not* part of the
-  dataflow — the executor and cache ignore them entirely — so removing one never
-  changes what a run computes. `dancr --json show` and MCP `describe_pipeline`
-  list them under `answers`.
+- A project may also hold **Answers**: a question and the steps that answer it. An Answer has an
+  `id`, a `title`, a `terminal` node id (the step whose output answers the question), a `view`, the
+  question as a `spec`, the `steps` it built (`{plan key: {node, made, title, hand?}}`), and the
+  `assumptions` it made (each with `choices` that change it). Answers are *not* part of the dataflow —
+  the executor and cache ignore them entirely — so removing one never changes what a run computes.
+  `dancr --json show` and MCP `describe_pipeline` list them under `answers`.
+
+## Fastest route: let DANCR answer
+
+`ask` / `dancr ask` reads a plain question against the project's own words (column names and labels,
+table names, category values, stack labels) with a fixed grammar — no model, fully deterministic —
+and builds ordinary steps plus an Answer. `suggest_answers` / `dancr suggest` lists what DANCR can
+answer on its own (compare two logs, trend, totals by group, top N, relationship, gaps, unusual
+readings, spread, linked or stacked tables, describe), best first. Both work from `understand_data` /
+`dancr understand`: each column's role (time, id, category, measure, flag, text), each table's shape
+(series, lookup, events, table), and relations (links with cardinality and match %, stacks with labels,
+time alignments with a tolerance), computed from every row.
+
+```bash
+dancr new shop.json
+dancr --json suggest shop.json --file orders.csv --file customers.xlsx   # adds loaders, lists answers
+dancr --json ask shop.json "top 10 customers by sales"                   # builds it; reports chips + assumptions
+dancr --json answer shop.json answer_1 --set stat=mean                   # change a chip; steps update in place
+dancr --json answer shop.json answer_1 --choose 0 0                      # take assumption 0's first alternative
+dancr --json run shop.json
+```
+
+A question word DANCR does not know fails with `did you mean` hints instead of a guess. A spec is JSON
+(`{"recipe": "breakdown", "table": "<node>", "measure": ["<node>", "<column>"], "stat": "sum", "by": ["<node>",
+"<column>"], "filters": [{"column": [..], "op": "gt", "value": 2}]}`); column references are
+`[table node id, column]`, and the planner adds the links needed to reach columns of other tables.
+Changing an answer keeps steps the person edited by hand (reported as `kept_by_hand`) and never touches
+steps another answer uses.
 
 ## Recipe: two logs of the same quantity, one noisier than the other
 
@@ -139,7 +169,7 @@ Here `log.csv` has the columns `time`, `value` and `temperature`.
 - `calculate`: `formulas` = `[{"name": "diff", "expr": "[b] - [a]"}]`, `only_new`. Whole-number `+ - *` work in 64 bits.
 - `fix_values`: `fixes` = `[{"row": 1-based, "column", "value", "was", "note"}]`.
 - `combine`: `method` match|nearest_time|side_by_side; match: `on`, `right_on`, `how`; nearest_time: `left_time`, `right_time`, `direction`, `tolerance` (e.g. `500ms`); `suffix`.
-- `time_buckets`: `every` (`1s 1m 15m 1h 1d`), `columns` (empty = every number column), `default_stats` (mean median min max std sum count first last; one statistic keeps column names, several add `_stat`), `time_column`, `aggregations`, `count_column`.
+- `time_buckets`: `every` (`1s 1m 15m 1h 1d`, calendar `1mo 1q 1y`), `columns` (empty = every number column), `default_stats` (mean median min max std sum count first last; one statistic keeps column names, several add `_stat`), `time_column`, `aggregations`, `count_column`.
 - `rolling`: `columns`, `stat` mean|median|min|max|std|sum, `window` (rows like `20` or a span like `30s`), `time_column`, `centered` (a span `w` then covers `[t - w/2, t + w/2]`; otherwise `(t - w, t]`), `replace`.
 - `rate_of_change`: `columns`, `time_column`, `per` s|m|h|d, `span`. `find_gaps`: `time_column`, `expected`, `factor`. `regular_grid`: `time_column`, `every`, `method` nearest|backward|forward|interpolate.
 - `summarise_around`: `window`, `side` before|after|around, `columns`, `stats`, `sample_time`, `log_time`.

@@ -12,6 +12,7 @@ saves, saves as, or reverts.
 """
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import os
@@ -27,7 +28,6 @@ from PySide6.QtWidgets import QApplication
 
 from ..core import Pipeline, PipelineError, registry
 from ..core.model import Edge, Answer, Input, rebase_params
-from ..core.planner import resolve_plan
 from ..core.executor import Executor, NodeState, _pid_alive
 from .workers import RunThread, Task, view_pool
 from . import commands as cmd
@@ -40,11 +40,36 @@ AUTO_RUN_DELAY_MS = 700     # quiet time after an edit before an automatic run
 SOURCE_SETTLE_MS = 1500     # a data file being written fires many change events: wait for it to settle
 
 
-ANSWER_CARD_OFFSET = (300.0, 40.0)     # where an answer card sits relative to the step it points at
+class _DocEdits:
+    """Plan edits as undoable commands (inside the caller's undo macro)."""
 
+    def __init__(self, doc: "Document") -> None:
+        self.doc = doc
+        self.pipe = doc.pipeline
 
-def _card_position(node) -> tuple[float, float]:
-    return node.x + ANSWER_CARD_OFFSET[0], node.y + ANSWER_CARD_OFFSET[1]
+    def create(self, step, ins: dict[str, list[str]], x: float, y: float) -> str:
+        nid = self.doc.add_node(step.type, x, y, params=step.params, title=step.title)
+        for port, srcs in ins.items():
+            for s in srcs:
+                self.doc.connect(s, nid, port)
+        return nid
+
+    def set_params(self, nid: str, params: dict[str, Any]) -> None:
+        node = self.doc.pipeline.nodes[nid]
+        full = registry.get(node.type).normalize_params(params)
+        self.doc.set_params(nid, {k: v for k, v in full.items() if node.params.get(k) != v})
+
+    def set_title(self, nid: str, title: str) -> None:
+        self.doc.rename(nid, title)
+
+    def connect(self, source: str, target: str, port: str) -> None:
+        self.doc.connect(source, target, port)
+
+    def disconnect(self, source: str, target: str, port: str) -> None:
+        self.doc.disconnect(Edge(source, target, port))
+
+    def remove(self, ids: list[str]) -> None:
+        self.doc.remove_nodes(ids)
 
 
 def recovery_path(pid: int | None = None) -> Path:
@@ -626,43 +651,34 @@ class Document(QObject):
                 new_ids.append(self.add_node(n.type, n.x + 40, n.y + 90, params=json.loads(json.dumps(n.params)), title=n.title))
         return new_ids
 
-    # ------------------------------------------------------------ answers (guided build)
-    def apply_plan(self, plan) -> str:
-        """Build the steps a guided question needs — reusing shared ones — and add an Answer card.
-
-        The whole build is one undo entry. The Answer is *not* connected to the dataflow; it points
-        at the step whose output answers the question."""
-        with self.macro("Build answer"):
-            resolved = self._apply_steps(plan)
-            terminal = resolved[plan.terminal]
-            x, y = _card_position(self.pipeline.nodes[terminal])
-            answer = Answer(self.pipeline._new_answer_id(), plan.title, x, y, terminal, plan.view, dict(plan.config))
-            self.undo.push(cmd.AddAnswer(self, answer))
+    # ------------------------------------------------------------ answers
+    def build_answer(self, model, spec: dict, answer_id: str | None = None) -> str:
+        """Build the steps a question needs (reusing shared ones) and add its Answer, or with ``answer_id``
+        change that answer in place. One undo step. Raises PlanError when it cannot be answered."""
+        from ..core import answers
+        from ..core.planner import apply_plan, protected_nodes
+        from ..core.recipes import plan as make_plan
+        plan = make_plan(model, spec)
+        existing = self.pipeline.answer(answer_id) if answer_id else None
+        with self.macro("Change answer" if existing else f"Answer: {plan.title}"):
+            resolved, record = apply_plan(self.pipeline, plan, _DocEdits(self),
+                                          existing.steps if existing else None, protected_nodes(self.pipeline, answer_id))
+            fields = answers.answer_fields(self.pipeline, plan, resolved, record)
+            if existing is None:
+                a = Answer(self.pipeline._new_answer_id(), fields["title"], fields["x"], fields["y"], fields["terminal"],
+                           fields["view"], fields["spec"], fields["steps"], fields["assumptions"], fields["rules"])
+                self.undo.push(cmd.AddAnswer(self, a))
+                aid = a.id
+            else:
+                before = {k: copy.deepcopy(getattr(existing, k)) for k in fields}
+                self.undo.push(cmd.EditAnswer(self, answer_id, before, fields, "Change answer"))
+                aid = answer_id
         self.refresh_states()
-        return answer.id
-
-    def rebuild_answer(self, answer_id: str, plan) -> str:
-        """Change a question: replace the steps it alone built with a freshly planned branch,
-        keeping any steps shared with other answers. Callers warn first (hand edits are replaced)."""
-        answer = self.pipeline.answer(answer_id)
-        if answer is None:
-            return answer_id
-        exclusive = self.answer_exclusive_nodes(answer)
-        with self.macro("Change answer"):
-            if exclusive:
-                self.remove_nodes(exclusive)
-            resolved = self._apply_steps(plan)
-            terminal = resolved[plan.terminal]
-            x, y = _card_position(self.pipeline.nodes[terminal])
-            before = answer.to_dict()
-            after = {"title": plan.title, "terminal": terminal, "view": plan.view, "config": dict(plan.config), "x": x, "y": y}
-            self.undo.push(cmd.EditAnswer(self, answer_id, {k: before.get(k) for k in after}, after, "Change answer"))
-        self.refresh_states()
-        return answer_id
+        return aid
 
     def delete_answer(self, answer_id: str, remove_steps: bool = False) -> None:
-        """Delete an Answer card, and optionally the steps that exist only because of it. Steps shared
-        with another answer (or the data layer another answer needs) are always kept."""
+        """Delete an Answer card, and optionally the steps only it uses. Steps another answer needs, and steps
+        something else reads from, are always kept."""
         answer = self.pipeline.answer(answer_id)
         if answer is None:
             return
@@ -674,17 +690,8 @@ class Document(QObject):
         self.refresh_states()
 
     def answer_exclusive_nodes(self, answer: Answer) -> list[str]:
-        """Node ids that exist only because of this answer: its upstream branch minus anything another
-        answer also depends on. Never includes a node another answer needs, so deletion is safe."""
-        p = self.pipeline
-        if answer.terminal not in p.nodes:
-            return []
-        branch = p.upstream_closure(answer.terminal) | {answer.terminal}
-        shared: set[str] = set()
-        for other in p.answers:
-            if other.id != answer.id and other.terminal in p.nodes:
-                shared |= p.upstream_closure(other.terminal) | {other.terminal}
-        return sorted(branch - shared)
+        from ..core.answers import exclusive_steps
+        return exclusive_steps(self.pipeline, answer.id)
 
     def edit_answer(self, answer_id: str, **changes: Any) -> None:
         answer = self.pipeline.answer(answer_id)
@@ -698,18 +705,9 @@ class Document(QObject):
         answer = self.pipeline.answer(answer_id)
         title = title.strip()
         if answer and title and answer.title != title:
-            self.undo.push(cmd.EditAnswer(self, answer_id, {"title": answer.title}, {"title": title}, "Rename answer"))
-
-    def _apply_steps(self, plan) -> dict[str, str]:
-        """Resolve a plan to node ids with the same reuse rules as planner.instantiate, creating the missing
-        steps as undoable edits (inside the caller's undo macro)."""
-        def create(step, ins: dict[str, list[str]], x: float, y: float) -> str:
-            nid = self.add_node(step.type, x, y, params=step.params, title=step.title)
-            for port, srcs in ins.items():
-                for s in srcs:
-                    self.connect(s, nid, port)
-            return nid
-        return resolve_plan(self.pipeline, plan, create)
+            spec = dict(answer.spec, title=title)
+            self.undo.push(cmd.EditAnswer(self, answer_id, {"title": answer.title, "spec": answer.spec},
+                                          {"title": title, "spec": spec}, "Rename answer"))
 
     # ------------------------------------------------------------ running
     @property

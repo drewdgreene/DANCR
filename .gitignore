@@ -17,3 +17,4 @@ testdata/run/report/
 /report.html
 /report.pdf
 .venv-install.log
+.dancr-scratch/

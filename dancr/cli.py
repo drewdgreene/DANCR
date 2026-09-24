@@ -238,6 +238,101 @@ def cmd_show(a: argparse.Namespace) -> None:
             print(f"  ! {pr}")
 
 
+def _abs(files: list[str] | None) -> list[str]:
+    """Files named on the command line are relative to where the command runs, not to the project."""
+    return [str(Path(f).expanduser().resolve()) for f in files or []]
+
+
+def cmd_understand(a: argparse.Namespace) -> None:
+    p = _load(a.pipeline)
+    hl.add_files(p, _abs(a.file))
+    m = hl.data_model(p, deep=not a.quick)
+    if a.file:
+        p.save()
+    data = m.to_dict()
+    if a.json:
+        _print(a, data); return
+    for t in data["tables"]:
+        rows = f"{t['rows']:,} rows" if t["rows"] is not None else f"{t['sampled']:,}+ rows"
+        print(f"{t['title']} [{t['node']}]  {t['shape']}, {rows}" + (f", time {t['time']} {t['start']} → {t['end']}" if t["time"] else ""))
+        for c in t["columns"]:
+            extra = f" ({c['unit']})" if c["unit"] else ""
+            print(f"    {c['name']}{extra}: {c['role']}" + (f", {len(c['values'])} values" if c["values"] else ""))
+    for r in data["relations"]:
+        print(f"  {r['kind']}: {r['why']}")
+    for nid, why in data["skipped"].items():
+        print(f"  could not read {nid}: {why}")
+
+
+def cmd_suggest(a: argparse.Namespace) -> None:
+    p = _load(a.pipeline)
+    hl.add_files(p, _abs(a.file))
+    sugs = hl.suggestions(p, a.focus)
+    if a.build is not None:
+        if not 0 <= a.build < len(sugs):
+            raise CliError(f"There are {len(sugs)} suggestions (numbered from 0)")
+        out = hl.build_answer(p, sugs[a.build]["spec"])
+        p.save()
+        _print(a, out, f"Built “{out['title']}” as {out['id']} (its result is step {out['terminal']}; dancr run to compute it)")
+        return
+    if a.file:
+        p.save()
+    _print(a, sugs, "\n".join(f"{s['index']}. {s['title']}  — {s['why']}" for s in sugs) or "Nothing to suggest: add a data file")
+
+
+def cmd_ask(a: argparse.Namespace) -> None:
+    p = _load(a.pipeline)
+    hl.add_files(p, _abs(a.file))
+    out = hl.ask_question(p, a.question, build=not a.dry_run)
+    q = out["question"]
+    if not q["ok"]:
+        if a.file:
+            p.save()
+        raise CliError(q["message"])
+    if not a.dry_run or a.file:
+        p.save()
+    if a.dry_run:
+        _print(a, out, f"Would build “{q['title']}”: " + ", ".join(c["text"] for c in q["chips"]))
+        return
+    ans = out["answer"]
+    lines = [f"Built “{ans['title']}” as {ans['id']} (its result is step {ans['terminal']}; dancr run to compute it)"]
+    lines += [f"  assumed: {x['text']}" for x in ans["assumptions"]]
+    lines += [f"  note: “{x['text']}” could also mean " + ", ".join(c["label"] for c in x["choices"]) for x in q["ambiguous"]]
+    _print(a, out, "\n".join(lines))
+
+
+def cmd_answer(a: argparse.Namespace) -> None:
+    p = _load(a.pipeline)
+    if not a.answer:
+        _print(a, [x.to_dict() for x in p.answers], "\n".join(f"{x.id}: {x.title} → {x.terminal}" for x in p.answers) or "No answers yet")
+        return
+    ans = p.answer(a.answer)
+    if ans is None:
+        raise CliError(f"No answer called {a.answer!r}. Answers: {[x.id for x in p.answers]}")
+    if a.remove:
+        from .core import answers
+        gone = answers.remove(p, a.answer, remove_steps=a.steps)
+        p.save()
+        _print(a, {"removed": a.answer, "steps_removed": gone}, f"Deleted {a.answer}" + (f" and {len(gone)} steps" if gone else ""))
+        return
+    if a.set or a.choose is not None:
+        if a.choose is not None:
+            out = hl.change_answer(p, a.answer, assumption=a.choose[0], choice=a.choose[1] if len(a.choose) > 1 else 0)
+        else:
+            kv = _parse_kv(a.set)
+            out = None
+            for k, v in kv.items():
+                out = hl.change_answer(p, a.answer, k, None if v in ("", None) else v)
+        p.save()
+        _print(a, out, f"Changed {a.answer}: now “{out['title']}”")
+        return
+    data = ans.to_dict()
+    text = [f"{ans.title} [{ans.id}] → {ans.terminal}", f"  question: {json.dumps(ans.spec)}"]
+    text += [f"  assumption {i}: {x['text']}" + "".join(f"\n      choice {j}: {c['label']}" for j, c in enumerate(x.get("choices") or []))
+             for i, x in enumerate(ans.assumptions)]
+    _print(a, data, "\n".join(text))
+
+
 def cmd_run(a: argparse.Namespace) -> None:
     p = _load(a.pipeline)
     for nid in a.nodes or []:
@@ -488,6 +583,10 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("disconnect", help="remove a connection"); s.add_argument("pipeline"); s.add_argument("source"); s.add_argument("target"); s.add_argument("--port"); s.set_defaults(fn=cmd_disconnect)
     s = sub.add_parser("remove", help="delete a node"); s.add_argument("pipeline"); s.add_argument("node"); s.set_defaults(fn=cmd_remove)
     s = sub.add_parser("show", help="print the pipeline and node statuses"); s.add_argument("pipeline"); s.set_defaults(fn=cmd_show)
+    s = sub.add_parser("understand", help="describe the project's tables: column roles, table shapes, how tables relate"); s.add_argument("pipeline"); s.add_argument("--file", action="append", help="add a data file first (repeatable)"); s.add_argument("--quick", action="store_true", help="from a sample only, without reading every row"); s.set_defaults(fn=cmd_understand)
+    s = sub.add_parser("suggest", help="answers DANCR can give for the project's tables, best first"); s.add_argument("pipeline"); s.add_argument("--file", action="append", help="add a data file first (repeatable)"); s.add_argument("--focus", help="only answers about this step's output"); s.add_argument("--build", type=int, metavar="N", help="build suggestion N"); s.set_defaults(fn=cmd_suggest)
+    s = sub.add_parser("ask", help="answer a question typed in plain words (e.g. \"total sales by region\")"); s.add_argument("pipeline"); s.add_argument("question"); s.add_argument("--file", action="append", help="add a data file first (repeatable)"); s.add_argument("--dry-run", action="store_true", help="show how the question is read without building it"); s.set_defaults(fn=cmd_ask)
+    s = sub.add_parser("answer", help="list answers, show one, change it or delete it"); s.add_argument("pipeline"); s.add_argument("answer", nargs="?"); s.add_argument("--set", nargs="*", metavar="KEY=VALUE", help="change a chip, e.g. stat=mean every=1d"); s.add_argument("--choose", type=int, nargs="+", metavar="N", help="take alternative M (default 0) of assumption N"); s.add_argument("--remove", action="store_true"); s.add_argument("--steps", action="store_true", help="with --remove: also delete the steps only it uses"); s.set_defaults(fn=cmd_answer)
     s = sub.add_parser("run", help="execute the pipeline (or just some nodes and what they need)"); s.add_argument("pipeline"); s.add_argument("nodes", nargs="*"); s.add_argument("--force", action="store_true", help="ignore the cache"); s.set_defaults(fn=cmd_run)
     s = sub.add_parser("status", help="node status, messages and reports"); s.add_argument("pipeline"); s.add_argument("node", nargs="?"); s.set_defaults(fn=cmd_status)
     s = sub.add_parser("schema", help="columns of a node's output"); s.add_argument("pipeline"); s.add_argument("node"); s.set_defaults(fn=cmd_schema)

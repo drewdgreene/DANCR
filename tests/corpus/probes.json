@@ -1,0 +1,45 @@
+{
+ "tables": {
+  "logger_site_A": {
+   "shape": "series",
+   "rows": 7200,
+   "time": "time",
+   "columns": {
+    "time": "time",
+    "pressure (bar)": "measure",
+    "temperature": "measure"
+   }
+  },
+  "logger_site_B": {
+   "shape": "series",
+   "rows": 7200,
+   "time": "time",
+   "columns": {
+    "time": "time",
+    "pressure (bar)": "measure",
+    "temperature": "measure"
+   }
+  }
+ },
+ "relations": [
+  "align logger_site_A / logger_site_B within 1s",
+  "stack logger_site_A / logger_site_B labels ['A', 'B']"
+ ],
+ "suggestions": [
+  "compare: pressure (bar): logger_site_B minus logger_site_A",
+  "trend: Average pressure (bar) per 30 seconds",
+  "relationship: temperature against pressure (bar)",
+  "gaps: Gaps in logger_site_A",
+  "stacked: A, B in one table",
+  "outliers: Unusual pressure (bar) in logger_site_A",
+  "distribution: Spread of pressure (bar)",
+  "describe: What is in logger_site_A"
+ ],
+ "questions": {
+  "compare logger_site_A and logger_site_B": "pressure (bar): logger_site_B minus logger_site_A",
+  "average pressure per minute": "Average pressure (bar) per minute",
+  "temperature against pressure": "temperature against pressure (bar) in logger_site_A",
+  "gaps in logger_site_B": "Gaps in logger_site_B",
+  "spikes in pressure": "Unusual pressure (bar) in logger_site_A"
+ }
+}

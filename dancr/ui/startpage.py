@@ -33,12 +33,11 @@ class Card(QFrame):
 
 
 class StartPage(QWidget):
-    openData = Signal()
     openProject = Signal()
     openRecent = Signal(str)
     template = Signal(str)
     blank = Signal()
-    wizard = Signal()
+    openFiles = Signal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -48,16 +47,16 @@ class StartPage(QWidget):
         body = QWidget(); scroll.setWidget(body)
         lay = QVBoxLayout(body); lay.setContentsMargins(48, 40, 48, 40); lay.setSpacing(18)
         title = QLabel("Start with your data"); title.setStyleSheet("font-size: 20pt; font-weight: 600;")
-        sub = QLabel("Drop a few spreadsheets and answer a couple of questions and DANCR builds the steps for you. "
-                     "Or open one file and explore it yourself; every change you make is a step you can undo, rerun and share.")
+        sub = QLabel("Drop your spreadsheets anywhere on this window. DANCR reads them, works out how they fit together, "
+                     "and offers the answers it can give straight away — or ask in your own words, like “total sales by region”. "
+                     "Every answer is a chain of steps you can see, change, undo, rerun on next month's file and share.")
         sub.setObjectName("muted"); sub.setWordWrap(True)
         lay.addWidget(title); lay.addWidget(sub)
         row = QHBoxLayout(); row.setSpacing(10)
-        b0 = QPushButton("Build it for me…"); b0.setObjectName("primary"); b0.setIcon(icon("magic-wand", "#ffffff", 16)); b0.clicked.connect(self.wizard.emit)
-        b1 = QPushButton("Open a data file…"); b1.setIcon(icon("folder-open", T.text, 16)); b1.clicked.connect(self.openData.emit)
+        b0 = QPushButton("Open data files…"); b0.setObjectName("primary"); b0.setIcon(icon("folder-open", "#ffffff", 16)); b0.clicked.connect(self.openFiles.emit)
         b2 = QPushButton("Open a project…"); b2.clicked.connect(self.openProject.emit)
         b3 = QPushButton("Type in a table"); b3.clicked.connect(self.blank.emit)
-        row.addWidget(b0); row.addWidget(b1); row.addWidget(b2); row.addWidget(b3); row.addStretch()
+        row.addWidget(b0); row.addWidget(b2); row.addWidget(b3); row.addStretch()
         lay.addLayout(row)
         self.recent_lab = QLabel("Recent"); self.recent_lab.setObjectName("section")
         self.recent_box = QVBoxLayout(); self.recent_box.setSpacing(2)
@@ -72,7 +71,7 @@ class StartPage(QWidget):
             c.clicked.connect(lambda k=t["key"]: self.template.emit(k))
             grid.addWidget(c, i // 2, i % 2)
         lay.addLayout(grid)
-        drop = QLabel("Tip: you can also drop a file anywhere on this window."); drop.setObjectName("faint")
+        drop = QLabel("Tip: drop several files at once — orders and customers, or a month of logs — and the answers cover them all."); drop.setObjectName("faint")
         lay.addWidget(drop); lay.addStretch()
 
     def set_recent(self, paths: list[str]) -> None:

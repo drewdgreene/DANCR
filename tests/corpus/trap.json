@@ -1,0 +1,36 @@
+{
+ "tables": {
+  "visits": {
+   "shape": "events",
+   "rows": 120,
+   "time": null,
+   "columns": {
+    "patient_id": "id",
+    "visit_cost": "measure"
+   }
+  },
+  "prescriptions": {
+   "shape": "events",
+   "rows": 90,
+   "time": null,
+   "columns": {
+    "patient_id": "id",
+    "drug": "category"
+   }
+  }
+ },
+ "relations": [
+  "link visits / prescriptions on patient_id=patient_id (many-to-many)"
+ ],
+ "suggestions": [
+  "breakdown: Rows by drug",
+  "distribution: Spread of visit_cost",
+  "single: Total visit_cost",
+  "describe: What is in visits",
+  "describe: What is in prescriptions"
+ ],
+ "questions": {
+  "total visit_cost by drug": "(not answered) visits and prescriptions share patient_id, but it repeats in both, so putting them side by side would repeat rows and every total would be wrong. Ask about one of them, or remove the duplicates first.",
+  "visit_cost by patient": "Total visit_cost by patient_id"
+ }
+}

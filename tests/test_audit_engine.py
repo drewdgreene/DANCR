@@ -1,4 +1,4 @@
-"""Engine core, the wizard's link finder, versions, samples and undo groups (audit 2026-09-24, A15, A16, E1–E17, W8, W9)."""
+"""Engine core, the link finder, versions, samples and undo groups (audit 2026-09-24, A15, A16, E1–E17, W8, W9)."""
 import json
 import os
 import random
@@ -7,7 +7,8 @@ import polars as pl
 import pytest
 
 from dancr.core import Pipeline
-from dancr.core.profile import profile_files, suggest_links, _looks_like_key, match_percent
+from dancr.core.executor import Executor
+from dancr.core.understand import understand, looks_like_key
 
 
 # ------------------------------------------------------------------ link finder
@@ -17,19 +18,19 @@ def test_a_perfect_link_between_a_sorted_and_a_shuffled_table_is_found(tmp_path)
     random.Random(1).shuffle(shuffled)
     pl.DataFrame({"customer_id": ids, "amount": [1.0] * len(ids)}).write_csv(tmp_path / "orders.csv")
     pl.DataFrame({"customer_id": shuffled, "name": ["x"] * len(ids)}).write_csv(tmp_path / "customers.csv")
-    profs, skipped = profile_files([tmp_path / "orders.csv", tmp_path / "customers.csv"])
-    links = suggest_links(profs)
-    assert links and links[0].left_col == links[0].right_col == "customer_id"
+    p = Pipeline("t"); p.path = tmp_path / "t.json"
+    for f in ("orders.csv", "customers.csv"):
+        p.add_node("load_file", params={"path": f})
+    links = [r for r in understand(p, Executor(p)).relations if r.kind == "link"]
+    assert links and links[0].left_on == links[0].right_on == "customer_id"
     assert links[0].match_pct == 100.0
-    a, b = (p.column("customer_id") for p in profs)
-    assert match_percent(a, b) == 100.0
 
 
 @pytest.mark.parametrize("name,key", [("customer_id", True), ("CustomerID", True), ("order no", True), ("sku", True),
                                       ("Amount paid", False), ("valid", False), ("Humid", False), ("turkey", False),
                                       ("number", False)])
 def test_key_names_are_whole_words(name, key):
-    assert _looks_like_key(name) is key
+    assert looks_like_key(name) is key
 
 
 # ------------------------------------------------------------------ versions

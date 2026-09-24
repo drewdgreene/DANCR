@@ -438,7 +438,7 @@ class AnswerItem(QGraphicsObject):
         f = _font(10.5, True); painter.setFont(f); painter.setPen(QColor(T.text))
         painter.drawText(QRectF(40, 11, ANSWER_W - 50, 20), Qt.AlignLeft | Qt.AlignVCenter, _elide(a.title, f, ANSWER_W - 52))
         f2 = _font(8.5); painter.setFont(f2); painter.setPen(QColor(T.muted))
-        painter.drawText(QRectF(40, 32, ANSWER_W - 50, 15), Qt.AlignLeft | Qt.AlignVCenter, "Answer — click for the result")
+        painter.drawText(QRectF(40, 32, ANSWER_W - 50, 15), Qt.AlignLeft | Qt.AlignVCenter, "Answer — click to see it and change it")
         p = self.canvas.doc.pipeline
         st = self.canvas.doc.state(a.terminal) if a.terminal in p.nodes else None
         status = st.status if st else "idle"
@@ -479,7 +479,7 @@ class AnswerItem(QGraphicsObject):
     def contextMenuEvent(self, e) -> None:
         m = QMenu(); m.setAttribute(Qt.WA_DeleteOnClose)
         show = m.addAction(icon("table", T.text), "Show the result")
-        change = m.addAction(icon("magic-wand", T.text), "Change answers…")
+        change = m.addAction(icon("sliders", T.text), "Change the question…")
         m.addSeparator()
         delete = m.addAction(icon("trash", T.text), "Delete this answer…")
         r = m.exec(e.screenPos())

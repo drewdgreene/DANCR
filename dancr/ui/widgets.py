@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (QWidget, QHBoxLayout, QVBoxLayout, QLineEdit, QSp
 from ..core.params import Param
 from ..core.expr import _kind_of_dtype, check_formula, function_docs, NUM, STR, TIME, BOOL
 from ..core.conditions import OPS, ops_for_kind
-from ..core.timeutil import parse_duration
+from ..core.timeutil import parse_duration, parse_bucket
 from ..core.nodes._common import STAT_CHOICES
 from .theme import T
 from ..views.palette import series_color
@@ -93,6 +93,7 @@ class TextWidget(ParamWidget):
 class DurationWidget(TextWidget):
     def __init__(self, param: Param, parent=None) -> None:
         super().__init__(param, parent)
+        self._parse = parse_bucket if param.kind == "bucket" else parse_duration
         self.edit.setPlaceholderText(param.placeholder or "e.g. 30s, 5m, 1h, 1d")
         self.edit.textChanged.connect(self._validate)
 
@@ -100,7 +101,7 @@ class DurationWidget(TextWidget):
         ok = True
         if text.strip():
             try:
-                parse_duration(text)
+                self._parse(text)
             except ValueError:
                 ok = False
         self.edit.setStyleSheet("" if ok else "QLineEdit { border: 1px solid #ef4444; }")
@@ -110,7 +111,7 @@ class DurationWidget(TextWidget):
         if not t:
             return None
         try:
-            parse_duration(t); return None
+            self._parse(t); return None
         except ValueError as e:
             return str(e)
 
@@ -1005,7 +1006,7 @@ def make_widget(param: Param, node_type_key: str, suggest: Callable[[str], list[
         return ChoiceWidget(param)
     if k == "path":
         return PathWidget(param, save=(node_type_key in ("export", "report", "workbook")))
-    if k == "duration":
+    if k in ("duration", "bucket"):
         return DurationWidget(param)
     if k == "column":
         return ColumnWidget(param)

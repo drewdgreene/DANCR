@@ -1,0 +1,784 @@
+"""Understand the tables in a project: what each column means, what each table is, how tables relate.
+
+This is what lets DANCR offer answers instead of asking questions. It reads the *output of steps* (never a
+file on the side), so what it describes is exactly what a step downstream will see: the loader's own
+settings (sheet, header row, day-first dates) are part of what is read.
+
+Two passes, both deterministic:
+
+- ``understand(...)`` reads a bounded sample of each table (a spread over the whole result when a step has
+  already run, else its first rows) and works out column roles, table shapes and candidate relations.
+- ``deepen(...)`` then reads every row once per table, in streaming mode, for the facts a sample cannot
+  give: exact row counts and time spans, whether a key really is unique, and how many keys really match.
+  Anything built from the model (an answer) is always planned on the deep model.
+
+Pure core: no Qt, no execution beyond reading step outputs.
+"""
+from __future__ import annotations
+
+import difflib
+import math
+import re
+import zlib
+from dataclasses import dataclass, field, asdict
+from pathlib import Path
+from typing import Any, Iterable
+
+import polars as pl
+
+from .expr import _kind_of_dtype, NUM, TIME, STR, BOOL
+from .registry import registry
+
+SAMPLE_ROWS = 100_000          # rows read per table for column facts
+MAX_VALUES = 5_000             # distinct values kept per key-like column, for link overlap
+CATEGORY_MAX = 50              # a text column with at most this many values (and repeats) is a category
+LINK_MIN_SCORE = 0.60
+STACK_MIN_SIMILARITY = 0.70
+EXACT_KEY_ROWS = 5_000_000     # up to this many rows, key uniqueness is counted exactly; above, estimated
+EXACT_MATCH_ROWS = 20_000_000  # up to this many rows, link matches are counted exactly
+KEY_SUFFIXES = ("id", "key", "code", "no", "number", "ref", "sku", "uuid", "guid")
+CALENDAR_WORDS = ("year", "month", "quarter", "week", "weekday", "day", "hour")
+
+# column roles
+TIME_ROLE, ID, CATEGORY, MEASURE, FLAG, TEXT, CONSTANT, BLANK = (
+    "time", "id", "category", "measure", "flag", "text", "constant", "blank")
+# table shapes
+SERIES, LOOKUP, EVENTS, TABLE = "series", "lookup", "events", "table"
+
+
+@dataclass
+class Column:
+    name: str
+    dtype: str
+    kind: str                       # number | text | true/false | date/time
+    role: str
+    label: str = ""                 # what the person sees (column registry label, else the name)
+    unit: str = ""                  # from the column registry, else from the header ("Pressure (bar)")
+    null_pct: float = 0.0
+    distinct: int = 0               # in the sample (or exactly / estimated over every row after deepen)
+    unique: bool = False            # every filled value is different
+    unique_exact: bool = False      # ... counted over every row, not just the sample
+    values: list[Any] = field(default_factory=list)   # a category's values, most frequent first
+    minimum: Any = None
+    maximum: Any = None
+    cadence: float | None = None    # time: the typical seconds between one row and the next
+    regular: bool = False           # time: most steps are that typical step
+    _keys: set[str] = field(default_factory=set, repr=False)       # capped distinct values, for link overlap
+    _key_cut: int | None = field(default=None, repr=False)
+
+    @property
+    def link_candidate(self) -> bool:
+        return self.distinct >= 2 and self.role in (ID, CATEGORY, TEXT) and self.kind in (STR, NUM)
+
+    def to_dict(self) -> dict[str, Any]:
+        d = {k: v for k, v in asdict(self).items() if not k.startswith("_")}
+        return _json(d)
+
+
+@dataclass
+class Table:
+    node: str                       # the step whose output this is
+    title: str
+    source: str | None = None       # the file, for a loader
+    rows: int | None = None
+    rows_exact: bool = False
+    sampled: int = 0
+    complete: bool = False          # the sample holds every row
+    shape: str = TABLE
+    time: str | None = None         # the main time column
+    start: Any = None               # first and last time
+    end: Any = None
+    span_seconds: float | None = None
+    columns: list[Column] = field(default_factory=list)
+    pairs: list[dict[str, Any]] = field(default_factory=list)   # measure pairs that move together (sample): {x, y, r}
+    deep: bool = False              # deepen() has read every row
+
+    def column(self, name: str) -> Column | None:
+        return next((c for c in self.columns if c.name == name), None)
+
+    def by_role(self, *roles: str) -> list[Column]:
+        return [c for c in self.columns if c.role in roles]
+
+    @property
+    def measures(self) -> list[Column]:
+        return self.by_role(MEASURE)
+
+    @property
+    def categories(self) -> list[Column]:
+        return self.by_role(CATEGORY)
+
+    def to_dict(self) -> dict[str, Any]:
+        d = {k: v for k, v in asdict(self).items() if k != "columns"}
+        d["columns"] = [c.to_dict() for c in self.columns]
+        return _json(d)
+
+
+@dataclass
+class Relation:
+    """How two or more tables belong together.
+
+    - ``link``: rows of ``tables[0]`` find their row in ``tables[1]`` by a key (``left_on`` → ``right_on``).
+      ``cardinality`` says whether the second table has one row per key (``many-to-one`` / ``one-to-one``)
+      or several (``many-to-many``: linking would multiply rows, so it is never used without asking).
+    - ``stack``: the tables have the same columns and can be appended; ``labels`` name each one.
+    - ``align``: two time series of the same quantities that can be lined up by time (``tolerance``).
+    """
+    id: str
+    kind: str
+    tables: list[str]
+    left_on: str = ""
+    right_on: str = ""
+    cardinality: str = ""
+    match_pct: float = 0.0
+    exact: bool = False
+    score: float = 0.0
+    labels: list[str] = field(default_factory=list)
+    shared: list[str] = field(default_factory=list)     # align/stack: the columns both have
+    tolerance: str = ""
+    why: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return _json(asdict(self))
+
+
+@dataclass
+class DataModel:
+    tables: dict[str, Table] = field(default_factory=dict)          # node id -> table, in project order
+    relations: list[Relation] = field(default_factory=list)
+    skipped: dict[str, str] = field(default_factory=dict)           # node id -> why it could not be read
+    deep: bool = False
+
+    def table(self, node: str) -> Table | None:
+        return self.tables.get(node)
+
+    def relation(self, rid: str) -> Relation | None:
+        return next((r for r in self.relations if r.id == rid), None)
+
+    def links_from(self, node: str) -> list[Relation]:
+        return [r for r in self.relations if r.kind == "link" and r.tables[0] == node]
+
+    def stack_of(self, node: str) -> Relation | None:
+        return next((r for r in self.relations if r.kind == "stack" and node in r.tables), None)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"tables": [t.to_dict() for t in self.tables.values()],
+                "relations": [r.to_dict() for r in self.relations],
+                "skipped": dict(self.skipped), "deep": self.deep}
+
+
+# =================================================================== reading tables
+def default_tables(pipe) -> list[str]:
+    """The tables a project's answers start from: every step that brings data in (loaders, typed data)."""
+    return [nid for nid, n in pipe.nodes.items() if registry.get(n.type).kind == "source"]
+
+
+def understand(pipe, executor, nodes: Iterable[str] | None = None) -> DataModel:
+    """Describe the output of each of ``nodes`` (default: every source step) from a sample, and find how
+    they relate. A step that cannot be read is listed under ``skipped`` with a plain reason."""
+    from .executor import friendly_error
+    model = DataModel()
+    for nid in (list(nodes) if nodes is not None else default_tables(pipe)):
+        if nid not in pipe.nodes:
+            continue
+        try:
+            model.tables[nid] = _read_table(pipe, executor, nid)
+        except Exception as e:  # noqa: BLE001 - an unreadable table is reported, never raised
+            model.skipped[nid] = friendly_error(e)
+    model.relations = find_relations(model)
+    return model
+
+
+def _read_table(pipe, executor, nid: str) -> Table:
+    node = pipe.nodes[nid]
+    lf, _kind = executor.sample_frame(nid, SAMPLE_ROWS)
+    sample = lf.head(SAMPLE_ROWS).collect(engine="streaming")
+    st = executor.state(nid)
+    rows = st.rows if st.status == "done" and st.rows is not None else None
+    nt = registry.get(node.type)
+    source = str(node.params.get("path")) if nt.kind == "source" and node.params.get("path") else None
+    t = Table(node=nid, title=node.title, source=source, rows=rows if rows is not None else None,
+              rows_exact=rows is not None, sampled=sample.height)
+    if rows is not None:
+        t.complete = rows <= sample.height
+    else:
+        # a source not run yet gives its first rows, so fewer than asked means that is all of it; any other
+        # step not run yet is computed from samples of its inputs, which says nothing about its full size
+        t.complete = nt.kind == "source" and sample.height < SAMPLE_ROWS
+    if t.complete and t.rows is None:
+        t.rows, t.rows_exact = sample.height, True
+    t.columns = [_describe_column(sample[c], pipe) for c in sample.columns]
+    if t.complete:
+        for c in t.columns:
+            c.unique_exact = True
+    _settle_time(t, sample)
+    t.shape = _shape_of(t)
+    t.pairs = _pairs(sample, t.measures)
+    return t
+
+
+def _pairs(sample: pl.DataFrame, measures: list[Column], limit: int = 8) -> list[dict[str, Any]]:
+    """How strongly each pair of measures moves together in the sample (Pearson r), strongest first. Only used
+    to rank suggestions: an answer built from it computes its fit on every row."""
+    names = [m.name for m in measures[:limit]]
+    out = []
+    for i, a in enumerate(names):
+        for b in names[i + 1:]:
+            try:
+                d = sample.select(pl.col(a).cast(pl.Float64), pl.col(b).cast(pl.Float64)).drop_nulls().drop_nans()
+                if d.height < 10:
+                    continue
+                r = d.select(pl.corr(a, b)).item()
+            except Exception:  # noqa: BLE001
+                continue
+            if r is not None and r == r:
+                out.append({"x": a, "y": b, "r": round(float(r), 4)})
+    out.sort(key=lambda p: (-abs(p["r"]), p["x"], p["y"]))
+    return out
+
+
+def _describe_column(s: pl.Series, pipe) -> Column:
+    n = s.len()
+    kind = _kind_of_dtype(s.dtype)
+    filled = s.drop_nulls()
+    if s.dtype == pl.Float64 or s.dtype == pl.Float32:
+        filled = filled.filter(filled.is_not_nan())
+    nulls = n - filled.len()
+    distinct = int(filled.n_unique()) if filled.len() else 0
+    label = pipe.column_label(s.name) if hasattr(pipe, "column_label") else s.name
+    unit = (pipe.column_unit(s.name) if hasattr(pipe, "column_unit") else "") or unit_from_name(s.name)
+    c = Column(name=s.name, dtype=str(s.dtype), kind=kind, role=TEXT, label=label or s.name, unit=unit,
+               null_pct=(nulls / n) if n else 0.0, distinct=distinct,
+               unique=bool(filled.len()) and distinct == filled.len())
+    c.minimum, c.maximum = _extreme(filled, "min"), _extreme(filled, "max")
+    c.role = _role_of(c, filled, n)
+    if c.role == CATEGORY:
+        c.values = _category_values(filled)
+    if c.link_candidate:
+        c._keys, c._key_cut = _capped_values(filled)
+    return c
+
+
+def _role_of(c: Column, filled: pl.Series, n: int) -> str:
+    if n == 0 or filled.len() == 0:
+        return BLANK
+    if c.distinct == 1:
+        return CONSTANT
+    if c.kind == TIME:
+        return TIME_ROLE
+    if c.kind == BOOL:
+        return FLAG
+    words = _words(c.name)
+    if c.kind == NUM:
+        integer = filled.dtype.is_integer()
+        if looks_like_key(c.name) and (integer or c.unique):
+            return ID
+        if integer and words and words[-1] in CALENDAR_WORDS and c.distinct <= 400:
+            return CATEGORY                                  # year, month, week: a group, not a quantity
+        if integer and c.unique and filled.len() >= 5 and _is_sequence(filled):
+            return ID                                        # 1, 2, 3 … row numbers or ids
+        return MEASURE
+    if c.kind == STR:
+        if looks_like_key(c.name) or (c.unique and filled.len() >= 5 and _short_text(filled)):
+            return ID
+        if 1 < c.distinct <= CATEGORY_MAX and c.distinct < filled.len() and c.null_pct <= 0.5:
+            return CATEGORY
+        return TEXT
+    return TEXT
+
+
+def _is_sequence(s: pl.Series) -> bool:
+    lo, hi = s.min(), s.max()
+    return lo is not None and hi is not None and (hi - lo + 1) <= 2 * s.len()
+
+
+def _short_text(s: pl.Series) -> bool:
+    """Codes and ids are short and have no sentences in them; free text is long."""
+    try:
+        lens = s.cast(pl.Utf8).str.len_chars()
+        return (lens.max() or 0) <= 40 and float(s.cast(pl.Utf8).str.contains(" ").mean() or 0) < 0.5
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _category_values(s: pl.Series) -> list[Any]:
+    vc = s.value_counts(sort=False)
+    name = vc.columns[0]
+    vc = vc.with_columns(pl.col(name).cast(pl.Utf8).alias("_text")).sort(["count", "_text"], descending=[True, False])
+    return [_clean(v) for v in vc[name].to_list()]
+
+
+def _settle_time(t: Table, sample: pl.DataFrame) -> None:
+    """The main time column (the first date/time column that varies) and how regularly rows arrive."""
+    times = t.by_role(TIME_ROLE)
+    if not times:
+        return
+    main = times[0]
+    t.time = main.name
+    s = sample[main.name].drop_nulls()
+    if s.len() >= 3:
+        try:
+            srt = s.sort()
+            if isinstance(s.dtype, pl.Datetime):
+                us = srt.dt.epoch("us").cast(pl.Float64)
+            else:
+                us = srt.cast(pl.Datetime("us")).dt.epoch("us").cast(pl.Float64)
+            steps = us.diff().drop_nulls()
+            steps = steps.filter(steps > 0)
+            if steps.len():
+                med = float(steps.median())
+                main.cadence = med / 1e6
+                main.regular = float(((steps - med).abs() <= 0.1 * med).mean()) >= 0.8
+        except Exception:  # noqa: BLE001 - odd time types simply get no cadence
+            pass
+    t.start, t.end = main.minimum, main.maximum
+    t.span_seconds = _span(t.start, t.end)
+
+
+def _span(a: Any, b: Any) -> float | None:
+    try:
+        return float((b - a).total_seconds())
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _shape_of(t: Table) -> str:
+    """series: readings at a steady rate (a logger); lookup: one row per key (customers, sites);
+    events: things that happened, with ids or times (orders, visits); table: anything else."""
+    time = t.column(t.time) if t.time else None
+    ids = t.by_role(ID)
+    unique_ids = [c for c in ids if c.unique]
+    small = (t.rows if t.rows is not None else t.sampled) <= 100_000
+    if time is not None and t.measures and time.regular and time.unique and not ids:
+        return SERIES                                   # one reading per moment, at a steady rate
+    if unique_ids and small and time is None and not [c for c in ids if not c.unique]:
+        return LOOKUP
+    if time is not None or ids:
+        return EVENTS
+    return TABLE
+
+
+# =================================================================== relations
+def find_relations(model: DataModel) -> list[Relation]:
+    tables = list(model.tables.values())
+    out: list[Relation] = []
+    stacks = _find_stacks(tables)
+    out += stacks
+    out += _find_aligns(tables)
+    same = [set(r.tables) for r in stacks]
+    # tables of one stack are the same kind of table, not lookups of each other
+    out += [r for r in _find_links(tables) if not any(set(r.tables) <= g for g in same)]
+    return out
+
+
+def _find_links(tables: list[Table]) -> list[Relation]:
+    out: list[Relation] = []
+    for i, a in enumerate(tables):
+        for b in tables[i + 1:]:
+            for ca in a.columns:
+                if not ca.link_candidate or not ca._keys:
+                    continue
+                for cb in b.columns:
+                    if not cb.link_candidate or not cb._keys or _kind_family(ca) != _kind_family(cb):
+                        continue
+                    name = name_similarity(ca.name, cb.name)
+                    if name < 0.34:
+                        continue
+                    va, vb = _comparable(ca, cb)
+                    overlap = _overlap(va, vb)
+                    if overlap < 0.5:
+                        continue
+                    score = 0.6 * name + 0.4 * overlap
+                    if score < LINK_MIN_SCORE:
+                        continue
+                    out.append(_orient_link(a, ca, b, cb, va, vb, round(score, 3)))
+    out.sort(key=lambda r: (-r.score, r.id))
+    return out
+
+
+def _kind_family(c: Column) -> str:
+    return "number" if c.kind == NUM else "text"
+
+
+def _orient_link(a: Table, ca: Column, b: Table, cb: Column, va: set[str], vb: set[str], score: float) -> Relation:
+    """Put the side with one row per key second (the lookup), so linking never multiplies rows."""
+    ua, ub = ca.unique, cb.unique
+    if ub and not ua:
+        left, lc, right, rc, lv, rv = a, ca, b, cb, va, vb
+    elif ua and not ub:
+        left, lc, right, rc, lv, rv = b, cb, a, ca, vb, va
+    else:
+        # both unique (one-to-one) or neither (many-to-many): the bigger table first
+        ra, rb = (a.rows or a.sampled), (b.rows or b.sampled)
+        if rb > ra:
+            left, lc, right, rc, lv, rv = b, cb, a, ca, vb, va
+        else:
+            left, lc, right, rc, lv, rv = a, ca, b, cb, va, vb
+    card = "many-to-many" if not rc.unique else ("one-to-one" if lc.unique else "many-to-one")
+    pct = round(100.0 * len(lv & rv) / len(lv), 1) if lv else 0.0
+    rel = Relation(id=f"link:{left.node}.{lc.name}>{right.node}.{rc.name}", kind="link", tables=[left.node, right.node],
+                   left_on=lc.name, right_on=rc.name, cardinality=card, match_pct=pct, score=score,
+                   exact=lc.unique_exact and rc.unique_exact and left.complete and right.complete)
+    rel.why = link_why(rel, left, right)
+    return rel
+
+
+def link_why(rel: Relation, left: Table, right: Table) -> str:
+    est = "" if rel.exact else " (from a sample)"
+    many = {"many-to-one": f"each {rel.right_on} appears once in {right.title}, so no rows are multiplied",
+            "one-to-one": f"each {rel.left_on} appears once in both",
+            "many-to-many": f"{rel.right_on} repeats in {right.title}, so linking would repeat rows"}[rel.cardinality]
+    return f"{rel.match_pct:g}% of {left.title}'s {rel.left_on} found in {right.title}{est}; {many}"
+
+
+def _find_stacks(tables: list[Table]) -> list[Relation]:
+    out: list[Relation] = []
+    used: set[str] = set()
+    for i, a in enumerate(tables):
+        if a.node in used:
+            continue
+        members, worst = [a], 1.0
+        for b in tables[i + 1:]:
+            if b.node in used:
+                continue
+            sim = _column_similarity(a, b)
+            if sim >= STACK_MIN_SIMILARITY and _kinds_agree(a, b):
+                members.append(b)
+                worst = min(worst, sim)
+        if len(members) < 2:
+            continue
+        used.update(m.node for m in members)
+        labels = distinct_labels([m.source or m.title for m in members], [m.title for m in members])
+        shared = [c.name for c in a.columns if all(m.column(c.name) is not None for m in members)]
+        rel = Relation(id="stack:" + "+".join(m.node for m in members), kind="stack", tables=[m.node for m in members],
+                       score=round(worst, 3), labels=labels, shared=shared, exact=True,
+                       why=f"{len(members)} tables with the same columns ({', '.join(shared[:4])}"
+                           f"{'…' if len(shared) > 4 else ''}); each row keeps which one it came from")
+        out.append(rel)
+    return out
+
+
+def _find_aligns(tables: list[Table]) -> list[Relation]:
+    """Two time series measuring the same things: they can be lined up reading by reading."""
+    out: list[Relation] = []
+    series = [t for t in tables if t.time and t.measures]
+    for i, a in enumerate(series):
+        for b in series[i + 1:]:
+            shared = [m.name for m in a.measures if b.column(m.name) is not None and b.column(m.name).role == MEASURE]
+            if not shared:
+                shared = [m.name for m in a.measures for n in b.measures if m.unit and m.unit == n.unit][:1]
+            if not shared:
+                continue
+            ca, cb = a.column(a.time), b.column(b.time)
+            cad = max(x for x in (ca.cadence, cb.cadence, 0.0) if x is not None)
+            overlap = _time_overlap(a, b)
+            if overlap is not None and overlap <= 0:
+                continue
+            tol = duration_text(cad) if cad else ""
+            score = 0.7 + 0.3 * (overlap if overlap is not None else 0.5)
+            rel = Relation(id=f"align:{a.node}~{b.node}", kind="align", tables=[a.node, b.node], left_on=a.time,
+                           right_on=b.time, shared=shared, tolerance=tol, score=round(score, 3), exact=False)
+            rel.why = (f"both record {', '.join(shared[:3])} over time; each reading of {a.title} is paired with the "
+                       f"nearest reading of {b.title}" + (f" within {tol}" if tol else ""))
+            out.append(rel)
+    return out
+
+
+def _time_overlap(a: Table, b: Table) -> float | None:
+    """The share of the shorter span that both tables cover, or None when the spans are not known."""
+    try:
+        lo, hi = max(a.start, b.start), min(a.end, b.end)
+        shorter = min(a.span_seconds or 0, b.span_seconds or 0)
+        if not shorter:
+            return None
+        return max(0.0, (hi - lo).total_seconds()) / shorter
+    except Exception:  # noqa: BLE001 - dates of different kinds or zones
+        return None
+
+
+def _kinds_agree(a: Table, b: Table) -> bool:
+    for c in a.columns:
+        d = b.column(c.name)
+        if d is not None and c.kind != d.kind and BLANK not in (c.role, d.role):
+            return False
+    return True
+
+
+# =================================================================== the full pass
+def deepen(pipe, executor, model: DataModel, cancel=None) -> DataModel:
+    """Read every row of each table once (streaming) to replace sample facts by exact ones: row counts, time
+    spans, key uniqueness and link matches. Tables that cannot be read in full keep their sample facts."""
+    for t in model.tables.values():
+        if cancel is not None and cancel():
+            return model
+        try:
+            lf = full_frame(pipe, executor, t.node)
+            if lf is not None:
+                _deepen_table(t, lf)
+        except Exception:  # noqa: BLE001 - the sample facts stay; the answer says they are estimates
+            continue
+    for r in model.relations:
+        if cancel is not None and cancel():
+            return model
+        if r.kind == "link":
+            try:
+                _deepen_link(pipe, executor, model, r)
+            except Exception:  # noqa: BLE001
+                continue
+    # shapes can change once exact uniqueness and spans are known; relations are re-oriented accordingly
+    for t in model.tables.values():
+        t.shape = _shape_of(t)
+    _reorient_links(model)
+    model.deep = True
+    return model
+
+
+def full_frame(pipe, executor, nid: str) -> pl.LazyFrame | None:
+    """Every row of a step's output without running it: its stored result, or for a source step not run yet
+    the source read in full with the same settings a run uses. None for other steps not run yet."""
+    st = executor.state(nid)
+    if st.status == "done" and st.output:
+        return pl.scan_parquet(st.output)
+    node = pipe.nodes[nid]
+    nt = registry.get(node.type)
+    if nt.kind != "source":
+        return None
+    from .registry import NodeResult
+    ctx = executor._ctx(nid, preview=False)
+    res = nt.apply(ctx, {}, node.params)
+    return res.frame if isinstance(res, NodeResult) else res
+
+
+def _deepen_table(t: Table, lf: pl.LazyFrame) -> None:
+    schema = lf.collect_schema()
+    aggs: list[pl.Expr] = [pl.len().alias("__rows")]
+    if t.time and t.time in schema:
+        aggs += [pl.col(t.time).min().alias("__tmin"), pl.col(t.time).max().alias("__tmax")]
+    for c in t.columns:
+        if c.name in schema and c.role in (ID, CATEGORY, TEXT):
+            aggs.append(pl.col(c.name).drop_nulls().approx_n_unique().alias(f"__u_{c.name}"))
+            aggs.append(pl.col(c.name).drop_nulls().len().alias(f"__n_{c.name}"))
+    row = lf.select(aggs).collect(engine="streaming").row(0, named=True)
+    t.rows, t.rows_exact, t.deep = int(row["__rows"]), True, True
+    t.complete = t.rows <= t.sampled
+    if "__tmin" in row:
+        t.start, t.end = _clean(row["__tmin"]), _clean(row["__tmax"])
+        t.span_seconds = _span(t.start, t.end)
+        col = t.column(t.time)
+        if col is not None:
+            col.minimum, col.maximum = t.start, t.end
+    for c in t.columns:
+        if f"__u_{c.name}" not in row:
+            continue
+        est, filled = int(row[f"__u_{c.name}"]), int(row[f"__n_{c.name}"])
+        c.distinct = max(c.distinct, est)
+        if c.unique and not t.complete:
+            if t.rows <= EXACT_KEY_ROWS:
+                exact = int(lf.select(pl.col(c.name).drop_nulls().n_unique()).collect(engine="streaming")[0, 0])
+                c.unique, c.unique_exact = exact == filled, True
+                c.distinct = exact
+            else:
+                c.unique = est >= 0.98 * filled           # HyperLogLog is within about 2%
+        elif t.complete:
+            c.unique_exact = True
+        if c.role == CATEGORY and c.distinct > CATEGORY_MAX * 2:
+            c.role, c.values = TEXT, []                    # the sample looked like a category; the whole table does not
+
+
+def _deepen_link(pipe, executor, model: DataModel, r: Relation) -> None:
+    left, right = model.tables[r.tables[0]], model.tables[r.tables[1]]
+    if (left.rows or 0) > EXACT_MATCH_ROWS:
+        return
+    lf, rf = full_frame(pipe, executor, left.node), full_frame(pipe, executor, right.node)
+    if lf is None or rf is None:
+        return
+    lk = lf.select(pl.col(r.left_on).cast(pl.Utf8).alias("k")).drop_nulls().unique()
+    rk = rf.select(pl.col(r.right_on).cast(pl.Utf8).alias("k")).drop_nulls().unique()
+    counts = pl.concat([lk.select(pl.len().alias("n")),
+                        lk.join(rk, on="k", how="semi").select(pl.len().alias("n"))]).collect(engine="streaming")["n"].to_list()
+    total, found = int(counts[0]), int(counts[1])
+    r.match_pct = round(100.0 * found / total, 1) if total else 0.0
+    lc, rc = left.column(r.left_on), right.column(r.right_on)
+    r.exact = bool(lc and rc and lc.unique_exact and rc.unique_exact)
+
+
+def _reorient_links(model: DataModel) -> None:
+    for i, r in enumerate(model.relations):
+        if r.kind != "link":
+            continue
+        a, b = model.tables[r.tables[0]], model.tables[r.tables[1]]
+        ca, cb = a.column(r.left_on), b.column(r.right_on)
+        if ca is None or cb is None:
+            continue
+        if ca.unique and not cb.unique:                 # exact counts showed the other side is the lookup
+            a, b, ca, cb = b, a, cb, ca
+            r.tables, r.left_on, r.right_on = [a.node, b.node], ca.name, cb.name
+            r.id = f"link:{a.node}.{ca.name}>{b.node}.{cb.name}"
+        r.cardinality = "many-to-many" if not cb.unique else ("one-to-one" if ca.unique else "many-to-one")
+        r.why = link_why(r, a, b)
+
+
+# =================================================================== names and values
+def _words(name: str) -> list[str]:
+    """'CustomerID' -> customer, id; 'order_no' -> order, no; 'Amount paid' -> amount, paid."""
+    return [w.lower() for w in re.findall(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+|\d+", str(name))]
+
+
+def norm(name: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(name).lower())
+
+
+def looks_like_key(name: str) -> bool:
+    """A name whose last word is a key word (customer_id, OrderNo, sku), not one that merely ends in those
+    letters (Amount paid, valid, Humid). A bare 'id' or 'sku' counts; a bare 'number' or 'no' does not."""
+    w = _words(name)
+    if not w or w[-1] not in KEY_SUFFIXES:
+        return False
+    return len(w) > 1 or w[-1] in ("id", "key", "sku", "uuid", "guid", "code", "ref")
+
+
+def _stem(name: str) -> str:
+    w = _words(name)
+    return "".join(w[:-1]) if len(w) > 1 and w[-1] in KEY_SUFFIXES else norm(name)
+
+
+def name_similarity(a: str, b: str) -> float:
+    na, nb = norm(a), norm(b)
+    if not na or not nb:
+        return 0.0
+    if na == nb:
+        return 1.0
+    sa, sb = _stem(a), _stem(b)
+    if sa != na and sb != nb:          # both are key-suffixed: compare the stems (customer vs product)
+        return difflib.SequenceMatcher(None, sa, sb).ratio()
+    if sa == sb:
+        return 0.95
+    if sa in sb or sb in sa:
+        return 0.85
+    return difflib.SequenceMatcher(None, na, nb).ratio()
+
+
+_UNIT_RE = re.compile(r"[\(\[]\s*([^\)\]]{1,12})\s*[\)\]]\s*$")
+
+
+def unit_from_name(name: str) -> str:
+    """'Pressure (bar)' -> 'bar'; 'Flow [m3/h]' -> 'm3/h'."""
+    m = _UNIT_RE.search(str(name))
+    return m.group(1).strip() if m else ""
+
+
+def distinct_labels(names: list[str], fallback: list[str]) -> list[str]:
+    """Short labels telling apart files with similar names: the words that differ between them.
+    probe_MJ03E.csv, probe_MJ03F.csv -> MJ03E, MJ03F. Falls back to the titles when nothing differs."""
+    split = [[w for w in re.split(r"[_\s.]+", Path(str(n)).stem) if w] for n in names]
+    common = set(split[0]).intersection(*map(set, split[1:])) if split else set()
+    out = []
+    for words, fb in zip(split, fallback):
+        rest = [w for w in words if w not in common]
+        out.append("_".join(rest) if rest else fb)
+    if len(set(out)) < len(out):
+        return list(fallback) if len(set(fallback)) == len(fallback) else [f"{fb} {i + 1}" for i, fb in enumerate(fallback)]
+    return out
+
+
+def _vhash(v: str) -> int:
+    return zlib.crc32(v.encode("utf-8", "surrogatepass"))
+
+
+def _capped_values(s: pl.Series, cap: int = MAX_VALUES) -> tuple[set[str], int | None]:
+    """At most ``cap`` distinct values, chosen by hash rather than position, so two tables keep the same
+    values out of the ones they share and their overlap is measured fairly."""
+    vals = s.cast(pl.Utf8).unique().to_list()
+    if len(vals) <= cap:
+        return set(vals), None
+    kept = sorted(vals, key=_vhash)[:cap]
+    return set(kept), _vhash(kept[-1])
+
+
+def _comparable(a: Column, b: Column) -> tuple[set[str], set[str]]:
+    cuts = [c for c in (a._key_cut, b._key_cut) if c is not None]
+    if not cuts:
+        return set(a._keys), set(b._keys)
+    cut = min(cuts)
+    return {v for v in a._keys if _vhash(v) <= cut}, {v for v in b._keys if _vhash(v) <= cut}
+
+
+def _overlap(a: set[str], b: set[str]) -> float:
+    """Half containment (the smaller side found in the larger) and half Jaccard, so a tiny set that happens
+    to sit inside a big one does not score as a match."""
+    if not a or not b:
+        return 0.0
+    inter = len(a & b)
+    return 0.5 * inter / min(len(a), len(b)) + 0.5 * inter / len(a | b)
+
+
+def _column_similarity(a: Table, b: Table) -> float:
+    ca = {norm(c.name) for c in a.columns}
+    cb = {norm(c.name) for c in b.columns}
+    if not ca or not cb:
+        return 0.0
+    return len(ca & cb) / len(ca | cb)
+
+
+def _extreme(s: pl.Series, how: str) -> Any:
+    try:
+        return _clean(getattr(s, how)())
+    except Exception:  # noqa: BLE001 - some dtypes have no min/max
+        return None
+
+
+def _clean(v: Any) -> Any:
+    if isinstance(v, float) and (v != v or math.isinf(v)):
+        return None
+    return v
+
+
+def _json(d: Any) -> Any:
+    """JSON-ready: dates as ISO text, no NaN."""
+    import datetime as _dt
+    from .dtypes import json_safe
+
+    def walk(v: Any) -> Any:
+        if isinstance(v, dict):
+            return {k: walk(x) for k, x in v.items()}
+        if isinstance(v, (list, tuple, set)):
+            return [walk(x) for x in v]
+        if isinstance(v, (_dt.datetime, _dt.date, _dt.time, _dt.timedelta)):
+            return str(v) if isinstance(v, _dt.timedelta) else v.isoformat()
+        return v
+    return json_safe(walk(d))
+
+
+# =================================================================== durations for people
+NICE_STEPS = [(1e-3, "1ms"), (1e-2, "10ms"), (0.05, "50ms"), (0.1, "100ms"), (0.5, "500ms"), (1, "1s"), (5, "5s"),
+              (10, "10s"), (30, "30s"), (60, "1m"), (300, "5m"), (900, "15m"), (1800, "30m"), (3600, "1h"),
+              (6 * 3600, "6h"), (86400, "1d"), (7 * 86400, "1w"), (30.44 * 86400, "1mo"), (91.31 * 86400, "1q"),
+              (365.25 * 86400, "1y")]
+
+
+def duration_text(secs: float) -> str:
+    """A tolerance for pairing readings taken ``secs`` apart: that spacing, written the short way."""
+    if secs <= 0:
+        return ""
+    for unit, scale in (("d", 86400), ("h", 3600), ("m", 60), ("s", 1), ("ms", 1e-3)):
+        v = secs / scale
+        if v >= 1 and abs(v - round(v)) < 1e-9:
+            return f"{int(round(v))}{unit}"
+    ms = secs * 1000
+    if ms >= 1:
+        return f"{int(math.ceil(ms))}ms"
+    return f"{int(math.ceil(secs * 1e6))}us"
+
+
+def bucket_for(span_seconds: float | None, cadence: float | None = None, target: int = 400) -> str:
+    """The time bucket that turns a span into roughly ``target`` points (minutes for a day, days for months),
+    never finer than the rows arrive (``cadence``): hourly rows are not bucketed per minute."""
+    if not span_seconds or span_seconds <= 0:
+        return "1d"
+    ideal = span_seconds / target
+    fits = [text for secs, text in NICE_STEPS if secs <= ideal * 2]
+    best = fits[-1] if fits else NICE_STEPS[0][1]
+    if cadence:
+        floor = next((text for secs, text in NICE_STEPS if secs >= cadence * 0.999), NICE_STEPS[-1][1])
+        if dict((t, s) for s, t in NICE_STEPS)[best] < dict((t, s) for s, t in NICE_STEPS)[floor]:
+            best = floor
+    return best

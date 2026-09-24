@@ -61,24 +61,33 @@ class Note:
 
 @dataclass
 class Answer:
-    """A saved question and its outcome.
+    """A question and the steps that answer it.
 
-    An Answer is a bookmark, not a pipeline step: it is *not* connected to the dataflow and the
-    executor ignores it entirely. It points at the step whose output answers the question, and keeps
-    the guided build's answers so the question can be changed later. The canvas draws it as an
-    unconnected card; the rail lists it above the steps.
+    An Answer is a bookmark, not a pipeline step: it is *not* connected to the dataflow and the executor
+    ignores it entirely. It keeps the question as a spec (see ``recipes.py``), what was assumed on the
+    person's behalf, and which steps it built, so the question can be changed later without disturbing
+    steps the person edited by hand. The canvas draws it as an unconnected card; the rail lists it.
     """
     id: str
     title: str
     x: float
     y: float
     terminal: str                      # node id whose output answers the question
-    view: str = "chart"                # how to show it: chart | table | report
-    config: dict[str, Any] = field(default_factory=dict)   # the wizard's answers, for "change answers"
+    view: str = "chart"                # how to show it: chart | table
+    spec: dict[str, Any] = field(default_factory=dict)          # the question
+    steps: dict[str, dict[str, Any]] = field(default_factory=dict)   # plan key -> {"node", "made", "title"}
+    assumptions: list[dict[str, Any]] = field(default_factory=list)
+    rules: int = 0                     # the recipes' RULES_VERSION this was planned with
 
     def to_dict(self) -> dict[str, Any]:
         return {"id": self.id, "title": self.title, "x": round(self.x, 1), "y": round(self.y, 1),
-                "terminal": self.terminal, "view": self.view, "config": self.config}
+                "terminal": self.terminal, "view": self.view, "spec": self.spec, "steps": self.steps,
+                "assumptions": self.assumptions, "rules": self.rules}
+
+    @property
+    def nodes(self) -> list[str]:
+        """The steps this answer built (not the tables it started from)."""
+        return [s["node"] for s in self.steps.values() if s.get("node")]
 
 
 _ID_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_\-]*$")
@@ -384,13 +393,15 @@ class Pipeline:
 
     # ---------------------------------------------------------------- answers
     def add_answer(self, title: str, terminal: str, x: float = 0.0, y: float = 0.0, view: str = "chart",
-                   config: dict[str, Any] | None = None, id: str | None = None) -> Answer:
+                   spec: dict[str, Any] | None = None, id: str | None = None, steps: dict | None = None,
+                   assumptions: list | None = None, rules: int = 0) -> Answer:
         aid = id or self._new_answer_id()
         if not _ID_RE.match(aid):
             raise PipelineError(f"Invalid answer id {aid!r}")
         if any(a.id == aid for a in self.answers):
             raise PipelineError(f"Answer id {aid!r} already exists")
-        answer = Answer(aid, title or "Answer", x, y, terminal, view or "chart", dict(config or {}))
+        answer = Answer(aid, title or "Answer", x, y, terminal, view or "chart", dict(spec or {}),
+                        dict(steps or {}), list(assumptions or []), int(rules or 0))
         self.answers.append(answer)
         return answer
 
@@ -477,12 +488,15 @@ class Pipeline:
             n.width = _num(nd.get("width"), n.width)
             n.height = _num(nd.get("height"), n.height)
         for ad in data.get("answers") or []:
-            if not isinstance(ad, dict) or not ad.get("id") or not ad.get("terminal"):
+            if not isinstance(ad, dict) or not ad.get("id") or not ad.get("terminal") or not isinstance(ad.get("spec"), dict):
                 continue
+            steps = {str(k): dict(v) for k, v in (ad.get("steps") or {}).items() if isinstance(v, dict) and v.get("node")}
             try:
                 p.add_answer(str(ad.get("title") or "Answer"), str(ad["terminal"]), _num(ad.get("x")), _num(ad.get("y")),
-                             str(ad.get("view") or "chart"), dict(ad.get("config") or {}), id=str(ad["id"]))
-            except PipelineError:
+                             str(ad.get("view") or "chart"), dict(ad["spec"]), id=str(ad["id"]), steps=steps,
+                             assumptions=[a for a in ad.get("assumptions") or [] if isinstance(a, dict)],
+                             rules=int(ad.get("rules") or 0))
+            except (PipelineError, TypeError, ValueError):
                 continue
         for i in data.get("inputs") or []:
             if isinstance(i, dict) and i.get("name"):

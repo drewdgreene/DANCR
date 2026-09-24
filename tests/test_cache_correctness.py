@@ -141,7 +141,7 @@ def test_every_engine_module_is_fingerprinted(monkeypatch):
     _code_fingerprint()
     for name in ("fits.py", "executor.py", "render.py", "combine.py", "timeutil.py"):
         assert name in read
-    for name in ("examples.py", "profile.py", "planner.py", "samples.py"):     # never shape a step's output
+    for name in ("examples.py", "understand.py", "recipes.py", "ask.py", "answers.py", "planner.py", "samples.py"):     # never shape a step's output
         assert name not in read
 
 

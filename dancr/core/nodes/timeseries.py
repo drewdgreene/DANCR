@@ -8,7 +8,7 @@ import polars as pl
 
 from ..params import Param
 from ..registry import NodeType, InputSpec, Ctx, NodeResult, registry
-from ..timeutil import parse_duration, format_seconds
+from ..timeutil import parse_duration, parse_bucket, format_seconds
 from ._common import first_input, schema_of, require_column, number_param, temporal_columns, build_aggregations, stat_expr, check_stats, STAT_HELP, STAT_CHOICES
 from ..expr import TIME, NUM
 from ..dtypes import is_date, align_time_column, temp_name
@@ -53,7 +53,7 @@ def _time_buckets(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[
     schema = schema_of(lf)
     t = _time_col(schema, params)
     lf = _with_time(lf, schema, t)
-    every, secs = parse_duration(params.get("every") or "1m")
+    every, secs = parse_bucket(params.get("every") or "1m")
     only = [require_column(schema, c, "column", NUM) for c in (params.get("columns") or [])]
     aggs = build_aggregations(schema, params.get("aggregations"), exclude=[t],
                               default_stats=tuple(params.get("default_stats") or ["mean"]), only=only or None, order_by=t)
@@ -76,7 +76,7 @@ registry.register(NodeType(
     apply=_counts_blank_times()(_time_buckets),
     summary=lambda p: f"every {p.get('every') or '1m'}",
     params=[
-        Param("every", "Bucket size", "duration", default="1m", required=True, placeholder="e.g. 1s, 1m, 15m, 1h, 1d"),
+        Param("every", "Bucket size", "bucket", default="1m", required=True, placeholder="e.g. 1s, 1m, 15m, 1h, 1d, 1mo, 1y"),
         Param("columns", "Columns to summarise", "columns", column_group="numeric", default=[],
               help="Empty = every number column"),
         Param("default_stats", "Statistics", "text_list", default=["mean"], help=STAT_HELP),

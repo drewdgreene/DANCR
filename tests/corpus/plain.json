@@ -1,0 +1,26 @@
+{
+ "tables": {
+  "parts": {
+   "shape": "table",
+   "rows": 300,
+   "time": null,
+   "columns": {
+    "length": "measure",
+    "weight": "measure",
+    "width": "measure"
+   }
+  }
+ },
+ "relations": [],
+ "suggestions": [
+  "relationship: weight against length",
+  "distribution: Spread of length",
+  "single: Total length",
+  "describe: What is in parts"
+ ],
+ "questions": {
+  "weight against length": "weight against length",
+  "average weight": "Average weight",
+  "spread of width": "Spread of width"
+ }
+}

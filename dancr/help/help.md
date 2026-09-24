@@ -34,44 +34,64 @@ DANCR follows your system's light or dark appearance. To choose by hand, use
 
 ## Start
 
-Open a CSV, Excel or Parquet file (*Open data file*, or drop it anywhere on
+Open a CSV, Excel or Parquet file (*Open data files…*, or drop it anywhere on
 the window). It appears in the project tree straight away, however big it is.
+Open **several files at once** — orders and customers, a month of logs — and
+DANCR works out how they fit together.
 
 Or pick a **template** on the start screen. Each one builds a small project on
 a generated sample file (two values recorded for a few days) so you can see how the pieces fit,
 then swap in your own file in the loader's Settings.
 
-Have several spreadsheets that belong together? Press **Build it for me…** (the wand in
-the toolbar) and let the guide wire them up — see the section below.
+## Answers: ask, or pick one DANCR offers
 
-## Build it for me (guided answers)
+As soon as your files are open, the bar above the table shows **answers DANCR can give
+straight away** — for example *Total sales by region*, *Average pressure per hour*,
+*probe B minus probe A*, *Gaps in the log*, *Top 10 customers*. Each card has a small
+preview. Click one and it is built: ordinary steps on the map, and an **Answer** card
+next to them. Select a table in the project tree and the suggestions are about that table.
 
-When your data lives in a pile of different spreadsheets, the wand does the wiring for you.
+Or **ask in your own words** (Ctrl+J), using the names of your columns, tables and values:
 
-1. Press **Build it for me…** (toolbar), or drop **two or more files** onto the window.
-   You can also start from the button on the start screen.
-2. DANCR reads a sample of each file and shows **what it found**: the tables, and any
-   files it thinks can be **linked** (they share a key, like a customer id) or **stacked**
-   (the same columns). Each link shows how well the values match — if I picked the wrong
-   columns, change them in the row (the match updates), untick it to leave the tables
-   separate, or use **Link two more columns…** to join on a pair I did not spot.
-3. Choose **what you want to find out**: *Total things up*, *See change over time* or
-   *Describe this data*. Some choices are greyed out if your files have no date or
-   category column.
-4. Answer a detail or two (which number, which group) — everything has a sensible default,
-   and you can **Skip** any question.
-5. Review what will be built, in one sentence, then press **Build the answer**.
+| You type | You get |
+|---|---|
+| `total sales by region` | a bar chart of sales added up per region |
+| `average pressure per hour` | a line per hour (one line per file when several files have the same columns) |
+| `top 10 customers by sales` · `bottom 5 products by qty` | the ten biggest (or smallest), ranked |
+| `monthly sales` · `sales per week` | totals per calendar month or week |
+| `compare probe_A and probe_B` | the two logs paired reading by reading, B fitted to A, and the difference over time |
+| `temperature against pressure` | a scatter with the fitted line |
+| `orders where qty above 2` · `sales between 100 and 200` | just the rows that match |
+| `sales by store for Leeds` | any question, limited to one value of a category |
+| `gaps in probe_A` · `spikes in pressure` · `spread of weight` · `describe customers` | gaps, unusual readings, a histogram, a summary |
 
-The steps appear on the map, tidily connected, and an **Answer** card appears next to them.
-Click the card (or the item in the **Answers** list at the top of the project tree) to see
-the result in the table or chart.
+How DANCR decides, so there are no surprises:
 
-- **Build more than one answer** from the same files: each is a separate question, and any
-  step they share (loading, linking, tidying) is used once, not duplicated.
-- **Change answers…** re-opens the guide with your choices; it rebuilds that answer's steps
-  (any hand edits to those steps are replaced — shared steps are kept).
-- **Delete** asks whether to remove just the card or also the steps it built. Steps shared
-  with another answer are always kept.
+- **It reads every row first.** A quick look at the first rows fills the suggestions at
+  once; before anything is built, every row is read, so links, row counts and time spans
+  are exact. With very large files this takes a few seconds (the bar says so).
+- **Links follow the keys.** Two tables are linked when a column's values in one are found
+  in the other and each appears there once (a customer id in the customers table) — so
+  linking never repeats rows. When a key repeats in both tables, DANCR will not link them
+  and says why.
+- **Readings are averaged, amounts are added up.** A logger's pressure is averaged per hour;
+  sales are totalled per month. A number that describes a lookup row (a product's unit
+  cost) is averaged.
+- **Words it does not know are reported, never guessed** ("I don't know “colour”. Did you
+  mean …?").
+
+When an answer is selected, the strip above the result shows its **choices as chips**
+(*Total*, *qty*, *by region*, *per hour*, a filter). Click a chip to change it — the answer's
+steps are updated in place. **Assumptions** lists what DANCR decided for you (which link it
+used, putting similar files together, the time step) with the alternatives one click away.
+
+- **Build as many answers as you like**: steps they share (a link to the customers table)
+  are used once, not duplicated.
+- **Your own edits win.** If you change an answer's step by hand and then change the
+  answer, your settings are kept (the strip says so), and a step you attached to an answer's
+  steps is never removed.
+- **Delete** asks whether to remove just the card or also the steps only it uses. Your
+  tables and steps other answers need are always kept. Every build and change is one undo step.
 
 ## Working with a table
 
@@ -202,6 +222,7 @@ replaces the stored results.
 |---|---|
 | Ctrl+I | Open data file |
 | Ctrl+K / Insert | Add step |
+| Ctrl+J | Ask a question about your data |
 | Ctrl+F | Find in the table / jump to a time |
 | Ctrl+R / F5 | Run everything |
 | Ctrl+Shift+R | Run up to this step |

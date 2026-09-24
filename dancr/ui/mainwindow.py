@@ -28,7 +28,7 @@ from .chartview import ChartView
 from .reportview import ReportView
 from .inputsview import InputsView
 from .enterdata import EnterDataView
-from .wizard import WizardPage
+from .answering import Understanding, AskBar, AnswerPanel
 from .startpage import StartPage
 from .theme import T
 from .icons import icon
@@ -55,14 +55,16 @@ class MainWindow(QMainWindow):
         self.pages.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)     # hidden pages must not set the window's minimum width
         self.start = StartPage(); self.table = TableView(self.doc); self.chart = ChartView(self.doc)
         self.report = ReportView(self.doc); self.inputs = InputsView(self.doc); self.entry = EnterDataView(self.doc)
-        self.wizard = WizardPage(self.doc)
-        for p in (self.start, self.table, self.chart, self.report, self.inputs, self.entry, self.wizard):
+        for p in (self.start, self.table, self.chart, self.report, self.inputs, self.entry):
             self.pages.addWidget(p)
         # Top row: project rail | content pages | settings. Below it the map runs the full width,
         # so the graph gets the whole window and the side panels stop at the top of the map.
         centre = QWidget(); cl = QVBoxLayout(centre); cl.setContentsMargins(0, 0, 0, 0); cl.setSpacing(0)
-        self.answer_bar = self._make_answer_bar()
-        self.answer_bar.hide()
+        self.understanding = Understanding(self.doc, self)
+        self.askbar = AskBar(self.doc, self.understanding)
+        self.answer_bar = AnswerPanel(self.doc, self.understanding)
+        self.answer_bar.set_answer(None)
+        cl.addWidget(self.askbar)
         cl.addWidget(self.answer_bar)
         cl.addWidget(self.pages, 1)
         self.toast = Toast(centre)
@@ -109,7 +111,6 @@ class MainWindow(QMainWindow):
         self.mode_label = QLabel(""); self.mode_label.setObjectName("faint"); self.status.addPermanentWidget(self.mode_label)
         self._current: str | None = None
         self._current_answer: str | None = None
-        self._wizard_active = False
         self._tick = QTimer(self); self._tick.setInterval(100); self._tick.timeout.connect(self._tick_progress)
         self._progress_text = ""
         self._run_total = 0
@@ -128,23 +129,6 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(400, self._maybe_tour)
 
     # ------------------------------------------------------------ actions
-    def _make_answer_bar(self) -> QFrame:
-        """The strip that appears above the content while a guided Answer is selected."""
-        bar = QFrame(); bar.setObjectName("answerbar")
-        bar.setStyleSheet(f"QFrame#answerbar {{ background: {T.panel}; border-bottom: 1px solid {T.border}; }}")
-        h = QHBoxLayout(bar); h.setContentsMargins(12, 5, 10, 5); h.setSpacing(8)
-        star = QLabel(); star.setPixmap(icon("sparkle", T.accent, 16).pixmap(16, 16))
-        self.answer_title = QLabel(""); self.answer_title.setStyleSheet("font-weight: 600;")
-        self.answer_show_btn = QPushButton("Show the steps"); self.answer_show_btn.setObjectName("quiet")
-        self.answer_show_btn.clicked.connect(lambda: self.view.fit_all())
-        self.answer_change_btn = QPushButton("Change answers…"); self.answer_change_btn.setObjectName("quiet")
-        self.answer_change_btn.clicked.connect(lambda: self._current_answer and self.change_answer(self._current_answer))
-        self.answer_delete_btn = QPushButton("Delete"); self.answer_delete_btn.setObjectName("quiet")
-        self.answer_delete_btn.clicked.connect(lambda: self._current_answer and self.delete_answer_dialog(self._current_answer))
-        h.addWidget(star); h.addWidget(self.answer_title); h.addStretch()
-        h.addWidget(self.answer_show_btn); h.addWidget(self.answer_change_btn); h.addWidget(self.answer_delete_btn)
-        return bar
-
     def _act(self, text: str, icon_name: str | None, shortcut=None, slot=None, tip: str | None = None) -> QAction:
         a = QAction(text, self)
         if icon_name:
@@ -182,8 +166,8 @@ class MainWindow(QMainWindow):
         self.doc.undo.undoTextChanged.connect(self._undo_text); self.doc.undo.redoTextChanged.connect(self._redo_text)
         self.a_undo.setEnabled(False); self.a_redo.setEnabled(False)
         self.a_add = self._act("Add &step…", "plus", ["Ctrl+K", "Insert"], lambda: self.open_picker(), "Add a step after the current table (Ctrl+K)")
-        self.a_wizard = self._act("Build it for me…", "magic-wand", "Ctrl+Shift+B", self.start_wizard,
-                                  "Answer a question about your files; DANCR builds the steps (Ctrl+Shift+B)")
+        self.a_ask = self._act("Ask a question…", "sparkle", "Ctrl+J", self.focus_ask,
+                                  "Ask about your data in plain words, or pick an answer DANCR offers (Ctrl+J)")
         self.a_delete = self._act("&Delete step", "trash", None, self.delete_current, "Delete the selected step (Delete in the project list or the map)")
         self.a_dup = self._act("D&uplicate step", "copy", "Ctrl+D", lambda: self.doc.duplicate_nodes(self.scene.selected_node_ids()))
         self.a_note = self._act("Add &note to the map", "note-pencil", "Ctrl+Shift+N", lambda: self._add_note(self.view.mapToScene(self.view.viewport().rect().center())))
@@ -193,7 +177,7 @@ class MainWindow(QMainWindow):
         edit_m.addSeparator()
         for a in (self.a_add, self.a_delete, self.a_dup, self.a_note, self.a_inputs):
             edit_m.addAction(a)
-        edit_m.insertAction(self.a_delete, self.a_wizard)
+        edit_m.insertAction(self.a_delete, self.a_ask)
         run_m = mb.addMenu("&Run")
         self.a_run = self._act("&Run everything", "play", ["Ctrl+R", "F5"], lambda: self.run(), "Compute every step on the full data (Ctrl+R)")
         self.a_run_sel = self._act("Run up to &this step", None, "Ctrl+Shift+R", self.run_selected, "Run the current step and what it needs (Ctrl+Shift+R)")
@@ -246,7 +230,7 @@ class MainWindow(QMainWindow):
         tb = QToolBar("Main"); tb.setObjectName("maintoolbar"); tb.setMovable(False); tb.setIconSize(QSize(16, 16))
         tb.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         self.addToolBar(tb)
-        tb.addAction(self.a_open_data); tb.addAction(self.a_add); tb.addAction(self.a_wizard); tb.addSeparator()
+        tb.addAction(self.a_open_data); tb.addAction(self.a_add); tb.addAction(self.a_ask); tb.addSeparator()
         tb.addAction(self.a_run); tb.addAction(self.a_stop); tb.addSeparator()
         tb.addAction(self.a_undo); tb.addAction(self.a_redo); tb.addSeparator()
         tb.addAction(self.a_save); tb.addAction(self.a_versions)
@@ -359,10 +343,13 @@ class MainWindow(QMainWindow):
         self.scene.addAfterRequested.connect(self._add_after)
         self.scene.runRequested.connect(lambda targets: self.run(targets))
         self.scene.answerActivated.connect(self.show_answer)
-        self.scene.answerChangeRequested.connect(self.change_answer)
+        self.scene.answerChangeRequested.connect(self.show_answer)
         self.scene.answerDeleteRequested.connect(self.delete_answer_dialog)
-        self.wizard.requestBuild.connect(self._on_wizard_build)
-        self.wizard.cancelled.connect(self._on_wizard_cancel)
+        self.askbar.build.connect(lambda spec: self.build_answer(spec))
+        self.answer_bar.change.connect(self.change_answer)
+        self.answer_bar.showSteps.connect(self._show_answer_steps)
+        self.answer_bar.delete.connect(self.delete_answer_dialog)
+        self.answer_bar.rename.connect(self.doc.rename_answer)
         self.view.fileDropped.connect(self._file_dropped)
         self.view.nodeTypeDropped.connect(lambda k, p: self.add_node(k, p))
         self.view.addStepRequested.connect(lambda gp, sp: self.open_picker(gp, sp))
@@ -378,8 +365,8 @@ class MainWindow(QMainWindow):
         self.table.chartColumns.connect(self.steps.chart_columns)
         self.chart.addToReport.connect(self.steps.add_to_report)
         self.report.runRequested.connect(lambda nid: self.run([nid]))
-        self.start.openData.connect(self.add_data_file); self.start.openProject.connect(self.open_dialog)
-        self.start.wizard.connect(self.start_wizard)
+        self.start.openProject.connect(self.open_dialog)
+        self.start.openFiles.connect(self.add_data_files)
         self.start.openRecent.connect(lambda p: self._confirm_stop_run("open another project") and self.maybe_save() and self.open_path(p))
         self.start.template.connect(self._start_template); self.start.blank.connect(lambda: self.add_node("enter_data", None))
         self.setAcceptDrops(True)
@@ -387,13 +374,13 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------ pages and selection
     def _show_page(self) -> None:
         """Pick the page for the current selection (start page when the project is empty)."""
-        if self._wizard_active:
-            return
         if not self.doc.pipeline.nodes and self._current is None:
             self.start.set_recent(self._recent())
             self.pages.setCurrentWidget(self.start)
             self.map_box.setVisible(False); self.map_handle.setVisible(False)
+            self.askbar.setVisible(False)
             return
+        self.askbar.setVisible(True)
         self._apply_map_visibility()
         nid = self._current
         if nid == "inputs":
@@ -413,10 +400,11 @@ class MainWindow(QMainWindow):
         if nid != self._current:
             self._current_answer = None
             self.scene.clear_highlight()
-            self.answer_bar.hide()
+            self.answer_bar.set_answer(None)
         if nid == self._current:
             self._show_page(); return
         self._current = nid
+        self._focus_answers(nid)
         self.inspector.set_node(nid if nid != "inputs" else None)
         if nid and nid != "inputs":
             self.rail.select("node", nid, emit=False)
@@ -446,32 +434,66 @@ class MainWindow(QMainWindow):
             self.inspector.set_node(None)
         self._show_page()
 
-    # ------------------------------------------------------------ guided answers
-    def start_wizard(self, paths: list[str] | None = None) -> None:
-        """Open the guided build. Called by the toolbar/Edit action, or with dropped files."""
-        self._wizard_active = True
-        self.pages.setCurrentWidget(self.wizard)
-        self.wizard.begin(paths)
+    # ------------------------------------------------------------ answers
+    def focus_ask(self) -> None:
+        if not self.doc.pipeline.nodes:
+            self.add_data_files(); return
+        self.askbar.focus_edit()
 
-    def _on_wizard_build(self, plan, answer_id) -> None:
-        if answer_id:
-            aid = self.doc.rebuild_answer(answer_id, plan)
+    def build_answer(self, spec: dict, answer_id: str | None = None) -> None:
+        """Build (or change) an answer once every row of the tables has been read: answers are never planned
+        from a sample. Shows the answer when it is built."""
+        from ..core.recipes import PlanError
+        if not self.understanding.full:
+            self.askbar.show_status("Reading every row of your tables first…")
+
+        def go(model) -> None:
+            if self._disposed:
+                return
+            try:
+                aid = self.doc.build_answer(model, spec, answer_id)
+            except (PlanError, KeyError) as e:
+                self.askbar.show_status("")
+                QMessageBox.information(self, "Cannot answer that", str(e).strip("'\""))
+                return
+            self.askbar.show_status("")
+            self.doc.schedule_auto_run()
+            self.show_answer(aid)
+            a = self.doc.pipeline.answer(aid)
+            if a is not None and a.terminal in self.scene.nodes:
+                QTimer.singleShot(0, lambda: self.view.reveal(a.terminal) if not self._disposed else None)
+            a = self.doc.pipeline.answer(aid)
+            if a is not None and not self.doc.auto_run and not self.doc.running:
+                self.run([a.terminal])
+            self.status.showMessage("Built the answer. Change its choices above, or ask another question", 8000)
+        self.understanding.when_full(go)
+
+    def change_answer(self, aid: str, key: str, value) -> None:
+        from ..core.recipes import apply_choice
+        a = self.doc.pipeline.answer(aid)
+        if a is not None:
+            self.build_answer(apply_choice(a.spec, key, value), aid)
+
+    def _show_answer_steps(self) -> None:
+        a = self.doc.pipeline.answer(self._current_answer) if self._current_answer else None
+        if not self.a_map.isChecked():
+            self.a_map.setChecked(True)
+        if a is not None and a.terminal in self.doc.pipeline.nodes:
+            self.view.focus_node(a.terminal)
         else:
-            aid = self.doc.apply_plan(plan)
-        self._wizard_active = False
-        self.doc.schedule_auto_run()
-        self.show_answer(aid)
-        self.status.showMessage("Built the answer — explore it, change it, or build another", 8000)
+            self.view.fit_all()
 
-    def _on_wizard_cancel(self) -> None:
-        self._wizard_active = False
-        self._show_page()
+    def _focus_answers(self, nid: str | None) -> None:
+        """The tray offers answers about the table being looked at; a chart or report is not a table to ask about."""
+        n = self.doc.pipeline.nodes.get(nid) if nid else None
+        self.understanding.set_focus(nid if n is not None and registry.get(n.type).kind != "sink" and n.type != "chart" else None)
 
     def show_answer(self, aid: str) -> None:
         """Select an Answer: show its result in the centre and highlight its branch on the map."""
         answer = self.doc.pipeline.answer(aid)
         if answer is None:
             return
+        self.understanding.set_focus(None)
         self._current_answer = aid
         self._current = answer.terminal if answer.terminal in self.doc.pipeline.nodes else None
         self.rail.select("answer", aid, emit=False)
@@ -483,13 +505,6 @@ class MainWindow(QMainWindow):
             self.scene.clear_highlight()
         self._sync_answer_bar()
         self._show_page()
-
-    def change_answer(self, aid: str) -> None:
-        if self.doc.pipeline.answer(aid) is None:
-            return
-        self._wizard_active = True
-        self.pages.setCurrentWidget(self.wizard)
-        self.wizard.begin(answer_id=aid)
 
     def delete_answer_dialog(self, aid: str) -> None:
         answer = self.doc.pipeline.answer(aid)
@@ -515,16 +530,13 @@ class MainWindow(QMainWindow):
         if self._current_answer == aid:
             self._current_answer = None
             self.scene.clear_highlight()
-            self.answer_bar.hide()
+            self.answer_bar.set_answer(None)
             self._current = None
             self._show_page()
 
     def _sync_answer_bar(self) -> None:
         answer = self.doc.pipeline.answer(self._current_answer) if self._current_answer else None
-        if answer is None:
-            self.answer_bar.hide(); return
-        self.answer_title.setText(f"Answer · {answer.title}")
-        self.answer_bar.show()
+        self.answer_bar.set_answer(answer.id if answer is not None else None)
 
     def current_table(self) -> str | None:
         """The table the person is looking at (charts and reports resolve to their input)."""
@@ -604,7 +616,7 @@ class MainWindow(QMainWindow):
         self._current = None
         self._current_answer = None
         self.scene.clear_highlight()
-        self.answer_bar.hide()
+        self.answer_bar.set_answer(None)
         self.inspector.set_node(None)
         QTimer.singleShot(0, self.view.fit_all)
         self.doc.schedule_auto_run()
@@ -826,11 +838,7 @@ class MainWindow(QMainWindow):
             if self._confirm_stop_run("open another project") and self.maybe_save():
                 self.open_path(projects[0])
             e.acceptProposedAction(); return
-        if len(data) >= 2:
-            self.start_wizard(data)          # several files at once: offer the guided build
-        else:
-            for p in data:
-                self._add_load_node(p, None)
+        self._add_files(data)
         e.acceptProposedAction()
 
     # ------------------------------------------------------------ building
@@ -863,6 +871,18 @@ class MainWindow(QMainWindow):
             y += NODE_H + 30
         return QPointF(x, y)
 
+    def _source_position(self) -> QPointF:
+        """Tables go in the first column of the map, one under another."""
+        p = self.doc.pipeline
+        sources = [n for n in p.nodes.values() if registry.get(n.type).kind == "source"]
+        if not sources:
+            return self._free_position(None) if p.nodes else QPointF(60.0, 140.0)
+        x = min(n.x for n in sources)
+        y = max(n.y for n in sources) + NODE_H + 40
+        while any(abs(n.x - x) < NODE_W and abs(n.y - y) < NODE_H for n in p.nodes.values()):
+            y += NODE_H + 30
+        return QPointF(x, y)
+
     def add_node(self, type_key: str, pos: QPointF | None = None, params: dict | None = None, title: str | None = None,
                  connect_from: str | None = None, port: str | None = None, show: bool = True) -> str:
         nt = registry.get(type_key)
@@ -888,12 +908,26 @@ class MainWindow(QMainWindow):
         self._add_load_node(path, pos)
 
     def add_data_file(self) -> None:
-        start = str(self.doc.path.parent) if self.doc.path else str(Path.home())
-        f, _ = QFileDialog.getOpenFileName(self, "Open data file", start, DATA_FILTER)
-        if f:
-            self._add_load_node(f, None)
+        self.add_data_files()
 
-    def _add_load_node(self, path: str, pos: QPointF | None) -> None:
+    def add_data_files(self) -> None:
+        start = str(self.doc.path.parent) if self.doc.path else str(Path.home())
+        files, _ = QFileDialog.getOpenFileNames(self, "Open data files", start, DATA_FILTER)
+        self._add_files(files)
+
+    def _add_files(self, files: list[str]) -> None:
+        """Load each file (as one undo step), show the first, and let the tray offer answers about them all."""
+        if not files:
+            return
+        with self.doc.macro("Open data" if len(files) == 1 else f"Open {len(files)} files"):
+            ids = [self._add_load_node(f, None, run=False, show=False) for f in files]
+        if not self.doc.auto_run and not self.doc.running:
+            self.run(ids)
+        self.show_node(ids[0])
+        if len(ids) > 1:
+            self.status.showMessage(f"Opened {len(ids)} files. The answers above cover all of them", 8000)
+
+    def _add_load_node(self, path: str, pos: QPointF | None, run: bool = True, show: bool = True) -> str:
         p = Path(path)
         rel = p
         if self.doc.path:
@@ -902,11 +936,14 @@ class MainWindow(QMainWindow):
             except ValueError:
                 rel = p
         self.scene.clearSelection()
-        nid = self.add_node("load_file", pos, params={"path": str(rel)}, title=p.stem)
-        if not self.doc.auto_run and not self.doc.running:
+        if pos is None:
+            pos = self._source_position()
+        nid = self.add_node("load_file", pos, params={"path": str(rel)}, title=p.stem, connect_from=None, show=show)
+        if run and not self.doc.auto_run and not self.doc.running:
             self.run([nid])
         elif self.doc.running:
             self.status.showMessage(f"Added {p.name}. It will load when you next run.", 6000)
+        return nid
 
     def _start_template(self, key: str) -> None:
         base = self.doc.path.parent if self.doc.path else Path.home() / "DANCR samples"

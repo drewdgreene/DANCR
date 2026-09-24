@@ -34,7 +34,10 @@ log = logging.getLogger("dancr.mcp")
 
 mcp = MCPServer("dancr", version=__version__, instructions=(
     "DANCR builds and runs data pipelines (node graphs) over large CSV/Excel/Parquet files. "
-    "Workflow: create_pipeline -> add_node (load_file first, with path) -> add more nodes with after= to chain them -> "
+    "Fastest route to an answer: create_pipeline -> suggest_answers(files=[...]) to see what DANCR can answer on its own, "
+    "or ask(question, files=[...]) with a plain question such as 'total sales by region' or 'average pressure per hour'; "
+    "both build ordinary steps plus an Answer, deterministically, and say what they assumed. "
+    "Hand-built workflow: create_pipeline -> add_node (load_file first, with path) -> add more nodes with after= to chain them -> "
     "run_pipeline -> inspect with get_schema / get_sample / get_stats / render_chart. "
     "Call list_node_types once to learn node types and their settings. Paths inside a pipeline are relative to the pipeline file. "
     "Use open_in_gui so the person can watch; the GUI reloads the file whenever it changes. "
@@ -206,6 +209,80 @@ def describe_pipeline(path: str) -> str:
         "answers": [a.to_dict() for a in p.answers],
         "problems": p.problems(),
     })
+
+
+def _data_files(files: list[str] | None) -> list[str]:
+    return [str(_from_root(f).resolve()) for f in files or []]
+
+
+@mcp.tool()
+@friendly
+def understand_data(path: str, files: list[str] | None = None) -> str:
+    """How DANCR reads the project's tables: each column's role (time, id, category, measure...), each table's shape
+    (series, lookup, events), and how tables relate (links on a key with how many match, stacks, time alignments).
+    `files` adds load steps for data files first (relative to the server's root)."""
+    with _editing(path) as p:
+        hl.add_files(p, _data_files(files))
+        model = hl.data_model(p)
+    return _dump(model.to_dict())
+
+
+@mcp.tool()
+@friendly
+def suggest_answers(path: str, files: list[str] | None = None, focus: str | None = None, build: int | None = None) -> str:
+    """Answers DANCR can give on its own for the project's tables, best first ({index, title, recipe, why, spec}).
+    `files` adds data files first; `focus` limits them to one step's output; `build` = an index builds that answer
+    (its steps and an Answer) and returns it. Run run_pipeline afterwards to compute it."""
+    with _editing(path) as p:
+        hl.add_files(p, _data_files(files))
+        sugs = hl.suggestions(p, focus)
+        if build is None:
+            return _dump({"suggestions": sugs})
+        if not 0 <= build < len(sugs):
+            raise ToolError(f"There are {len(sugs)} suggestions (numbered from 0)")
+        out = hl.build_answer(p, sugs[build]["spec"])
+        _check_outputs(p, out["terminal"])
+    return _dump({"answer": out})
+
+
+@mcp.tool()
+@friendly
+def ask(path: str, question: str, files: list[str] | None = None, dry_run: bool = False) -> str:
+    """Answer a question typed in plain words, using the project's own column, table and value names:
+    'total qty by region', 'average pressure per hour for MJ03F', 'top 10 customers by sales', 'compare A and B',
+    'orders where qty above 2', 'gaps in probe_A'. Builds the steps and an Answer (unless dry_run) and reports how
+    the question was read (chips), what was assumed, and any word it did not know with 'did you mean' hints."""
+    with _editing(path) as p:
+        hl.add_files(p, _data_files(files))
+        out = hl.ask_question(p, question, build=not dry_run)
+        if not out["question"]["ok"]:
+            raise ToolError(out["question"]["message"])
+    return _dump(out)
+
+
+@mcp.tool()
+@friendly
+def change_answer(path: str, answer_id: str, key: str | None = None, value: Any = None,
+                  assumption: int | None = None, choice: int = 0) -> str:
+    """Change an Answer and rebuild its steps in place (steps edited by hand keep their settings). Either set one chip
+    (`key`/`value`, e.g. key='stat' value='mean', key='every' value='1d', key='by' value=['node','column'];
+    value null removes it) or take alternative `choice` of assumption number `assumption`."""
+    with _editing(path) as p:
+        out = hl.change_answer(p, answer_id, key, value, assumption, choice)
+        _check_outputs(p, out["terminal"])
+    return _dump({"answer": out})
+
+
+@mcp.tool()
+@friendly
+def remove_answer(path: str, answer_id: str, remove_steps: bool = False) -> str:
+    """Delete an Answer; with remove_steps also the steps only it uses (steps other answers need are kept)."""
+    from .core import answers
+    with _editing(path) as p:
+        if p.answer(answer_id) is None:
+            raise ToolError(f"No answer called {answer_id!r}")
+        gone = answers.remove(p, answer_id, remove_steps)
+    return _dump({"ok": True, "steps_removed": gone})
 
 
 @mcp.tool()
