@@ -508,7 +508,12 @@ class Document(QObject):
             try:
                 if old_cache.exists() and not new_exec.cache_dir.exists():
                     new_exec.cache_dir.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.move(str(old_cache), str(new_exec.cache_dir))     # keep computed results after Save As
+                    if os.stat(old_cache).st_dev == os.stat(new_exec.cache_dir.parent).st_dev:
+                        shutil.move(str(old_cache), str(new_exec.cache_dir))     # same drive: a rename, instant
+                    else:
+                        # another drive: copying gigabytes of results would freeze the window; they are computed
+                        # again in the new folder instead; the old copy is swept away on the next start
+                        self.message.emit("Saved. Results are computed again in the new folder (it is on another drive)")
             except OSError:
                 log.exception("Could not move the cached results from %s to %s; the steps will run again", old_cache, new_exec.cache_dir)
             self._set_executor(new_exec)
