@@ -112,6 +112,7 @@ class MainWindow(QMainWindow):
         self.mode_label = QLabel(""); self.mode_label.setObjectName("faint"); self.status.addPermanentWidget(self.mode_label)
         self._current: str | None = None
         self._current_answer: str | None = None
+        self._ask_open = False                    # the ask bar shows only when asked for
         self._building: set[str] = set()          # answers queued until every row has been read
         self._tick = QTimer(self); self._tick.setInterval(100); self._tick.timeout.connect(self._tick_progress)
         self._progress_text = ""
@@ -348,6 +349,7 @@ class MainWindow(QMainWindow):
         self.scene.answerChangeRequested.connect(self.show_answer)
         self.scene.answerDeleteRequested.connect(self.delete_answer_dialog)
         self.askbar.build.connect(lambda spec: self.build_answer(spec))
+        self.askbar.closed.connect(self.close_ask)
         self.answer_bar.change.connect(self.change_answer)
         self.answer_bar.showSteps.connect(self._show_answer_steps)
         self.answer_bar.delete.connect(self.delete_answer_dialog)
@@ -382,7 +384,7 @@ class MainWindow(QMainWindow):
             self.map_box.setVisible(False); self.map_handle.setVisible(False)
             self.askbar.setVisible(False)
             return
-        self.askbar.setVisible(True)
+        self.askbar.setVisible(self._ask_open)       # only when asked for: Ask a question, or an answer selected
         self._apply_map_visibility()
         nid = self._current
         if nid == "inputs":
@@ -438,9 +440,23 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------ answers
     def focus_ask(self) -> None:
+        """Ask a question: opens the ask bar (or closes it when it is already open)."""
         if not self.doc.pipeline.nodes:
             self.add_data_files(); return
-        self.askbar.focus_edit()
+        if self._ask_open and self.askbar.isVisible():
+            self.close_ask(); return
+        self.open_ask(focus=True)
+
+    def open_ask(self, focus: bool = False) -> None:
+        self._ask_open = True
+        if self.doc.pipeline.nodes:
+            self.askbar.setVisible(True)
+        if focus:
+            self.askbar.focus_edit()
+
+    def close_ask(self) -> None:
+        self._ask_open = False
+        self.askbar.setVisible(False)
 
     def build_answer(self, spec: dict, answer_id: str | None = None) -> None:
         """Build (or change) an answer once every row of the tables has been read: answers are never planned
@@ -518,6 +534,7 @@ class MainWindow(QMainWindow):
         if answer is None:
             return
         self.understanding.set_focus(None)
+        self.open_ask()
         self._current_answer = aid
         self._current = answer.terminal if answer.terminal in self.doc.pipeline.nodes else None
         self.rail.select("answer", aid, emit=False)

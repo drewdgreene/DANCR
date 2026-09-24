@@ -52,7 +52,11 @@ def test_opening_files_offers_answers(window, app, files):
     ready(window, app)
     titles = [c.s.title for c in window.askbar.cards]
     assert "Total qty by region" in titles
+    assert not window.askbar.isVisible()                               # only when asked for
+    window.focus_ask()
     assert window.askbar.isVisible()
+    window.focus_ask()                                                  # the button again closes it
+    assert not window.askbar.isVisible()
 
 
 def test_a_card_builds_its_answer_and_shows_it(window, app, files):

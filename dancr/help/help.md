@@ -45,13 +45,13 @@ then swap in your own file in the loader's Settings.
 
 ## Answers: ask, or pick one DANCR offers
 
-As soon as your files are open, the bar above the table shows **answers DANCR can give
+Press **Ask a question** (Ctrl+J) and a bar opens above the table with **answers DANCR can give
 straight away** — for example *Total sales by region*, *Average pressure per hour*,
 *probe B minus probe A*, *Gaps in the log*, *Top 10 customers*. Each card has a small
 preview. Click one and it is built: ordinary steps on the map, and an **Answer** card
 next to them. Select a table in the project tree and the suggestions are about that table.
 
-Or **ask in your own words** (Ctrl+J), using the names of your columns, tables and values:
+It also opens when you select an Answer; close it with × or Esc. Or **ask in your own words** in that bar, using the names of your columns, tables and values:
 
 | You type | You get |
 |---|---|

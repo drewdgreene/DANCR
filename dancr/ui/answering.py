@@ -322,6 +322,7 @@ class AskBar(QFrame):
     """Ask in words, or pick an answer DANCR offers. Emits ``build(spec)``; the window builds it."""
 
     build = Signal(object)
+    closed = Signal()
 
     def __init__(self, doc, understanding: Understanding, parent=None) -> None:
         super().__init__(parent)
@@ -343,7 +344,9 @@ class AskBar(QFrame):
         self.toggle = QToolButton(); self.toggle.setObjectName("quiet"); self.toggle.setCheckable(True); self.toggle.setChecked(True)
         self.toggle.setToolTip("Show or hide the suggested answers"); self.toggle.toggled.connect(self._toggle_tray)
         self.toggle.setIcon(icon("list-bullets", T.muted, 14))
-        row.addWidget(ic); row.addWidget(self.edit, 1); row.addWidget(self.ask_btn)
+        close = QToolButton(); close.setObjectName("quiet"); close.setIcon(icon("x", T.muted, 14))
+        close.setToolTip("Close (Esc)"); close.clicked.connect(self.closed.emit)
+        row.addWidget(ic); row.addWidget(self.edit, 1); row.addWidget(self.ask_btn); row.addWidget(close)
         outer.addLayout(row)
         self.message = QLabel(""); self.message.setObjectName("muted"); self.message.setWordWrap(True)
         self.message.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
@@ -356,8 +359,8 @@ class AskBar(QFrame):
         outer.addLayout(head)
         self.scroll = QScrollArea(); self.scroll.setFrameShape(QFrame.NoFrame); self.scroll.setWidgetResizable(True)
         self.scroll.setMinimumWidth(60)
-        self.scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff); self.scroll.setFixedHeight(112)
-        self.tray = QWidget(); self.tray_lay = QHBoxLayout(self.tray); self.tray_lay.setContentsMargins(0, 0, 0, 0); self.tray_lay.setSpacing(8)
+        self.scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff); self.scroll.setFixedHeight(124)
+        self.tray = QWidget(); self.tray_lay = QHBoxLayout(self.tray); self.tray_lay.setContentsMargins(0, 0, 0, 12); self.tray_lay.setSpacing(8)   # room above the scroll bar
         self.tray_lay.addStretch()
         self.scroll.setWidget(self.tray)
         outer.addWidget(self.scroll)
@@ -441,6 +444,11 @@ class AskBar(QFrame):
         self._previews.submit(work, done)
 
     # -- asking
+    def keyPressEvent(self, e) -> None:
+        if e.key() == Qt.Key_Escape:
+            self.closed.emit(); return
+        super().keyPressEvent(e)
+
     def focus_edit(self) -> None:
         self.toggle.setChecked(True)
         self.edit.setFocus(); self.edit.selectAll()
