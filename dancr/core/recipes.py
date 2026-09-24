@@ -187,7 +187,7 @@ READING_WORDS = {"tmax", "tmin", "tavg", "dewpoint", "dew", "wind", "windspeed",
                  "voltage", "current", "rate", "ratio", "percent", "pct", "percentage", "price", "score", "age", "ph",
                  "conductivity", "salinity", "concentration", "density", "flow", "rating", "latitude", "longitude",
                  "lat", "lon", "lng", "altitude", "elevation", "weight", "mass", "size", "length", "width", "psi",
-                 "psia", "bar", "tension", "load", "signal", "strength", "frequency", "value", "reading", "average",
+                 "psia", "bar", "tension", "load", "signal", "strength", "frequency", "reading", "average",
                  "mean", "median", "index", "margin", "utilisation", "utilization", "occupancy", "efficiency"}
 MONEY_WORDS = {"amount", "sales", "revenue", "turnover", "income", "cost", "costs", "spend", "profit", "paid",
                "payment", "payments", "debit", "credit", "balance", "value", "total"}
@@ -368,7 +368,7 @@ class _Builder:
                 self.assume(f"blank:{node}", f"Left out {t.blank_rows:,} empty row{'s' if t.blank_rows != 1 else ''} of {t.title}",
                             [{"label": "Keep them", "set": {"keep_blank_rows": True}}])
             key = k
-        if t.total_row and not self.spec.get("keep_total_row"):
+        if t.total_row and not self.spec.get("keep_total_row") and t.wide is None or (t.total_row and t.wide and not self.spec.get("keep_total_row")):
             k = f"total:{node}"
             if k not in keys:
                 c, v = t.total_row["column"], t.total_row["value"]
@@ -382,6 +382,17 @@ class _Builder:
                          {"mode": "remove", "conditions": {"match": "all", "rules": rules}}, {"in": [key]})
                 self.assume(f"total:{node}", f"Left out the {what} at the bottom of {t.title}: it adds up the others",
                             [{"label": "Keep it", "set": {"keep_total_row": True}}])
+            key = k
+        if t.wide:
+            k = f"long:{node}"
+            if k not in keys:
+                w = t.wide
+                self.add(k, "unpivot", f"{t.title}: {w['columns'][0]}–{w['columns'][-1]} as rows",
+                         {"columns": list(w["columns"]), "name_column": "month", "value_column": "value",
+                          "year": str(w["year"] or "")}, {"in": [key]})
+                self.assume(f"long:{node}", f"Turned the month columns of {t.title} ({w['columns'][0]} … {w['columns'][-1]}) into rows: "
+                            "one row per item and month, the numbers in “value”"
+                            + (f", dated in {w['year']}" if w["year"] else ""))
             key = k
         if not self.spec.get("keep_spellings"):
             fixes = [(c.name, c.spellings) for c in t.columns if c.spellings and _safe_spellings(c.spellings)]

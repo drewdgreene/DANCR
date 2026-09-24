@@ -259,3 +259,26 @@ def test_a_named_table_that_cannot_be_reached_is_refused(tmp_path):
     _, m = project(tmp_path, "orders.csv", "returns.csv")
     a = ask(m, "returns by category")
     assert not a.ok and "not linked" in a.message
+
+
+def test_a_wide_budget_is_answered_by_month(tmp_path):
+    import xlsxwriter
+    from dancr import headless as hl
+    months = ["Jan", "Feb", "Mar", "Apr"]
+    wb = xlsxwriter.Workbook(tmp_path / "budget_2024.xlsx")
+    for name, base in (("Budget", 100), ("Actual", 90)):
+        ws = wb.add_worksheet(name); ws.write_row(0, 0, ["Department", *months])
+        for i, dep in enumerate(["HR", "IT", "Ops"]):
+            ws.write_row(i + 1, 0, [dep, *[base + i + k for k in range(4)]])
+    wb.close()
+    p = Pipeline("p"); p.path = tmp_path / "p.json"
+    hl.add_files(p, [str(tmp_path / "budget_2024.xlsx")])
+    m = hl.data_model(p)
+    t = next(iter(m.tables.values()))
+    assert t.wide and t.time == "date" and {c.name for c in t.columns} == {"Department", "month", "value", "date"}
+    a = ask(m, "total value per month in Actual")
+    assert a.ok, a.message
+    df = result(p, a.spec)
+    assert df.height == 4 and df["value"].to_list() == [sum(90 + i + k for i in range(3)) for k in range(4)]
+    c = ask(m, "compare budget and actual")
+    assert c.ok and c.spec["recipe"] == "breakdown" and c.spec["stat"] == "sum"

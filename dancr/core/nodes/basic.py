@@ -421,3 +421,76 @@ registry.register(NodeType(
         Param("seed", "Random seed", "int", default=0, advanced=True, visible_when={"mode": "random"}),
     ],
 ))
+
+
+# --------------------------------------------------------- columns into rows
+MONTH_NAMES = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"]
+
+
+MONTH_FULL = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october",
+              "november", "december"]
+
+
+def month_of(name: str) -> int | None:
+    """'Jan', 'January', 'Sept', 'Dec 24', 'jan-2024', '2024-01' -> the month's number; anything else None."""
+    import re
+    s = str(name).strip().lower()
+    m = re.fullmatch(r"(\d{4})[-/ ](\d{1,2})", s)
+    if m:
+        return int(m.group(2)) if 1 <= int(m.group(2)) <= 12 else None
+    m = re.fullmatch(r"([a-z]+)\.?(?:[\s\-/']?\d{2,4})?", s)
+    if not m:
+        return None
+    w = m.group(1)
+    for i, full in enumerate(MONTH_FULL, start=1):
+        if w in (full, full[:3]) or (w == "sept" and i == 9):
+            return i
+    return None
+
+
+def _unpivot(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, Any]) -> NodeResult:
+    lf = first_input(inputs)
+    schema = schema_of(lf)
+    cols = [require_column(schema, c, "column") for c in (params.get("columns") or [])]
+    if len(cols) < 2:
+        raise ValueError("Choose at least two columns to turn into rows (for example Jan, Feb, Mar …)")
+    name_col = (params.get("name_column") or "month").strip() or "month"
+    value_col = (params.get("value_column") or "value").strip() or "value"
+    keep = [c for c in schema if c not in cols]
+    for n in (name_col, value_col):
+        if n in keep:
+            raise ValueError(f"There is already a column called {n!r}; choose another name")
+    kinds = {_kind_of_dtype(schema[c]) for c in cols}
+    if len(kinds) > 1:
+        lf = lf.with_columns([pl.col(c).cast(pl.Utf8) for c in cols])
+    out = lf.unpivot(on=cols, index=keep, variable_name=name_col, value_name=value_col)
+    msgs = [f"{len(cols)} columns turned into rows: one row per {', '.join(keep[:2]) or 'row'} and {name_col}"]
+    year = params.get("year")
+    months = [month_of(c) for c in cols]
+    if year not in (None, "") and all(months):
+        taken = set(keep) | {name_col, value_col}
+        date_col = "date" if "date" not in taken else f"{name_col} date"
+        order = pl.DataFrame({name_col: cols, "__m": months})
+        out = (out.join(order.lazy(), on=name_col, how="left", maintain_order="left")
+                  .with_columns(pl.date(int(year), pl.col("__m"), 1).cast(pl.Datetime("us")).alias(date_col)).drop("__m"))
+        msgs.append(f"{name_col} as dates in {int(year)} in '{date_col}'")
+    elif all(months):
+        order = pl.DataFrame({name_col: cols, f"{name_col}_number": months})
+        out = out.join(order.lazy(), on=name_col, how="left", maintain_order="left")
+    return NodeResult(out, messages=msgs)
+
+
+registry.register(NodeType(
+    key="unpivot", label="Columns into rows", category="Combine", icon="⤓",
+    description="Turn columns like Jan, Feb, Mar … into rows: one row per item and month, with the numbers in one column. "
+                "Wide spreadsheets (a column per month or year) become tables that can be totalled and charted over time.",
+    apply=_unpivot,
+    summary=lambda p: f"{len(p.get('columns') or [])} columns into {p.get('name_column') or 'month'}",
+    params=[
+        Param("columns", "Columns to turn into rows", "columns", default=[], required=True),
+        Param("name_column", "Call their names", "text", default="month"),
+        Param("value_column", "Call their values", "text", default="value"),
+        Param("year", "Year of the months (makes real dates)", "text", default="", advanced=True,
+              help="With month columns (Jan … Dec) and a year, each row gets the first day of its month as a date"),
+    ],
+))

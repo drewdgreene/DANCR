@@ -606,6 +606,15 @@ def _choose_recipe(model, spec, recipe, numbers, by_ref, stat, every, top, botto
         if len(pair) >= 2:
             a, b = pair[0], pair[1]
             rel = next((r for r in model.relations if r.kind == "align" and set(r.tables) == {a, b}), None)
+            st = model.stack_of(a)
+            if rel is None and st is not None and b in st.tables:
+                # the same table twice (Budget and Actual, this year and last): side by side, table against table
+                measure = numbers[0] if numbers else _first_measure_ref(model, a)
+                if measure is None:
+                    raise PlanError("Name the number to compare")
+                spec.update({"table": a, "together": True, "recipe": "breakdown", "by": [st.id, "source"],
+                             "measure": measure, "stat": stat or default_stat_for(model, a, measure)})
+                return _tidy(spec)
             if rel is None:
                 raise PlanError(f"{model.tables[a].title} and {model.tables[b].title} do not record the same thing over time")
             if rel.tables[0] != a:
@@ -802,6 +811,11 @@ def _example(model: DataModel, ref: list) -> str:
     c = t.column(ref[1]) if t else None
     vals = [v for v in (c.values if c is not None and c.values else []) if v is not None]
     return f"“{vals[0]}”" if vals else "words"
+
+
+def default_stat_for(model: DataModel, base: str, measure: list) -> str:
+    from .recipes import default_stat
+    return default_stat(model, base, measure)
 
 
 def _first_measure_ref(model: DataModel, base: str) -> list | None:

@@ -90,7 +90,10 @@ How DANCR decides, so there are no surprises:
   click to undo): a TOTAL row at the bottom is left out, empty rows are left out, and North,
   north and "North " are one region.
 
-A title line or notes above the column names are skipped, as are rows the file uses for
+A wide sheet with a column per month (Jan, Feb … Dec) is answered as one row per item and
+month (with dates when the file name says the year, as in *budget_2024.xlsx*), so *total per
+month*, *per month by department* and *compare budget and actual* work. A title line or notes
+above the column names are skipped, as are rows the file uses for
 nothing. When files are opened, text that is really numbers (`1,373.10`, `£1,200`, `31.5%`, `(120)`)
 is read as numbers, codes with leading zeros (`00042`) stay as typed, a Date column and a
 Time column become one date/time as well, and every sheet of a workbook becomes a table.

@@ -95,6 +95,7 @@ class Table:
     columns: list[Column] = field(default_factory=list)
     pairs: list[dict[str, Any]] = field(default_factory=list)   # measure pairs that move together (sample): {x, y, r}
     total_row: dict[str, Any] | None = None   # a last row that adds up the others: {"column", "value"} naming it
+    wide: dict[str, Any] | None = None        # months as columns: {"columns": [Jan, Feb …], "year": 2024 or None}
     blank_rows: int = 0             # rows with nothing in them (a blank line in a CSV)
     deep: bool = False              # deepen() has read every row
 
@@ -223,6 +224,7 @@ def _read_table(pipe, executor, nid: str) -> Table:
         for c in t.columns:
             c.unique_exact = True
     _settle_time(t, sample, run)
+    _as_long(t, node)
     t.shape = _shape_of(t)
     t.pairs = _pairs(sample, t.measures)
     return t
@@ -276,6 +278,33 @@ def _without_extra_rows(df: pl.DataFrame, t: Table) -> pl.DataFrame:
     if t.blank_rows and df.width:
         df = df.filter(~pl.all_horizontal(pl.all().is_null()))
     return df
+
+
+def _as_long(t: Table, node) -> None:
+    """A wide table (a column per month: Jan, Feb … Dec) is described as the long table it stands for — one row per
+    item and month, with 'month', 'value' and, when the file names its year, 'date' — so it can be totalled and
+    charted by month. Answers put the reshaping step in front of it."""
+    from .nodes.basic import month_of
+    months = [c for c in t.columns if c.kind == NUM and month_of(c.name)]
+    if len(months) < 3 or len({month_of(c.name) for c in months}) < len(months):
+        return
+    m = re.search(r"(?<!\d)(19\d{2}|20\d{2})(?!\d)", f"{t.title} {t.source or ''}")
+    year = int(m.group(1)) if m else None
+    names = [c.name for c in months]
+    t.wide = {"columns": names, "year": year}
+    rest = [c for c in t.columns if c not in months]
+    month = Column(name="month", dtype="String", kind=STR, role=CATEGORY, label="month", distinct=len(names), values=list(names))
+    value = Column(name="value", dtype="Float64", kind=NUM, role=MEASURE, label="value", distinct=max(c.distinct for c in months))
+    extra = [month, value]
+    if year:
+        import datetime as _dt
+        start, end = _dt.datetime(year, min(month_of(n) for n in names), 1), _dt.datetime(year, max(month_of(n) for n in names), 1)
+        date = Column(name="date", dtype="Datetime(time_unit='us', time_zone=None)", kind=TIME, role=TIME_ROLE, label="date",
+                      distinct=len(names), minimum=start, maximum=end, cadence=30.44 * 86400, regular=True)
+        extra.append(date)
+        t.time, t.start, t.end, t.span_seconds = "date", start, end, (end - start).total_seconds()
+    t.columns = rest + extra
+    t.pairs = []
 
 
 def _pairs(sample: pl.DataFrame, measures: list[Column], limit: int = 8) -> list[dict[str, Any]]:
@@ -573,7 +602,7 @@ def _find_stacks(tables: list[Table]) -> list[Relation]:
 def _find_aligns(tables: list[Table]) -> list[Relation]:
     """Two time series measuring the same things: they can be lined up reading by reading."""
     out: list[Relation] = []
-    series = [t for t in tables if t.time and t.measures]
+    series = [t for t in tables if t.time and t.measures and t.shape == SERIES]    # logs, not orders or budgets
     for i, a in enumerate(series):
         for b in series[i + 1:]:
             pairs = {m.name: m.name for m in a.measures if b.column(m.name) is not None and b.column(m.name).role == MEASURE}
