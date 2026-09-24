@@ -710,8 +710,12 @@ class MainWindow(QMainWindow):
         if found is None:
             return
         pipe, rp = found
-        r = QMessageBox.question(self, "Unsaved project", f"Last time DANCR closed with an unsaved project of {len(pipe.nodes)} steps. Bring it back?",
-                                 QMessageBox.Yes | QMessageBox.No)
+        if pipe.path is not None:
+            text = (f"Last time DANCR closed with unsaved changes to {pipe.path.name}. Bring them back? "
+                    "The file itself is unchanged until you save.")
+        else:
+            text = f"Last time DANCR closed with an unsaved project of {len(pipe.nodes)} steps. Bring it back?"
+        r = QMessageBox.question(self, "Unsaved changes", text, QMessageBox.Yes | QMessageBox.No)
         if r == QMessageBox.Yes:
             self.doc.recover(pipe, rp)
             self.status.showMessage("Recovered — save it to keep it", 8000)
@@ -745,7 +749,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, e: QCloseEvent) -> None:
         if self._terminating:
             self.doc.stop(wait=True)
-            self.doc.write_recovery()             # untitled projects only; offered back on the next start
+            self.doc.write_recovery()             # unsaved edits of any project; offered back on the next start
         else:
             if self.doc.running:
                 r = QMessageBox.question(self, "A run is in progress", "Stop the run and quit?", QMessageBox.Yes | QMessageBox.No)

@@ -37,7 +37,8 @@ UNDO_LIMIT = 200
 
 
 def recovery_path(pid: int | None = None) -> Path:
-    """Where this process keeps its unsaved (never saved) project between sessions."""
+    """Where this process keeps a copy of edits that are not in a project file yet (an unsaved project, or
+    changes autosave has not written), offered back on the next start if the process dies."""
     from ..logsetup import log_path
     return log_path().parent / f"recovery-{os.getpid() if pid is None else pid}.json"
 
@@ -276,29 +277,35 @@ class Document(QObject):
             self.autosaveChanged.emit(None)
 
     def autosave_now(self) -> None:
-        """Save quietly once a minute when the project has a file (every save keeps an earlier version).
-        An unsaved project is copied to a recovery file instead, offered back on the next start.
-        Nothing is written while autosave is paused."""
-        if self.autosave_paused or self.running or not self.pipeline.nodes or not self.dirty:
+        """Once a minute: save quietly when the project has a file (keeping the replaced file as an autosave
+        version). Edits that must not go into the file yet — an unsaved project, autosave paused, a run in
+        progress, or a dialog open that asks about these very edits (Save changes? Revert?) — are copied
+        to the recovery file instead, so a crash or a force-quit loses nothing."""
+        if not self.pipeline.nodes or not self.dirty:
             return
-        if self.pipeline.path is None:
+        if self.pipeline.path is None or self.autosave_paused or self.running or QApplication.activeModalWidget() is not None:
             self.write_recovery()
             return
         try:
-            self.save()
+            self.save(auto=True)
         except (OSError, PipelineError):
             log.exception("Autosave of %s failed", self.pipeline.path)
+            self.write_recovery()
             return
         self.autosaved.emit()
 
     def write_recovery(self) -> None:
-        """Keep a copy of an unsaved project so a crash or a force-quit loses nothing."""
-        if self.pipeline.path is not None or not self.pipeline.nodes:
+        """Keep a copy of edits that are not in the project file (an unsaved project, or unsaved changes to a
+        saved one) so a crash, a force-quit or a logout loses nothing. Clears the copy when there are none."""
+        if not self.pipeline.nodes or (self.pipeline.path is not None and not self.dirty):
+            self.clear_recovery()
             return
         try:
             rp = recovery_path(); rp.parent.mkdir(parents=True, exist_ok=True)
             tmp = rp.with_suffix(".tmp")
-            tmp.write_text(json.dumps(self.pipeline.to_dict(), indent=1), encoding="utf-8")
+            data = {"dancr_recovery": 1, "path": str(self.pipeline.path) if self.pipeline.path else None,
+                    "pipeline": self.pipeline.to_dict()}
+            tmp.write_text(json.dumps(data, indent=1, ensure_ascii=False), encoding="utf-8")
             tmp.replace(rp)
         except OSError:
             log.exception("Could not write the recovery copy")
@@ -311,10 +318,16 @@ class Document(QObject):
 
     @staticmethod
     def pending_recovery() -> tuple[Pipeline, Path] | None:
-        """The unsaved project of a DANCR process that is gone, if any. Unreadable copies are deleted."""
+        """Unsaved edits left by a DANCR process that is gone, if any: the project (its ``path`` is the file
+        the edits belong to, or None for a project never saved) and the recovery file. Unreadable copies
+        are deleted."""
         for rp in dead_recovery_files():
             try:
-                pipe = Pipeline.from_dict(json.loads(rp.read_text(encoding="utf-8")), None)
+                data = json.loads(rp.read_text(encoding="utf-8"))
+                if not isinstance(data, dict) or data.get("dancr_recovery") != 1:
+                    raise ValueError("not a DANCR recovery file")
+                path = Path(data["path"]) if data.get("path") else None
+                pipe = Pipeline.from_dict(data["pipeline"], path)
             except Exception:  # noqa: BLE001
                 log.exception("Recovery file %s is unreadable; deleting it", rp)
                 rp.unlink(missing_ok=True)
@@ -325,15 +338,16 @@ class Document(QObject):
         return None
 
     def recover(self, pipe: Pipeline, source: Path) -> None:
-        """Bring back an unsaved project. Its recovery copy becomes this process's copy, so it stays
-        on disk until the project is saved or deliberately closed."""
+        """Bring back unsaved edits. Their recovery copy becomes this process's copy, so it stays on disk
+        until the project is saved or deliberately closed. Autosave stays paused: the person decides
+        whether the recovered edits replace the file."""
         self.replace_pipeline(pipe)
         self.undo.resetClean()
         try:
             source.replace(recovery_path())
         except OSError:
             log.exception("Could not take over the recovery copy %s", source)
-        self.pause_autosave("recovered project — save it to keep it")
+        self.pause_autosave("recovered changes — save to keep them" if pipe.path else "recovered project — save it to keep it")
 
     def versions(self) -> list[Path]:
         return self.pipeline.versions() if self.pipeline.path else []
@@ -389,12 +403,12 @@ class Document(QObject):
         self.executor = ex
         self._held = {}
 
-    def save(self, path: Path | str | None = None) -> Path:
+    def save(self, path: Path | str | None = None, auto: bool = False) -> Path:
         if path is not None and self.running and Path(path).expanduser().resolve() != self.pipeline.path:
             raise PipelineError("Wait for the run to finish before saving under a new name")
         old = self.pipeline.path
         old_cache = self.executor.cache_dir
-        p = self.pipeline.save(path)
+        p = self.pipeline.save(path, auto=auto)
         self._last_saved_text = self.pipeline.dumps()       # so the watcher knows this write was ours
         if old != p:
             new_exec = Executor(self.pipeline)

@@ -477,7 +477,9 @@ class Pipeline:
     def dumps(self) -> str:
         return json.dumps(self.to_dict(), indent=2, ensure_ascii=False) + "\n"
 
-    def save(self, path: Path | str | None = None) -> Path:
+    def save(self, path: Path | str | None = None, auto: bool = False) -> Path:
+        """Write the project atomically, keeping the file it replaces as an earlier version. ``auto`` marks
+        an autosave, whose versions are kept apart so minute-by-minute copies never push out real saves."""
         target = Path(path).expanduser().resolve() if path is not None else self.path
         if target is None:
             raise PipelineError("No file path to save to")
@@ -485,6 +487,10 @@ class Pipeline:
             raise PipelineError(f"{target} is a folder; choose a file name")
         old_path = self.path
         old_dir = self.directory
+        if auto:
+            self.meta["autosaved"] = True
+        else:
+            self.meta.pop("autosaved", None)
         self.path = target
         if old_dir.resolve() != target.parent:
             self._rebase_paths(old_dir, target.parent)
@@ -509,7 +515,8 @@ class Pipeline:
         return target
 
     # ---------------------------------------------------------------- versions
-    MAX_VERSIONS = 50
+    MAX_VERSIONS = 50          # copies of files you saved
+    MAX_AUTO_VERSIONS = 30     # copies of files autosave wrote, kept apart
 
     @staticmethod
     def versions_dir(path: Path) -> Path:
@@ -523,11 +530,16 @@ class Pipeline:
         vdir = cls.versions_dir(target)
         vdir.mkdir(parents=True, exist_ok=True)
         stamp = datetime.fromtimestamp(target.stat().st_mtime).strftime("%Y-%m-%d_%H-%M-%S")
-        dest = vdir / f"{stamp}.json"
+        try:
+            auto = bool((json.loads(target.read_text(encoding="utf-8")).get("meta") or {}).get("autosaved"))
+        except (OSError, ValueError, AttributeError):
+            auto = False
+        dest = vdir / f"{stamp}{'.auto' if auto else ''}.json"
         if not dest.exists():
             shutil.copy2(target, dest)
-        old = sorted(vdir.glob("*.json"))
-        for f in old[:-cls.MAX_VERSIONS]:
+        autos = sorted(vdir.glob("*.auto.json"))
+        saved = sorted(f for f in vdir.glob("*.json") if not f.name.endswith(".auto.json"))
+        for f in saved[:-cls.MAX_VERSIONS] + autos[:-cls.MAX_AUTO_VERSIONS]:
             f.unlink(missing_ok=True)
 
     def versions(self) -> list[Path]:

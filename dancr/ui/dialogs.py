@@ -49,10 +49,11 @@ class VersionsDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Earlier versions"); self.resize(520, 380)
         lay = QVBoxLayout(self)
-        lab = QLabel("DANCR keeps a copy of the project every time you save. Pick one to go back to it (your current version is kept too)."); lab.setWordWrap(True)
+        lab = QLabel("DANCR keeps a copy of the project every time it is saved. Pick one to go back to it (your current version is kept too)."); lab.setWordWrap(True)
         self.list = QListWidget()
         for p in doc.versions():
-            stamp = p.stem[:10] + "  " + p.stem[11:].replace("-", ":")
+            base = p.name.split(".")[0]
+            stamp = base[:10] + "  " + base[11:].replace("-", ":") + ("   ·   autosave" if p.name.endswith(".auto.json") else "")
             try:
                 n = len(json.loads(p.read_text(encoding="utf-8")).get("nodes") or [])
             except Exception:  # noqa: BLE001
