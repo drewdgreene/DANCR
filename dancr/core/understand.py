@@ -8,8 +8,9 @@ Two passes, both deterministic:
 
 - ``understand(...)`` reads a bounded sample of each table (a spread over the whole result when a step has
   already run, else its first rows) and works out column roles, table shapes and candidate relations.
-- ``deepen(...)`` then reads every row once per table, in streaming mode, for the facts a sample cannot
-  give: exact row counts and time spans, whether a key really is unique, and how many keys really match.
+- ``deepen(...)`` then reads every row of each table in one streaming pass (a second only to count keys exactly
+  in a source not run yet) and one pass per link, for the facts a sample cannot give: exact row counts and time
+  spans, whether a key really is unique, and how many keys really match.
   Anything built from the model (an answer) is always planned on the deep model.
 
 Pure core: no Qt, no execution beyond reading step outputs.
@@ -26,7 +27,7 @@ from typing import Any, Iterable
 
 import polars as pl
 
-from .expr import _kind_of_dtype, NUM, TIME, STR, BOOL
+from .expr import kind_of_dtype, NUM, TIME, STR, BOOL
 from .registry import registry
 
 SAMPLE_ROWS = 100_000          # rows read per table for column facts
@@ -39,6 +40,12 @@ STACK_MIN_SIMILARITY = 0.70
 EXACT_KEY_ROWS = 5_000_000     # up to this many rows, key uniqueness is counted exactly; above, estimated
 EXACT_MATCH_ROWS = 20_000_000  # up to this many rows, link matches are counted exactly
 KEY_SUFFIXES = ("id", "key", "code", "no", "number", "ref", "sku", "uuid", "guid")
+# numbers that name something rather than count it: nobody adds up zip codes or phone numbers. The name must be
+# about the code itself (zip, zip_code, phone_number, customer_phone, account_no), not merely hold the word:
+# account_balance and phone_calls are amounts
+CODE_WORDS = {"zip", "zipcode", "postcode", "postal", "phone", "tel", "telephone", "mobile", "fax", "account", "acct",
+              "iban", "ssn", "isbn", "ean", "upc", "barcode", "pin"}
+CODE_ENDINGS = {"code", "no", "nr", "num", "number"}
 CALENDAR_WORDS = ("year", "month", "quarter", "week", "weekday", "day", "hour")
 
 # column roles
@@ -326,7 +333,7 @@ def _pairs(sample: pl.DataFrame, measures: list[Column], limit: int = 8) -> list
 
 def _describe_column(s: pl.Series, pipe) -> Column:
     n = s.len()
-    kind = _kind_of_dtype(s.dtype)
+    kind = kind_of_dtype(s.dtype)
     filled = s.drop_nulls()
     if s.dtype == pl.Float64 or s.dtype == pl.Float32:
         filled = filled.filter(filled.is_not_nan())
@@ -357,11 +364,13 @@ def _role_of(c: Column, filled: pl.Series, n: int) -> str:
         return TIME_ROLE
     if c.kind == BOOL:
         return FLAG
-    words = _words(c.name)
+    words = name_words(c.name)
     if c.kind == NUM:
         integer = filled.dtype.is_integer()
         if looks_like_key(c.name) and (integer or c.unique):
             return ID
+        if integer and (_code_name(words) or _fixed_width_code(filled, c)):
+            return ID                                        # zip, phone, account number: a code, not a quantity
         if integer and words and words[-1] in CALENDAR_WORDS and c.distinct <= 400:
             return CATEGORY                                  # year, month, week: a group, not a quantity
         if integer and c.unique and filled.len() >= 5 and _is_sequence(filled) and (filled.min() or 0) <= 1:
@@ -374,6 +383,25 @@ def _role_of(c: Column, filled: pl.Series, n: int) -> str:
             return CATEGORY
         return TEXT
     return TEXT
+
+
+def _code_name(words: list[str]) -> bool:
+    """zip, zip_code, postal_code, phone_number, customer_phone, account_no: the last word (before a closing code
+    or number word) is a code word."""
+    while len(words) > 1 and words[-1] in CODE_ENDINGS:
+        words = words[:-1]
+    return bool(words) and words[-1] in CODE_WORDS
+
+
+def _fixed_width_code(s: pl.Series, c: Column) -> bool:
+    """Whole numbers of seven or more digits, all the same width, mostly different and numbered from one base, so
+    that their first three digits are the same (account 40001234 … 40009876), in a column whose name gives no unit.
+    Amounts spread across their width (a population of 1,200,000 to 9,800,000) are not codes."""
+    if c.unit or s.len() < 5 or c.distinct < 0.5 * s.len():
+        return False
+    lo, hi = s.min(), s.max()
+    return (lo is not None and hi is not None and lo >= 1_000_000 and len(str(lo)) == len(str(hi))
+            and str(lo)[:3] == str(hi)[:3])
 
 
 def _is_sequence(s: pl.Series) -> bool:
@@ -494,7 +522,8 @@ def _find_links(tables: list[Table]) -> list[Relation]:
                     overlap = _overlap(va, vb)
                     if overlap < 0.5:
                         continue
-                    score = 0.6 * name + 0.4 * overlap
+                    # 1, 2, 3 … on both sides overlap whatever they count, so only the names can say they are one key
+                    score = name if _counts_from_one(ca) and _counts_from_one(cb) else 0.6 * name + 0.4 * overlap
                     if score < LINK_MIN_SCORE:
                         continue
                     out.append(_orient_link(a, ca, b, cb, va, vb, round(score, 3)))
@@ -507,6 +536,14 @@ def _find_links(tables: list[Table]) -> list[Relation]:
             per_pair[k] = per_pair.get(k, 0) + 1
             kept.append(r)
     return kept
+
+
+def _counts_from_one(c: Column) -> bool:
+    """Whole numbers starting near 1 with few gaps (row numbers, small ids)."""
+    lo, hi = c.minimum, c.maximum
+    if c.kind != NUM or not isinstance(lo, int) or not isinstance(hi, int) or isinstance(lo, bool):
+        return False
+    return lo <= 1 and hi - lo + 1 <= 2 * max(c.distinct, 1)
 
 
 BARE_KEYS = ("id", "key", "code", "ref", "uuid", "guid", "no", "number")
@@ -566,7 +603,7 @@ def link_why(rel: Relation, left: Table, right: Table) -> str:
     many = {"many-to-one": f"each {rel.right_on} appears once in {right.title}, so no rows are multiplied",
             "one-to-one": f"each {rel.left_on} appears once in both",
             "many-to-many": f"{rel.right_on} repeats in {right.title}, so linking would repeat rows"}[rel.cardinality]
-    return f"{rel.match_pct:g}% of {left.title}'s {rel.left_on} found in {right.title}{est}; {many}"
+    return f"{rel.match_pct:g}% of {left.title}'s {rel.left_on} values are in {right.title}{est}. {many[0].upper()}{many[1:]}"
 
 
 def _find_stacks(tables: list[Table]) -> list[Relation]:
@@ -590,8 +627,8 @@ def _find_stacks(tables: list[Table]) -> list[Relation]:
         shared = [c.name for c in a.columns if all(m.column(c.name) is not None for m in members)]
         rel = Relation(id="stack:" + "+".join(m.node for m in members), kind="stack", tables=[m.node for m in members],
                        score=round(worst, 3), labels=labels, shared=shared, exact=True,
-                       why=f"{len(members)} tables with the same columns ({', '.join(shared[:4])}"
-                           f"{'…' if len(shared) > 4 else ''}); each row keeps which one it came from")
+                       why=f"The {len(members)} tables have the same columns ({', '.join(shared[:4])}"
+                           f"{'…' if len(shared) > 4 else ''}). Each row keeps a note of which one it came from")
         out.append(rel)
     return out
 
@@ -618,7 +655,7 @@ def _find_aligns(tables: list[Table]) -> list[Relation]:
             score = 0.7 + 0.3 * (overlap if overlap is not None else 0.5)
             rel = Relation(id=f"align:{a.node}~{b.node}", kind="align", tables=[a.node, b.node], left_on=a.time,
                            right_on=b.time, shared=shared, pairs=pairs, tolerance=tol, score=round(score, 3), exact=False)
-            rel.why = (f"both record {', '.join(shared[:3])} over time; each reading of {a.title} is paired with the "
+            rel.why = (f"Both record {', '.join(shared[:3])} over time. Each reading of {a.title} is paired with the "
                        f"nearest reading of {b.title}" + (f" within {tol}" if tol else ""))
             out.append(rel)
     return out
@@ -646,8 +683,11 @@ def _kinds_agree(a: Table, b: Table) -> bool:
 
 # =================================================================== the full pass
 def deepen(pipe, executor, model: DataModel, cancel=None) -> DataModel:
-    """Read every row of each table once (streaming) to replace sample facts by exact ones: row counts, time
-    spans, key uniqueness and link matches. Tables that cannot be read in full keep their sample facts."""
+    """Read every row of each table to replace sample facts by exact ones: row counts, time spans, key
+    uniqueness and link matches. Tables that cannot be read in full keep their sample facts.
+
+    One streaming pass per table; a second only to count keys exactly in a table whose size was not known before
+    (a source not run yet); then one pass over the two key columns of each link."""
     frames: dict[str, pl.LazyFrame | None] = {}          # each table is opened once (an Excel file is parsed once)
     for t in model.tables.values():
         if cancel is not None and cancel():
@@ -655,10 +695,15 @@ def deepen(pipe, executor, model: DataModel, cancel=None) -> DataModel:
         try:
             frames[t.node] = lf = full_frame(pipe, executor, t.node)
             if lf is not None:
-                _deepen_table(t, lf)
+                st = executor.state(t.node)
+                _deepen_table(t, lf, st.rows if st.status == "done" else None)
         except Exception:  # noqa: BLE001 - the sample facts stay; the answer says they are estimates
             frames[t.node] = None
             continue
+    # shapes can change once exact uniqueness and spans are known; links are re-pointed before they are counted
+    for t in model.tables.values():
+        t.shape = _shape_of(t)
+    _reorient_links(model)
     for r in model.relations:
         if cancel is not None and cancel():
             return model
@@ -667,10 +712,6 @@ def deepen(pipe, executor, model: DataModel, cancel=None) -> DataModel:
                 _deepen_link(model, r, frames)
             except Exception:  # noqa: BLE001
                 continue
-    # shapes can change once exact uniqueness and spans are known; relations are re-oriented accordingly
-    for t in model.tables.values():
-        t.shape = _shape_of(t)
-    _reorient_links(model)
     model.deep = True
     return model
 
@@ -691,24 +732,33 @@ def full_frame(pipe, executor, nid: str) -> pl.LazyFrame | None:
     return res.frame if isinstance(res, NodeResult) else res
 
 
-def _deepen_table(t: Table, lf: pl.LazyFrame) -> None:
+def _deepen_table(t: Table, lf: pl.LazyFrame, known_rows: int | None) -> None:
+    """Counts, time span, blank rows, the last rows (for a total row) and key counts, in one pass. Keys are
+    counted exactly in that pass when the table is known to be small enough, else estimated there and counted
+    exactly in a second pass once its size is known."""
     schema = lf.collect_schema()
     aggs: list[pl.Expr] = [pl.len().alias("__rows")]
     if t.time and t.time in schema:
         aggs += [pl.col(t.time).min().alias("__tmin"), pl.col(t.time).max().alias("__tmax")]
-    for c in t.columns:
-        if c.name in schema and c.role in (ID, CATEGORY, TEXT):
-            aggs.append(pl.col(c.name).drop_nulls().approx_n_unique().alias(f"__u_{c.name}"))
-            aggs.append(pl.col(c.name).drop_nulls().len().alias(f"__n_{c.name}"))
+    keys = [c for c in t.columns if c.name in schema and c.role in (ID, CATEGORY, TEXT)]
+    # the columns that looked unique in the sample are the ones worth counting exactly
+    exact = [c for c in keys if c.unique and c.role == ID and not t.complete]
+    exact_now = known_rows is not None and known_rows <= EXACT_KEY_ROWS
+    for c in keys:
+        aggs.append(pl.col(c.name).drop_nulls().approx_n_unique().alias(f"__u_{c.name}"))
+        aggs.append(pl.col(c.name).drop_nulls().len().alias(f"__n_{c.name}"))
+    if exact_now:
+        aggs += [pl.col(c.name).drop_nulls().n_unique().alias(f"__x_{c.name}") for c in exact]
     aggs.append(pl.all_horizontal(pl.all().is_null()).sum().alias("__blank"))
+    tail = t.total_row is None and not t.complete
+    if tail:
+        aggs += [pl.col(n).tail(3).implode().alias(f"__t_{n}") for n in schema]
     row = lf.select(aggs).collect(engine="streaming").row(0, named=True)
     t.rows, t.rows_exact, t.deep = int(row["__rows"]), True, True
     t.blank_rows = int(row["__blank"] or 0)
-    if t.total_row is None and not t.complete:
-        try:
-            t.total_row = _total_row(lf.tail(3).collect(engine="streaming"))
-        except Exception:  # noqa: BLE001
-            pass
+    if tail:
+        last = pl.DataFrame({n: row[f"__t_{n}"] for n in schema}, schema=dict(schema))
+        t.total_row = _total_row(last)
     t.complete = t.rows <= t.sampled
     if "__tmin" in row:
         t.start, t.end = _clean(row["__tmin"]), _clean(row["__tmax"])
@@ -716,31 +766,26 @@ def _deepen_table(t: Table, lf: pl.LazyFrame) -> None:
         col = t.column(t.time)
         if col is not None:
             col.minimum, col.maximum = t.start, t.end
-    # the columns that looked unique in the sample are counted exactly, all in one more pass
-    check = [c for c in t.columns if f"__u_{c.name}" in row and c.unique and not t.complete and t.rows <= EXACT_KEY_ROWS
-             and c.role == ID]
-    exact_counts = {}
-    if check:
-        r2 = lf.select([pl.col(c.name).drop_nulls().n_unique().alias(c.name) for c in check]).collect(engine="streaming")
-        exact_counts = r2.row(0, named=True)
-    for c in t.columns:
-        if f"__u_{c.name}" not in row:
-            continue
+    counts = {c.name: row[f"__x_{c.name}"] for c in exact if f"__x_{c.name}" in row}
+    if not exact_now and exact and t.rows <= EXACT_KEY_ROWS:
+        counts = lf.select([pl.col(c.name).drop_nulls().n_unique().alias(c.name) for c in exact]).collect(engine="streaming").row(0, named=True)
+    for c in keys:
         est, filled = int(row[f"__u_{c.name}"]), int(row[f"__n_{c.name}"])
         if not t.complete:
             c.distinct = min(max(c.distinct, est), filled)       # an estimate: never more values than filled cells
-        if c.name in exact_counts:
-            exact = int(exact_counts[c.name])
-            c.unique, c.unique_exact, c.distinct = exact == filled, True, exact
+        if c.name in counts:
+            n = int(counts[c.name])
+            c.unique, c.unique_exact, c.distinct = n == filled, True, n
         elif c.unique and not t.complete:
             c.unique = est >= 0.98 * filled           # HyperLogLog is within about 2% (free text, or a very long table)
-        elif t.complete:
-            c.unique_exact = True
+        else:
+            c.unique_exact = True                     # the whole table was read, or a repeat was already seen
         if c.role == CATEGORY and c.distinct > CATEGORY_MAX * 2:
             c.role, c.values = TEXT, []                    # the sample looked like a category; the whole table does not
 
 
 def _deepen_link(model: DataModel, r: Relation, frames: dict[str, pl.LazyFrame | None]) -> None:
+    """The share of the first table's keys found in the second, counted over every row in one pass of each."""
     left, right = model.tables[r.tables[0]], model.tables[r.tables[1]]
     if (left.rows or 0) > EXACT_MATCH_ROWS:
         return
@@ -748,17 +793,20 @@ def _deepen_link(model: DataModel, r: Relation, frames: dict[str, pl.LazyFrame |
     if lf is None or rf is None:
         return
     lk = lf.select(pl.col(r.left_on).cast(pl.Utf8).alias("k")).drop_nulls().unique()
-    rk = rf.select(pl.col(r.right_on).cast(pl.Utf8).alias("k")).drop_nulls().unique()
-    counts = pl.concat([lk.select(pl.len().alias("n")),
-                        lk.join(rk, on="k", how="semi").select(pl.len().alias("n"))]).collect(engine="streaming")["n"].to_list()
-    total, found = int(counts[0]), int(counts[1])
+    rk = rf.select(pl.col(r.right_on).cast(pl.Utf8).alias("k")).drop_nulls().unique().with_columns(pl.lit(1).alias("hit"))
+    row = lk.join(rk, on="k", how="left").select(pl.len().alias("n"), pl.col("hit").sum().alias("found")) \
+        .collect(engine="streaming").row(0, named=True)
+    total, found = int(row["n"]), int(row["found"] or 0)
     r.match_pct = round(100.0 * found / total, 1) if total else 0.0
     lc, rc = left.column(r.left_on), right.column(r.right_on)
     r.exact = bool(lc and rc and lc.unique_exact and rc.unique_exact)
+    r.why = link_why(r, left, right)
 
 
 def _reorient_links(model: DataModel) -> None:
-    for i, r in enumerate(model.relations):
+    """Point each link at the side exact counts showed to be the lookup; a link turned round has its match share
+    measured again from the other side."""
+    for r in model.relations:
         if r.kind != "link":
             continue
         a, b = model.tables[r.tables[0]], model.tables[r.tables[1]]
@@ -769,12 +817,14 @@ def _reorient_links(model: DataModel) -> None:
             a, b, ca, cb = b, a, cb, ca
             r.tables, r.left_on, r.right_on = [a.node, b.node], ca.name, cb.name
             r.id = f"link:{a.node}.{ca.name}>{b.node}.{cb.name}"
+            va, vb = _comparable(ca, cb)
+            r.match_pct = round(100.0 * len(va & vb) / len(va), 1) if va else 0.0
         r.cardinality = "many-to-many" if not cb.unique else ("one-to-one" if ca.unique else "many-to-one")
         r.why = link_why(r, a, b)
 
 
 # =================================================================== names and values
-def _words(name: str) -> list[str]:
+def name_words(name: str) -> list[str]:
     """'CustomerID' -> customer, id; 'order_no' -> order, no; 'Amount paid' -> amount, paid."""
     return [w.lower() for w in re.findall(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+|\d+", str(name))]
 
@@ -786,14 +836,14 @@ def norm(name: str) -> str:
 def looks_like_key(name: str) -> bool:
     """A name whose last word is a key word (customer_id, OrderNo, sku), not one that merely ends in those
     letters (Amount paid, valid, Humid). A bare 'id' or 'sku' counts; a bare 'number' or 'no' does not."""
-    w = _words(name)
+    w = name_words(name)
     if not w or w[-1] not in KEY_SUFFIXES:
         return False
     return len(w) > 1 or w[-1] in ("id", "key", "sku", "uuid", "guid", "code", "ref")
 
 
 def _stem(name: str) -> str:
-    w = _words(name)
+    w = name_words(name)
     return "".join(w[:-1]) if len(w) > 1 and w[-1] in KEY_SUFFIXES else norm(name)
 
 
@@ -804,8 +854,11 @@ def name_similarity(a: str, b: str) -> float:
     if na == nb:
         return 1.0
     sa, sb = _stem(a), _stem(b)
-    if sa != na and sb != nb:          # both are key-suffixed: compare the stems (customer vs product)
-        return difflib.SequenceMatcher(None, sa, sb).ratio()
+    if sa != na and sb != nb:          # both are key-suffixed: the stems must be one word (cust_id, customer_id)
+        if sa == sb:
+            return 1.0
+        short, long_ = sorted((sa, sb), key=len)
+        return 0.85 if len(short) >= 3 and long_.startswith(short) else 0.0    # stock_id is not store_id
     if sa == sb:
         return 0.95
     if sa in sb or sb in sa:

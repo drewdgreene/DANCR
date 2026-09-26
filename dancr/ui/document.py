@@ -1,9 +1,10 @@
 """Document = pipeline + executor + undo stack + Qt signals. All edits go through here.
 
-Threading: the GUI thread owns ``pipeline``. A run works on a *snapshot* of it in a
-RunThread with its own Executor (same cache dir). Previews and chart queries run
-in a small pool and read ``executor`` (GUI-side, state reads only). Threads are
-always joined before the objects they use are replaced.
+Threading: the GUI thread owns ``pipeline`` and ``executor``. Everything that works off the GUI
+thread (a run, previews, schemas, state polls, the data model) gets its own Executor over a
+*snapshot* of the project from ``snapshot_executor()`` (same cache dir), so an edit made
+meanwhile never changes what a worker is reading. Threads are always joined before the objects
+they use are replaced.
 
 Autosave, recovery copies and earlier versions all live here. Autosave pauses whenever
 what is in memory should not silently overwrite what is on disk (the file changed under us,
@@ -29,6 +30,7 @@ from PySide6.QtWidgets import QApplication
 from ..core import Pipeline, PipelineError, registry
 from ..core.model import Edge, Answer, Input, rebase_params
 from ..core.executor import Executor, NodeState, _pid_alive
+from ..headless import ProjectBusy, project_lock, read_project, unsafe_outputs, output_files
 from .workers import RunThread, Task, view_pool
 from . import commands as cmd
 
@@ -74,6 +76,14 @@ class _DocEdits:
 
     def remove(self, ids: list[str]) -> None:
         self.doc.remove_nodes(ids)
+
+
+def _saved_paths(p: Pipeline, nid: str) -> list[str]:
+    """The path settings of a step that saves files, as written."""
+    nt = registry.get(p.nodes[nid].type)
+    if nt.kind != "sink":
+        return []
+    return [str(v) for prm in nt.params if prm.kind == "path" and (v := p.nodes[nid].params.get(prm.name))]
 
 
 def recovery_path(pid: int | None = None) -> Path:
@@ -154,6 +164,7 @@ class Document(QObject):
         self._src_watcher = QFileSystemWatcher(self)
         self._src_watcher.fileChanged.connect(self._on_source_changed)
         self.autosave_paused: str | None = None
+        self.held: set[str] = set()                # steps changed elsewhere that save files where they should not: run only when asked
         self.last_set_aside: list[str] = []        # hand-edited steps the last answer change left as they were
         self._autosave = QTimer(self); self._autosave.setInterval(AUTOSAVE_SECS * 1000); self._autosave.timeout.connect(self.autosave_now); self._autosave.start()
         self._rewatch()
@@ -246,8 +257,11 @@ class Document(QObject):
         if self.running:
             self._auto_timer.start(); return
         self._auto_pending = False
-        if any(s.status != "done" for s in self.executor.states().values()):
-            self.run()
+        states = self.executor.states()
+        todo = [nid for nid in self.pipeline.nodes
+                if nid not in self.held and not (self.held and self.held & self.pipeline.upstream_closure(nid))]
+        if any(states[nid].status != "done" for nid in todo if nid in states):
+            self.run(todo if self.held else None, auto=True)
 
     # ------------------------------------------------------------ inputs and column registry (undoable)
     def set_input(self, name: str, value: Any = None, unit: str | None = None, note: str | None = None) -> None:
@@ -306,19 +320,53 @@ class Document(QObject):
             return
         try:
             if new.to_dict() == self.pipeline.to_dict():
+                self._last_saved_text = text                # the same project written differently: nothing to keep apart
                 return
         except Exception:  # noqa: BLE001
             log.exception("Could not compare the project on disk with the one in memory")
         if self.dirty:
             self.pause_autosave("the project file changed on disk")
-            self.message.emit("The pipeline file changed on disk but you have unsaved edits. Autosave is paused: Save to overwrite it, or File → Revert to load it.")
+            self.message.emit("The project file changed on disk, but you have unsaved edits. Autosave is paused. Save to overwrite the file, or use File → Revert to load the new version.")
             return
         if self.autosave_paused is not None:
             # an earlier version or recovered project is open on purpose: never silently replace it
-            self.message.emit("The pipeline file changed on disk. What is in the window is unchanged: Save to overwrite it, or File → Revert to load it.")
+            self.message.emit("The project file changed on disk. The window still shows your version. Save to overwrite the file, or use File → Revert to load the new version.")
             return
-        self.replace_pipeline(new)
-        self.message.emit("Reloaded the pipeline from disk")
+        held = self._held_after(self.pipeline, new)
+        self.replace_pipeline(new, disk_text=text)          # exactly the text that was read: a later write is someone else's
+        self._hold(held)
+
+    def _held_after(self, old: Pipeline, new: Pipeline) -> set[str]:
+        """The steps to hold once ``new`` (the same file, changed elsewhere) replaces ``old``: those it newly points
+        where they should not save, and those still held that still would."""
+        folder = new.directory.resolve()
+        still = {n for n in self.held if n in new.nodes and unsafe_outputs(new, n, folder)}
+        return self._risky_outputs(old, new) | still
+
+    def _hold(self, held: set[str]) -> None:
+        self.held = held
+        if held:
+            self.statesChanged.emit()                       # the map marks them
+            titles = ", ".join(self.pipeline.nodes[n].title for n in sorted(held))
+            self.message.emit(f"Reloaded the project from disk. {titles} would save files outside the project folder or over "
+                              "its data, so they weren't run. Run to save them anyway")
+        else:
+            self.message.emit("Reloaded the project from disk")
+
+    @staticmethod
+    def _risky_outputs(old: Pipeline, new: Pipeline) -> set[str]:
+        """Steps another program added or pointed at a new file that would save outside the project folder or
+        over a file the project reads. The window does not run those by itself (the person has not seen them)."""
+        folder = new.directory.resolve()
+        out = set()
+        for nid in new.nodes:
+            files = output_files(new, nid)
+            if not files or (nid in old.nodes and old.nodes[nid].type == new.nodes[nid].type
+                             and output_files(old, nid) == files):
+                continue
+            if unsafe_outputs(new, nid, folder):
+                out.add(nid)
+        return out
 
     # ------------------------------------------------------------ autosave, recovery, versions
     def pause_autosave(self, reason: str) -> None:
@@ -344,7 +392,7 @@ class Document(QObject):
             return
         try:
             self.save(auto=True)
-        except ChangedOnDisk:
+        except (ChangedOnDisk, ProjectBusy):
             self.write_recovery()            # never over someone else's change; the person decides when saving
             return
         except (OSError, PipelineError):
@@ -407,7 +455,7 @@ class Document(QObject):
             source.replace(recovery_path())
         except OSError:
             log.exception("Could not take over the recovery copy %s", source)
-        self.pause_autosave("recovered changes — save to keep them" if pipe.path else "recovered project — save it to keep it")
+        self.pause_autosave("recovered changes not saved yet" if pipe.path else "recovered project not saved yet")
 
     def versions(self) -> list[Path]:
         return self.pipeline.versions() if self.pipeline.path else []
@@ -417,19 +465,22 @@ class Document(QObject):
         p = Pipeline.from_dict(json.loads(version.read_text(encoding="utf-8")), self.pipeline.path)
         self.replace_pipeline(p)
         self.undo.resetClean()
-        self.pause_autosave("an earlier version is open — save it to keep it, or Revert")
+        self.pause_autosave("an earlier version is open")
 
     # ------------------------------------------------------------ whole-pipeline replacement, save, shutdown
-    def replace_pipeline(self, pipeline: Pipeline) -> None:
+    def replace_pipeline(self, pipeline: Pipeline, disk_text: str | None = None) -> None:
+        """Show another project. ``disk_text`` is the file's text the project was read from; without it the
+        file is read now (the project was not read from it: a recovered or earlier version)."""
         self.flush_edits()                                  # into the old project, never the new one
         self.stop(wait=True)
         self.pipeline = pipeline
         self._set_executor(Executor(self.pipeline))
         self.undo.clear()
         self._states_cache = {}
-        # the in-memory project now matches what is on disk, so the next watcher event is an external one
-        self._last_saved_text = None
-        if self.pipeline.path is not None and self.pipeline.path.exists():
+        self.held = set()
+        # what is on disk as far as this window knows, so the next watcher event that differs is an external one
+        self._last_saved_text = disk_text
+        if disk_text is None and self.pipeline.path is not None and self.pipeline.path.exists():
             try:
                 self._last_saved_text = self.pipeline.path.read_text(encoding="utf-8")
             except OSError:
@@ -441,7 +492,12 @@ class Document(QObject):
         self.refresh_states()
 
     def load(self, path: Path | str) -> None:
-        self.replace_pipeline(Pipeline.load(path))
+        pipe, text = read_project(Path(path))
+        same = self.pipeline.path is not None and self.pipeline.path.resolve() == pipe.path
+        held = self._held_after(self.pipeline, pipe) if same else set()     # Revert: what was changed elsewhere stays held
+        self.replace_pipeline(pipe, disk_text=text)
+        if same:
+            self._hold(held)
 
     def new(self) -> None:
         self.replace_pipeline(Pipeline())
@@ -488,13 +544,24 @@ class Document(QObject):
             return False
 
     def save(self, path: Path | str | None = None, auto: bool = False, overwrite: bool = False) -> Path:
+        """Save to the project file (or ``path``). The file's lock is held from the check that nobody else
+        changed it until the write, so an agent or a command changing it at the same moment is never lost.
+        Raises ChangedOnDisk when it was changed elsewhere, ProjectBusy when another program holds the lock."""
         if path is not None and self.running and Path(path).expanduser().resolve() != self.pipeline.path:
             raise PipelineError("Wait for the run to finish before saving under a new name")
-        same_file = path is None or Path(path).expanduser().resolve() == self.pipeline.path
-        if same_file and not overwrite and self.changed_elsewhere():
-            self.pause_autosave("the project file changed on disk")
-            raise ChangedOnDisk("The project file was changed by another program since it was opened here")
+        target = Path(path).expanduser().resolve() if path is not None else self.pipeline.path
+        if target is None:
+            raise PipelineError("No file path to save to")
         self.flush_edits()
+        with project_lock(target, wait=1.0 if auto else 5.0):
+            if target == self.pipeline.path and not overwrite and self.changed_elsewhere():
+                self.pause_autosave("the project file changed on disk")
+                raise ChangedOnDisk("The project file was changed by another program since it was opened here")
+            p = self._write(path, auto)
+        self._rewatch()
+        return p
+
+    def _write(self, path: Path | str | None, auto: bool) -> Path:
         old = self.pipeline.path
         old_dir = self.pipeline.directory.resolve()
         old_cache = self.executor.cache_dir
@@ -513,7 +580,7 @@ class Document(QObject):
                     else:
                         # another drive: copying gigabytes of results would freeze the window; they are computed
                         # again in the new folder instead; the old copy is swept away on the next start
-                        self.message.emit("Saved. Results are computed again in the new folder (it is on another drive)")
+                        self.message.emit("Saved. The new folder is on another drive, so results will be computed again there")
             except OSError:
                 log.exception("Could not move the cached results from %s to %s; the steps will run again", old_cache, new_exec.cache_dir)
             self._set_executor(new_exec)
@@ -522,7 +589,6 @@ class Document(QObject):
             self.refresh_states()
         self.undo.setClean()
         self.resume_autosave()
-        self._rewatch()
         self.clear_recovery()
         return p
 
@@ -544,14 +610,18 @@ class Document(QObject):
             return
         self._apply_states(new)
 
+    def snapshot_executor(self) -> Executor:
+        """An Executor over a copy of the project as it is now, for work off the GUI thread: the live project
+        keeps changing under the person's hands, the copy does not. It shares the cache folder."""
+        return Executor(Pipeline.from_dict(self.pipeline.to_dict(), self.pipeline.path), self.executor.cache_dir)
+
     def _poll_states(self) -> None:
         """The periodic check for changes made elsewhere (a CLI run, a source file rewritten). Every step's
         state means reading files, which can be slow on a network drive, so it runs on a worker over a
         snapshot of the project; the answer is dropped if the project was edited meanwhile."""
         if self._poll_task is not None:
             return
-        snapshot = Pipeline.from_dict(self.pipeline.to_dict(), self.pipeline.path)
-        ex = Executor(snapshot, self.executor.cache_dir)
+        ex = self.snapshot_executor()
         token, executor = self._states_token, self.executor
         t = Task(ex.states)
         t.waits_for_run = False
@@ -604,6 +674,7 @@ class Document(QObject):
                 new[k] = nt.param(k).coerce(v)
         if new == node.params:
             return
+        self.held.discard(nid)                       # the person has seen and changed it
         self.undo.push(cmd.SetParams(self, nid, node.params, new, set(changes)))
 
     def rename(self, nid: str, title: str) -> None:
@@ -748,15 +819,30 @@ class Document(QObject):
         """True from run() until the finished handler has refreshed the states on the GUI thread."""
         return self._run is not None and not self._run_settled
 
-    def run(self, targets: list[str] | None = None, force: bool = False) -> None:
+    def run(self, targets: list[str] | None = None, force: bool = False, auto: bool = False) -> None:
+        """Run the project (or ``targets`` and what they need). A run the person asked for (not ``auto``) also
+        runs held steps it includes, and they are held no longer."""
         if self.running:
             return
-        snapshot = Pipeline.from_dict(self.pipeline.to_dict(), self.pipeline.path)
-        runner = Executor(snapshot, self.executor.cache_dir)
+        runner = self.snapshot_executor()
+        snapshot = runner.pipeline
         if targets is not None:
             targets = [t for t in targets if t in snapshot.nodes]
             if not targets:
                 return                      # every requested step is gone: nothing to run
+        if snapshot.path is None:
+            # an unsaved project has no folder: a file named without one would land wherever DANCR was started
+            unplaced = {nid for nid in snapshot.nodes if self._needs_folder(snapshot, nid)}
+            if unplaced:
+                wanted = targets if targets is not None else list(snapshot.nodes)
+                targets = [t for t in wanted if t not in unplaced and not unplaced & snapshot.upstream_closure(t)]
+                if not auto:
+                    titles = ", ".join(snapshot.nodes[n].title for n in sorted(unplaced))
+                    self.message.emit(f"Save the project first. {titles} saves its file next to the project")
+                if not targets:
+                    return
+        if not auto and self.held:
+            self.held -= set(snapshot.topological_order(targets))
         t = RunThread(runner, targets, force)
         self._run = t
         self._run_settled = False
@@ -768,6 +854,11 @@ class Document(QObject):
         view_pool().hold()
         self.runStarted.emit()
         t.start()
+
+    @staticmethod
+    def _needs_folder(p: Pipeline, nid: str) -> bool:
+        """A step that saves a file named relative to the project's folder."""
+        return any(not Path(v).expanduser().is_absolute() for v in _saved_paths(p, nid))
 
     def stop(self, wait: bool = False) -> None:
         t = self._run

@@ -121,27 +121,38 @@ def equation(kind: str, params: list[float], x: str = "x", y: str = "y") -> str:
     return kind
 
 
-def predict_by_group(fits: list[Fit], x: str, group: str | None) -> pl.Expr:
-    """One prediction expression for a table: per group when the fits were made per group."""
+def predict_by_group(fits: list[Fit], x: str, group: str | None, numeric: bool = False) -> pl.Expr:
+    """One prediction expression for a table: per group when the fits were made per group. ``numeric``: the
+    table's group column holds numbers."""
     if not group:
         return predict_expr(fits[0].kind, fits[0].params, pl.col(x))
-    e: pl.Expr = pl.lit(None).cast(pl.Float64)
-    key = pl.col(group).cast(pl.Utf8)
-    for f in fits:
-        e = pl.when(key == pl.lit(f.group)).then(predict_expr(f.kind, f.params, pl.col(x))).otherwise(e)
-    return e
+    return _per_group(fits, group, numeric, lambda f: predict_expr(f.kind, f.params, pl.col(x)), pl.lit(None).cast(pl.Float64))
 
 
-def outside_range_by_group(fits: list[Fit], x: str, group: str | None) -> pl.Expr:
+def outside_range_by_group(fits: list[Fit], x: str, group: str | None, numeric: bool = False) -> pl.Expr:
     """True where x is outside the range its fit was made on (per group when fitted per group)."""
     xe = pl.col(x).cast(pl.Float64)
     if not group:
         f = fits[0]
         return (xe < f.x_min) | (xe > f.x_max)
-    e: pl.Expr = pl.lit(False)
+    return _per_group(fits, group, numeric, lambda f: (xe < f.x_min) | (xe > f.x_max), pl.lit(False))
+
+
+def _per_group(fits: list[Fit], group: str, numeric: bool, value: Any, otherwise: pl.Expr) -> pl.Expr:
+    """``value(fit)`` on the rows of each fit's group. Groups are kept as text; a number column finds its fit
+    by value (fitted on 1.0 or "1", predicting for 1), a text column by the exact text ("01" is not "1")."""
+    from .dtypes import typed_value
+    e = otherwise
+    if numeric:
+        key = pl.col(group).cast(pl.Float64)
+        for f in fits:
+            n = typed_value(str(f.group)) if f.group is not None else None
+            if isinstance(n, (int, float)) and not isinstance(n, bool):
+                e = pl.when(key == float(n)).then(value(f)).otherwise(e)
+        return e
     key = pl.col(group).cast(pl.Utf8)
     for f in fits:
-        e = pl.when(key == pl.lit(f.group)).then((xe < f.x_min) | (xe > f.x_max)).otherwise(e)
+        e = pl.when(key == pl.lit(f.group)).then(value(f)).otherwise(e)
     return e
 
 
@@ -221,7 +232,7 @@ def _gauss_newton(lf: pl.LazyFrame, kind: str, params: list[float]) -> tuple[lis
 
     cur = sums(a, b)
     if cur["ss"] is None or not math.isfinite(cur["ss"]):
-        raise ValueError("Could not fit this shape: the values overflow (try a straight line or a power law)")
+        raise ValueError("Couldn't fit this shape because the values overflow. Try a straight line or a power law")
     converged = False
     at_bound = False           # b held at its lower bound: a stall there is not a minimum
     passes = 0
@@ -237,7 +248,10 @@ def _gauss_newton(lf: pl.LazyFrame, kind: str, params: list[float]) -> tuple[lis
             nb = max(nb, 1e-12)
         nxt = sums(na, nb)
         if nxt["ss"] is not None and math.isfinite(nxt["ss"]) and nxt["ss"] < cur["ss"]:
-            negligible = (cur["ss"] - nxt["ss"]) <= 1e-12 * max(cur["ss"], 1e-300)
+            # settled when the error stops falling, or when the parameters stop moving: on near-exact data
+            # the error keeps falling by rounding noise long after the parameters are right
+            negligible = (cur["ss"] - nxt["ss"]) <= 1e-12 * max(cur["ss"], 1e-300) or \
+                (abs(nb - b) <= 1e-10 * max(abs(nb), 1e-12) and abs(na - a) <= 1e-10 * max(abs(na), 1e-12) and not at_bound)
             a, b, cur, lam = na, nb, nxt, max(lam / 3, 1e-9)
             if negligible:
                 converged = True

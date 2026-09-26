@@ -6,7 +6,7 @@ from typing import Any
 
 import polars as pl
 
-from ..core.expr import _kind_of_dtype, NUM, TIME, STR, BOOL
+from ..core.expr import kind_of_dtype, NUM, TIME, STR, BOOL
 
 SUMMARY_SCHEMA = {
     "column": pl.Utf8, "type": pl.Utf8, "rows": pl.Int64, "missing": pl.Int64,
@@ -40,7 +40,7 @@ def column_summary(lf: pl.LazyFrame, columns: list[str] | None = None) -> pl.Dat
     total = int(lf.select(pl.len()).collect(engine=STREAM)[0, 0])
     records = []
     for c in cols:
-        kind = _kind_of_dtype(schema[c])
+        kind = kind_of_dtype(schema[c])
         e = pl.col(c)
         rec: dict[str, Any] = {k: None for k in SUMMARY_SCHEMA}
         rec.update({"column": c, "type": kind, "rows": total})
@@ -70,7 +70,7 @@ def quick_column_info(lf: pl.LazyFrame, column: str, sample_rows: int = 200_000)
     """Fast stats on a head sample for header tooltips."""
     schema = dict(lf.collect_schema())
     dt = schema[column]
-    kind = _kind_of_dtype(dt)
+    kind = kind_of_dtype(dt)
     s = lf.select(column).head(sample_rows).collect(engine=STREAM)[column]
     info: dict[str, Any] = {"column": column, "dtype": str(dt), "kind": kind, "sampled": len(s), "missing": int(s.null_count())}
     if kind == NUM and len(s) > s.null_count():

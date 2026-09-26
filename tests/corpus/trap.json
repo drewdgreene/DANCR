@@ -30,7 +30,7 @@
   "describe: What is in prescriptions"
  ],
  "questions": {
-  "total visit_cost by drug": "(not answered) visits and prescriptions share patient_id, but it repeats in both, so putting them side by side would repeat rows and every total would be wrong. Ask about one of them, or remove the duplicates first.",
+  "total visit_cost by drug": "(not answered) visits and prescriptions share patient_id, but it repeats in both. Putting them side by side would repeat rows and make the totals wrong. Ask about one of them, or remove the duplicates first.",
   "visit_cost by patient": "Total visit_cost by patient_id"
  }
 }

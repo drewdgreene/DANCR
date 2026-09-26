@@ -13,10 +13,6 @@ from ..expr import NUM
 from ..dtypes import resolve_number
 
 
-def _resolve_number(text: Any, ctx: Ctx, what: str) -> float | None:
-    return resolve_number(text, ctx.inputs, what)
-
-
 # --------------------------------------------------------------- fit a curve
 def _fit(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, Any]) -> NodeResult:
     lf = first_input(inputs)
@@ -32,8 +28,8 @@ def _fit(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, Any]
     resid_name = f"{y}_residual"
     for name in (pred_name, resid_name):
         if name in schema:
-            raise ValueError(f"There is already a column called {name!r}; choose another name for the fitted column")
-    pred = predict_by_group(fits, x, group)
+            raise ValueError(f"There is already a column called {name!r}. Choose another name for the fitted column")
+    pred = predict_by_group(fits, x, group, bool(group) and schema[group].is_numeric())
     out = lf.with_columns([pred.alias(pred_name), (pl.col(y).cast(pl.Float64) - pred).alias(resid_name)])
     report: dict[str, Any] = {"kind": kind, "x": x, "y": y, "group": group, "fits": [f.to_dict() for f in fits]}
     msgs = []
@@ -43,9 +39,9 @@ def _fit(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, Any]
         passes = f" · {f.iterations} passes" if f.iterations else ""
         msgs.append(f"{head}{f.equation}{r2} · typical error {f.rmse:.4g} · {f.n:,} points{passes}")
         if f.r2 is not None and f.r2 < 0:
-            msgs.append(f"{head}this shape fits worse than a flat line through the average (R² below 0); try another kind of curve")
+            msgs.append(f"{head}this shape fits worse than a flat line through the average (R² below 0). Try another kind of curve")
         elif not f.converged:
-            msgs.append(f"{head}the fit stopped after {f.iterations} passes without settling; treat the equation as approximate")
+            msgs.append(f"{head}the fit stopped after {f.iterations} passes without settling. Treat the equation as approximate")
     if not group:
         f = fits[0]
         report.update({"equation": f.equation, "r_squared": f.r2, "rmse": f.rmse, "points": f.n, "parameters": f.params})
@@ -98,17 +94,18 @@ def _predict(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, 
     if rep.get("group") or len(fits) > 1:
         group = params.get("group") or rep.get("group") or None
         if not group or group not in schema:
-            raise ValueError("The fit was made per group; choose the matching group column here")
+            raise ValueError("The fit was made per group. Choose the matching group column here")
     if out_name in schema:
-        raise ValueError(f"There is already a column called {out_name!r}; choose another name for the predicted column")
-    out = lf.with_columns(predict_by_group(fits, x, group).alias(out_name))
+        raise ValueError(f"There is already a column called {out_name!r}. Choose another name for the predicted column")
+    numeric = bool(group) and schema[group].is_numeric()
+    out = lf.with_columns(predict_by_group(fits, x, group, numeric).alias(out_name))
     if group:
         msgs = [f"Predicted {out_name} from {x} per {group} using {len(fits)} fits"] + [f"{f.group}: {f.equation}" for f in fits]
         report = {"equations": {f.group: f.equation for f in fits}}
     else:
         msgs = [f"Predicted {out_name} from {x} using: {fits[0].equation}"]
         report = {"equation": fits[0].equation}
-    beyond = int(out.select(outside_range_by_group(fits, x, group).fill_null(False).sum()).collect(engine="streaming")[0, 0])
+    beyond = int(out.select(outside_range_by_group(fits, x, group, numeric).fill_null(False).sum()).collect(engine="streaming")[0, 0])
     if beyond:
         rng = f" ({fits[0].x_min:.4g} to {fits[0].x_max:.4g})" if not group else ""
         msgs.append(f"Caution: {beyond:,} rows are outside the range the fit was made on{rng}")
@@ -135,10 +132,12 @@ def _limits(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, A
     lf = first_input(inputs)
     schema = schema_of(lf)
     col = require_column(schema, params.get("column"), "column", NUM)
-    lo = _resolve_number(params.get("min"), ctx, "Minimum")
-    hi = _resolve_number(params.get("max"), ctx, "Maximum")
+    lo = resolve_number(params.get("min"), ctx.inputs, "Minimum")
+    hi = resolve_number(params.get("max"), ctx.inputs, "Maximum")
     if lo is None and hi is None:
-        return NodeResult(lf, messages=["No limit yet: enter a minimum, a maximum, or both (a number or the name of an input)"])
+        return NodeResult(lf, messages=["No limit yet. Enter a minimum, a maximum or both, as a number or the name of an input"])
+    if lo is not None and hi is not None and lo > hi:
+        raise ValueError(f"The minimum ({lo:g}) is above the maximum ({hi:g}), so no value could pass")
     v = pl.col(col).cast(pl.Float64)
     has = v.is_not_null() & v.is_not_nan()          # a blank (or NaN) is not a measurement: it is not checked
     inside = pl.lit(True)
@@ -150,15 +149,19 @@ def _limits(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, A
     flag = (params.get("flag_column") or "").strip() or f"{col}_ok"
     action = params.get("action") or "flag"
     if action == "flag" and flag in schema:
-        raise ValueError(f"There is already a column called {flag!r}; choose another name for the true/false column")
+        raise ValueError(f"There is already a column called {flag!r}. Choose another name for the true/false column")
     counts = lf.select([pl.len().alias("n"), has.sum().alias("checked"), ok.fill_null(False).sum().alias("ok")]).collect(engine="streaming").row(0, named=True)
     n, checked, n_ok = int(counts["n"]), int(counts["checked"] or 0), int(counts["ok"] or 0)
     bad, blank = checked - n_ok, n - checked
     limit_txt = " and ".join(t for t in [f"at least {lo:g}" if lo is not None else "", f"at most {hi:g}" if hi is not None else ""] if t)
-    verdict = "PASS" if bad == 0 else "FAIL"
-    report = {"limit": limit_txt, "rows": n, "within": n_ok, "outside": bad, "blank": blank,
+    # nothing to check (every value blank) is not a pass: there is no evidence either way
+    verdict = "NOTHING CHECKED" if checked == 0 else ("PASS" if bad == 0 else "FAIL")
+    report = {"limit": limit_txt, "rows": n, "checked": checked, "within": n_ok, "outside": bad, "blank": blank,
               "outside_percent": (100.0 * bad / checked) if checked else 0.0, "verdict": verdict}
-    msgs = [f"{verdict}: {bad:,} of {checked:,} values ({(100.0 * bad / checked) if checked else 0:.2f}%) have {col} outside {limit_txt}"]
+    if checked:
+        msgs = [f"{verdict}: {bad:,} of {checked:,} values ({100.0 * bad / checked:.2f}%) have {col} outside {limit_txt}"]
+    else:
+        msgs = [f"NOTHING CHECKED: {col} has no values{' (the table is empty)' if n == 0 else ''}, so nothing was compared with {limit_txt}"]
     if blank:
         msgs.append(f"{blank:,} rows have no {col} value and were not checked")
     if action == "remove":

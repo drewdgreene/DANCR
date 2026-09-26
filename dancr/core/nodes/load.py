@@ -8,7 +8,8 @@ import polars as pl
 
 from ..params import Param
 from ..registry import NodeType, Ctx, NodeResult, registry
-from ..timeutil import detect_datetime_format, settle_day_month
+from ..timeutil import detect_datetime_format, settle_day_month, offset_time_zone, has_offset
+from ..dtypes import LEADING_ZERO
 
 CSV_EXT = {".csv", ".tsv", ".txt", ".dat", ".tab", ".log"}
 EXCEL_EXT = {".xlsx", ".xlsm", ".xls", ".xlsb", ".ods"}
@@ -59,8 +60,8 @@ def scan_file(ctx: Ctx, params: dict[str, Any]) -> tuple[pl.LazyFrame, list[str]
         found = _title_lines(path, ext, params, encoding)       # "Monthly report — generated …" above the header
         if found:
             skip_rows = found
-            messages.append(f"Skipped {found} line{'s' if found > 1 else ''} above the column names (a title, not data); "
-                            "set 'Skip rows at top' to change that")
+            messages.append(f"Skipped {found} line{'s' if found > 1 else ''} above the column names because they look like a title. "
+                            "Set 'Skip rows at top' to change that")
     if ext in PARQUET_EXT:
         lf = pl.scan_parquet(path)
     elif ext in EXCEL_EXT:
@@ -156,8 +157,11 @@ def scan_file(ctx: Ctx, params: dict[str, Any]) -> tuple[pl.LazyFrame, list[str]
                     fmt, settled = settle_day_month(lf, c, fmt, sample[c], whole=not ctx.preview)
                 if fmt:
                     e = pl.col(c).str.strip_chars().str.to_datetime(fmt, strict=False)
-                    if "%z" in fmt:
-                        e = e.dt.convert_time_zone("UTC")
+                    if has_offset(fmt):
+                        tz, note = offset_time_zone(c, sample[c], (params.get("time_zone") or "").strip() or None)
+                        e = e.dt.convert_time_zone(tz)
+                        if note:
+                            messages.append(note)
                     casts.append(e.alias(c))
                     messages.append(f"Read '{c}' as date/time using {fmt}" + _unparsed_note(sample[c], fmt))
                     if settled:
@@ -165,19 +169,18 @@ def scan_file(ctx: Ctx, params: dict[str, Any]) -> tuple[pl.LazyFrame, list[str]
             if casts:
                 lf = lf.with_columns(casts)
             if forced and not forced_hits:
-                messages.append(f"No column reads as dates with the date format {forced!r}; every column was kept as it is")
+                messages.append(f"No column could be read as dates with the date format {forced!r}, so all columns were kept as they are")
         lf, schema = _date_and_time(lf, messages)
     if params.get("parse_numbers", True) and ext not in PARQUET_EXT:
         lf = _numbers_in_text(lf, lf.collect_schema(), messages, bool(params.get("decimal_comma", False)))
     if ext in EXCEL_EXT and params.get("sheet") in (None, ""):
         sheets = list_sheets(path)
         if len(sheets) > 1:
-            messages.append(f"{path.name} has {len(sheets)} sheets ({', '.join(sheets[:6])}{'…' if len(sheets) > 6 else ''}); "
-                            f"this reads the first, {sheets[0]!r}. Choose another under Sheet")
+            messages.append(f"{path.name} has {len(sheets)} sheets ({', '.join(sheets[:6])}{'…' if len(sheets) > 6 else ''}). "
+                            f"Reading the first one, {sheets[0]!r}. Choose another under Sheet")
     return lf, messages
 
 
-_LEADING_ZERO = r"^0\d+$"
 
 
 def _title_lines(path: Path, ext: str, params: dict[str, Any], encoding: str) -> int:
@@ -247,7 +250,7 @@ def _leading_zero_columns(path: Path, sep: str, has_header: bool, skip_rows: int
     for c in raw.columns:
         v = raw[c].drop_nulls().str.strip_chars()
         v = v.filter(v != "")
-        if len(v) and v.str.contains(r"^\d+$").all() and v.str.contains(_LEADING_ZERO).any():
+        if len(v) and v.str.contains(r"^\d+$").all() and v.str.contains(LEADING_ZERO).any():
             out.append(c.strip() or c)
     return out
 
@@ -294,7 +297,7 @@ def _numbers_in_text(lf: pl.LazyFrame, schema, messages: list[str], decimal_comm
     for c in text_cols:
         v = sample[c].drop_nulls().str.strip_chars()
         v = v.filter(v != "")
-        if len(v) < 3 or v.str.contains(_LEADING_ZERO).any() or _looks_like_a_code(c, v):
+        if len(v) < 3 or v.str.contains(LEADING_ZERO).any() or _looks_like_a_code(c, v):
             continue
         looks = v.str.contains(_NUMBER_TEXT)
         parsed = pl.DataFrame({c: v}).select(_number_expr(c, decimal_comma))[c]
@@ -307,7 +310,7 @@ def _numbers_in_text(lf: pl.LazyFrame, schema, messages: list[str], decimal_comm
         note = ""
         if len(bad):
             examples = ", ".join(repr(x) for x in bad.unique(maintain_order=True).head(3).to_list())
-            note = f"; {len(bad):,} of the first {len(v):,} values are not numbers ({examples}) and are blank"
+            note = f". {len(bad):,} of the first {len(v):,} values aren't numbers ({examples}) and are left blank"
         signs = "".join(sorted({ch for ch in "".join(v.head(200).to_list()) if ch in "$€£¥%,()"}))
         messages.append(f"Read '{c}' as numbers" + (f" (ignoring {signs})" if signs else "") + note)
     return lf.with_columns(casts) if casts else lf
@@ -394,7 +397,7 @@ def _unparsed_note(sample: pl.Series, fmt: str) -> str:
     bad = int(filled.str.to_datetime(fmt, strict=False).null_count())
     if not bad:
         return ""
-    return f"; {bad:,} of the first {len(filled):,} values do not match and become blank (set 'Date format' under More options if that is wrong)"
+    return f". {bad:,} of the first {len(filled):,} values don't match and are left blank. If that's wrong, set 'Date format' under More options"
 
 
 def _apply(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, Any]) -> NodeResult:
@@ -424,11 +427,14 @@ registry.register(NodeType(
         Param("separator", "Column separator", "choice", default="auto", advanced=True,
               choices=[("auto", "detect automatically"), (",", "comma"), ("\t", "tab"), (";", "semicolon"), ("|", "pipe"), (" ", "space")]),
         Param("parse_dates", "Detect dates", "bool", default=True, advanced=True,
-              help="Turn text columns that look like dates into real date/times (a date and a time-of-day column are also combined)"),
+              help="Turn text columns that look like dates into date/times. A date column and a time-of-day column are combined into one"),
         Param("parse_numbers", "Detect numbers written as text", "bool", default=True, advanced=True,
               help="Read '1,234.50', '£99', '31.5%' and '(120)' as numbers"),
         Param("date_format", "Date format", "text", default="", advanced=True,
               help="Force a format like %d/%m/%Y %H:%M:%S when auto-detect gets it wrong"),
+        Param("time_zone", "Time zone", "text", default="", advanced=True,
+              help="The zone to show times with a UTC offset (…+02:00) in, such as Europe/London. Leave empty to keep "
+                   "the file's own offset if it's the same throughout, or UTC if not"),
         Param("day_first", "Day comes before month (01/05 = 1 May)", "bool", default=False, advanced=True,
               help="Only matters when every date could be read either way"),
         Param("decimal_comma", "Numbers use decimal comma", "bool", default=False, advanced=True),

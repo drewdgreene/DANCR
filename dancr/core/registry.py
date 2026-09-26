@@ -48,6 +48,7 @@ class Ctx:
     node_id: str
     node_title: str
     preview: bool = False           # True when computing a quick preview on a sample
+    sample: str = "all"             # in a preview, how the inputs were sampled: all (whole tables), spread, head
     cache_dir: Path | None = None
     logger: logging.Logger = log
     item_meta: list | None = None      # set by the executor for the report node
@@ -173,7 +174,7 @@ class Registry:
         try:
             return self._types[key]
         except KeyError:
-            raise KeyError(f"Unknown node type {key!r}. Known: {sorted(self._types)}") from None
+            raise KeyError(f"Unknown step type {key!r}. Known: {sorted(self._types)}") from None
 
     def has(self, key: str) -> bool:
         self._ensure()

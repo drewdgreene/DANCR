@@ -1,7 +1,7 @@
 """One concrete example per step, shown under the description in Settings and by `dancr nodes -v`."""
 
 EXAMPLES = {
-    "load_file": "data.csv with a date column and a few number columns; dates and numbers are recognised on their own.",
+    "load_file": "data.csv with a date column and a few number columns. Dates and numbers are recognised on their own.",
     "enter_data": "A short list you type in yourself, such as ten items with a name and a value, or a lookup table of codes and names.",
     "keep_rows": "Keep rows where value is greater than 100 and status equals 'ok'.",
     "choose_columns": "Keep only date and value, and rename 'val_1' to 'Value'.",
@@ -15,7 +15,7 @@ EXAMPLES = {
     "fix_values": "Row 1,204, value: 2.75 → 27.5, note 'decimal point slipped when it was typed in'.",
     "combine": "Look up the name for each ID from a second table (like VLOOKUP), or line up two logs by nearest time.",
     "stack": "Six monthly exports into one table, with a column saying which month each row came from.",
-    "time_buckets": "Average every 1 minute: millions of rows become a few thousand.",
+    "time_buckets": "Average every minute, so millions of rows become a few thousand.",
     "rolling": "A 10-row rolling average to see the trend under the noise.",
     "rate_of_change": "How much the value changes per hour, to find when it started climbing.",
     "find_gaps": "Every stretch where the data stopped for longer than usual, with start, end and length.",
@@ -23,9 +23,9 @@ EXAMPLES = {
     "summarise_around": "For each entry in a short list of dates, the average of a continuous log over the 24 hours before it.",
     "summarize": "Blanks, average, minimum, quartiles and maximum of every number column, in one table.",
     "group_summary": "Average value per category and month, like a pivot table.",
-    "fit_curve": "Output against temperature as a straight line or a curve that levels off; the equation and R² appear in the results.",
+    "fit_curve": "Output against temperature as a straight line or a curve that levels off. The equation and R² appear in the results.",
     "predict": "Predicted output for a few new temperatures typed into a small table.",
-    "check_limits": "Every value must be at most [maximum allowed]; rows outside are flagged and counted (PASS/FAIL).",
+    "check_limits": "Every value must be at most [maximum allowed]. Rows outside are flagged and counted (PASS/FAIL).",
     "chart": "Two columns over time with a limit line, or a scatter of one column against another with a fitted line.",
     "export": "Save the per-minute averages as an .xlsx for a colleague.",
     "workbook": "One Excel file with a sheet per table.",

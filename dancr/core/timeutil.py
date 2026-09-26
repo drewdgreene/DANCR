@@ -108,17 +108,17 @@ DATE_FORMATS = [
 
 
 # Formats that read the same text two ways (01/05/2024: 1 May or 5 January). Month first is the default.
-_DAY_FIRST = {f: f.replace("%d/%m", "%m/%d") for f in DATE_FORMATS if f.startswith("%d/%m")}
-_MONTH_FIRST = {v: k for k, v in _DAY_FIRST.items()}
+DAY_FIRST = {f: f.replace("%d/%m", "%m/%d") for f in DATE_FORMATS if f.startswith("%d/%m")}
+_MONTH_FIRST = {v: k for k, v in DAY_FIRST.items()}
 
 
 def swap_day_month(fmt: str) -> str | None:
     """The other reading of a day/month format, or None if the format is not one of a pair."""
-    return _DAY_FIRST.get(fmt) or _MONTH_FIRST.get(fmt)
+    return DAY_FIRST.get(fmt) or _MONTH_FIRST.get(fmt)
 
 
 def day_month_label(fmt: str) -> str:
-    return "day/month" if fmt in _DAY_FIRST else "month/day"
+    return "day/month" if fmt in DAY_FIRST else "month/day"
 
 
 def detect_datetime_format(sample: pl.Series, min_fraction: float = 0.9, day_first: bool = False) -> str | None:
@@ -145,14 +145,14 @@ def detect_datetime_format(sample: pl.Series, min_fraction: float = 0.9, day_fir
         fracs[fmt] = frac
         if best is None or frac > best[0]:
             best = (frac, fmt)
-        if frac == 1.0 and fmt not in _DAY_FIRST:      # a day-first match waits for its month-first twin
+        if frac == 1.0 and fmt not in DAY_FIRST:      # a day-first match waits for its month-first twin
             break
     if best is None:
         return None
     fmt = best[1]
     twin = swap_day_month(fmt)
     if twin is not None and fracs.get(twin) == best[0]:
-        return fmt if day_first == (fmt in _DAY_FIRST) else twin
+        return fmt if day_first == (fmt in DAY_FIRST) else twin
     return fmt
 
 
@@ -199,13 +199,13 @@ def settle_day_month(lf: pl.LazyFrame, column: str, fmt: str, sample: pl.Series,
                          raw.str.to_datetime(twin, strict=False).is_not_null().sum().alias("b")
                          ).collect(engine="streaming").row(0)
         if b > a:
-            return twin, (f"'{column}': the first rows could be read as day/month or month/day; the whole file fits "
+            return twin, (f"'{column}': the first rows could be read as day/month or month/day. The whole file fits "
                           f"{day_month_label(twin)}, so that is used")
         if a > b:
-            return fmt, (f"'{column}': the first rows could be read as day/month or month/day; the whole file fits "
+            return fmt, (f"'{column}': the first rows could be read as day/month or month/day. The whole file fits "
                          f"{day_month_label(fmt)}, so that is used")
-    return fmt, (f"'{column}': every date could be read as day/month or month/day (like 01/05/2024); read as "
-                 f"{day_month_label(fmt)}. If that is wrong, tick 'Day comes before month' (or set 'Date format')")
+    return fmt, (f"'{column}': every date could be read as day/month or month/day, like 01/05/2024. Read as "
+                 f"{day_month_label(fmt)}. If that's wrong, tick 'Day comes before month' or set 'Date format'")
 
 
 def format_seconds(secs: float) -> str:
@@ -218,3 +218,62 @@ def format_seconds(secs: float) -> str:
     if secs < 86400:
         return f"{secs / 3600:.1f} h"
     return f"{secs / 86400:.1f} d"
+
+
+_OFFSET = re.compile(r"(Z|[+-]\d{2}:?\d{2})\s*$")
+# offsets that are not whole hours have no Etc/GMT zone; these places have kept theirs without daylight saving
+_FIXED_ZONES = {"+05:30": "Asia/Kolkata", "+05:45": "Asia/Kathmandu", "+04:30": "Asia/Kabul",
+                "+06:30": "Asia/Yangon", "+09:30": "Australia/Darwin", "-09:30": "Pacific/Marquesas"}
+
+
+def utc_offsets(sample: pl.Series) -> list[str]:
+    """The distinct UTC offsets written at the end of the sample's times, as +HH:MM ('Z' is +00:00)."""
+    seen: list[str] = []
+    for v in sample.drop_nulls().to_list():
+        m = _OFFSET.search(str(v))
+        if not m:
+            continue
+        o = "+00:00" if m.group(1) == "Z" else m.group(1).replace(":", "")
+        o = o if o == "+00:00" else f"{o[:3]}:{o[3:]}"
+        if o not in seen:
+            seen.append(o)
+    return seen
+
+
+def check_time_zone(name: str) -> str:
+    """A time zone name Polars knows (Europe/London, America/New_York, UTC), or a plain-English error."""
+    try:
+        pl.Series([0], dtype=pl.Datetime("us", "UTC")).dt.convert_time_zone(name)
+    except Exception:  # noqa: BLE001 - Polars raises several kinds for an unknown name
+        raise ValueError(f"{name!r} is not a time zone name. Use a name such as Europe/London, America/New_York "
+                         "or UTC") from None
+    return name
+
+
+def offset_time_zone(column: str, sample: pl.Series, chosen: str | None) -> tuple[str, str | None]:
+    """The zone to show times written with a UTC offset in, and a note for the person. A chosen zone wins; else
+    one offset throughout keeps the times in that offset (so days and hours are the file's own), and several
+    offsets (daylight saving) keep UTC, since no one offset is right for every time."""
+    if chosen:
+        return check_time_zone(chosen), None
+    offsets = utc_offsets(sample)
+    if len(offsets) == 1:
+        o = offsets[0]
+        if o == "+00:00":
+            return "UTC", None
+        h, m = int(o[1:3]), int(o[4:6])
+        if m == 0:
+            return f"Etc/GMT{'-' if o[0] == '+' else '+'}{h}", None          # Etc/GMT signs are the other way round
+        if o in _FIXED_ZONES:
+            return _FIXED_ZONES[o], None
+        return "UTC", (f"'{column}' is written at UTC{o}, which isn't tied to a time zone, so times are shown in UTC. "
+                       "Set 'Time zone' to see them in local time")
+    if len(offsets) > 1:
+        return "UTC", (f"'{column}' has times at several UTC offsets ({', '.join(offsets[:4])}), as with daylight "
+                       "saving, so they're shown in UTC. Set 'Time zone' (e.g. Europe/London) to see them in local time")
+    return "UTC", None
+
+
+def has_offset(fmt: str) -> bool:
+    """True when a date format reads a UTC offset (%z, %:z, or %+, ISO 8601 with its offset)."""
+    return "%z" in fmt or "%:z" in fmt or "%+" in fmt

@@ -55,6 +55,22 @@
   "average price per month": "Average price per month",
   "quantity by category for North": "Total quantity by category where region is North",
   "orders where price above 30": "orders where price above 30",
-  "how many orders by segment": "Rows by segment"
+  "how many orders by segment": "Rows by segment",
+  "orders before March": "orders where ordered_at before March 2024",
+  "orders since March": "orders where ordered_at from March 2024",
+  "average price from 2024-02-01 to 2024-03-01": "Average price where ordered_at from 2024-02-01 to 2024-03-01",
+  "total quantity for North and South": "Total quantity where region is North or South",
+  "orders in North or South": "orders where region is North or South",
+  "what is the average price": "Average price",
+  "orders where price is above 30": "orders where price above 30",
+  "price is between 10 and 20": "orders where price between 10 and 20",
+  "orders not in North": "orders where region is not North",
+  "total quantity last month": "Total quantity where ordered_at last month (March 2024)",
+  "orders in the last 7 days": "orders where ordered_at in the last 7 days (after 2024-04-22 23:00:00)",
+  "total quantity above 3": "Total quantity where quantity above 3",
+  "total quantity except North": "Total quantity where region is not North",
+  "total quantity per product": "Total quantity by products",
+  "top 5 products by price": "Top 5 products by average price",
+  "biggest month": "Biggest month (by total quantity)"
  }
 }

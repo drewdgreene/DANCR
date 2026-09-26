@@ -3,12 +3,13 @@ a Map drawer showing the steps, and a Settings dock on the right."""
 from __future__ import annotations
 
 import json
+import logging
 import time
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QPointF, QPoint, QSettings, QTimer, QSize, QUrl, QEventLoop
 from PySide6.QtGui import QAction, QActionGroup, QKeySequence, QCloseEvent, QDesktopServices
-from PySide6.QtWidgets import (QMainWindow, QFileDialog, QMessageBox, QSplitter, QToolBar, QStatusBar, QInputDialog, QLabel,
+from PySide6.QtWidgets import (QMainWindow, QMenu, QFileDialog, QMessageBox, QSplitter, QToolBar, QStatusBar, QInputDialog, QLabel,
                                QProgressDialog, QApplication, QToolButton, QStackedWidget, QWidget, QVBoxLayout, QHBoxLayout,
                                QPushButton, QFrame, QProgressBar, QDialog, QSizePolicy, QCheckBox)
 
@@ -37,6 +38,8 @@ from .icons import icon
 FILE_FILTER = "DANCR project (*.json)"
 DATA_FILTER = "Data files (*.csv *.tsv *.txt *.dat *.xlsx *.xlsm *.xls *.parquet);;All files (*)"
 
+
+log = logging.getLogger("dancr.ui")
 
 class MainWindow(QMainWindow):
     def __init__(self, doc: Document | None = None) -> None:
@@ -78,7 +81,7 @@ class MainWindow(QMainWindow):
         self.map_box = QWidget(); self.map_box.setMinimumHeight(140); ml = QVBoxLayout(self.map_box); ml.setContentsMargins(0, 0, 0, 0); ml.setSpacing(0)
         map_head = QFrame(); map_head.setStyleSheet(f"QFrame {{ background: {T.bg}; border-top: 1px solid {T.border}; border-bottom: 1px solid {T.border}; }}")
         mh = QHBoxLayout(map_head); mh.setContentsMargins(10, 3, 6, 3)
-        ml_lab = QLabel("Map — every step in this project, in order. Drag a step to move it; click one to see it."); ml_lab.setObjectName("muted"); ml_lab.setWordWrap(True)
+        ml_lab = QLabel("The map shows every step in this project, in order. Drag a step to move it, or click one to see it."); ml_lab.setObjectName("muted"); ml_lab.setWordWrap(True)
         self.map_close = QToolButton(); self.map_close.setObjectName("quiet"); self.map_close.setIcon(icon("x", T.muted, 14)); self.map_close.clicked.connect(lambda: self.a_map.setChecked(False))
         mh.addWidget(ml_lab, 1); mh.addWidget(self.map_close)
         ml.addWidget(map_head); ml.addWidget(self.view, 1)
@@ -129,7 +132,6 @@ class MainWindow(QMainWindow):
         if self.doc.running:                     # rebuilt (theme switch) during a run: show it, keep Stop working
             self._on_run_started()
         QTimer.singleShot(200, self._maybe_recover)
-        QTimer.singleShot(400, self._maybe_tour)
 
     # ------------------------------------------------------------ actions
     def _act(self, text: str, icon_name: str | None, shortcut=None, slot=None, tip: str | None = None) -> QAction:
@@ -156,7 +158,15 @@ class MainWindow(QMainWindow):
         self.a_open_data = self._act("Open data file…", "folder-open", "Ctrl+I", self.add_data_file, "Open a CSV, Excel or Parquet file as a new table (Ctrl+I)")
         self.a_quit = self._act("&Quit", None, QKeySequence.Quit, self.close)
         self.recent_menu = file_m.addMenu("Open &recent")
-        file_m.addAction(self.a_new); file_m.addAction(self.a_open); file_m.addMenu(self.recent_menu)
+        self.template_menu = QMenu("New from &template", self)
+        from ..core.samples import TEMPLATES
+        for t in TEMPLATES:
+            self.template_menu.addAction(t["title"], lambda k=t["key"]: self._start_template(k))
+        self.examples_menu = QMenu("&Examples", self)
+        from ..core.samples import EXAMPLES
+        for e in EXAMPLES:
+            self.examples_menu.addAction(e["title"], lambda k=e["key"]: self.open_example(k))
+        file_m.addAction(self.a_new); file_m.addMenu(self.template_menu); file_m.addMenu(self.examples_menu); file_m.addAction(self.a_open); file_m.addMenu(self.recent_menu)
         file_m.addSeparator(); file_m.addAction(self.a_open_data); file_m.addSeparator()
         file_m.addAction(self.a_save); file_m.addAction(self.a_save_as); file_m.addAction(self.a_versions); file_m.addAction(self.a_revert)
         file_m.addSeparator(); file_m.addAction(self.a_quit)
@@ -202,7 +212,7 @@ class MainWindow(QMainWindow):
         self.a_settings = QAction("Show &settings", self, checkable=True, checked=True)
         self.a_settings.setIcon(icon("sliders", T.text, 16)); self.a_settings.setShortcut("Ctrl+,")
         self.a_settings.setToolTip("Show or hide the settings panel (Ctrl+,)")
-        self.a_settings.toggled.connect(self.inspector.setVisible)
+        self.a_settings.toggled.connect(lambda _: self._apply_side_panels())
         self.a_fit = self._act("&Fit the map in view", "arrows-out", "Ctrl+0", self.view.fit_all)
         self.a_zoom_in = self._act("Zoom map in", None, [QKeySequence.ZoomIn, "Ctrl+="], lambda: self.view.zoom_by(1.2))
         self.a_zoom_out = self._act("Zoom map out", None, QKeySequence.ZoomOut, lambda: self.view.zoom_by(1 / 1.2))
@@ -225,7 +235,6 @@ class MainWindow(QMainWindow):
         help_m.addAction(self._act("&User guide", "question", "F1", self.show_help))
         help_m.addAction(self._act("Formula &functions", None, None, lambda: self.show_help("formulas")))
         help_m.addAction(self._act("For AI agents and the command line", None, None, lambda: self.show_help("agents")))
-        help_m.addAction(self._act("Show the &tour again", None, None, lambda: self._maybe_tour(force=True)))
         help_m.addSeparator()
         help_m.addAction(self._act("Show &log file", None, None, self.show_log))
         help_m.addAction(self._act("&About DANCR", None, None, self.about))
@@ -372,18 +381,22 @@ class MainWindow(QMainWindow):
         self.start.openProject.connect(self.open_dialog)
         self.start.openFiles.connect(self.add_data_files)
         self.start.openRecent.connect(lambda p: self._confirm_stop_run("open another project") and self.maybe_save() and self.open_path(p))
-        self.start.template.connect(self._start_template); self.start.blank.connect(lambda: self.add_node("enter_data", None))
+        self.start.blank.connect(lambda: self.add_node("enter_data", None))
+        self.start.example.connect(self.open_example)
+        self.start.removeRecent.connect(self._remove_recent)
         self.setAcceptDrops(True)
 
     # ------------------------------------------------------------ pages and selection
     def _show_page(self) -> None:
         """Pick the page for the current selection (start page when the project is empty)."""
-        if not self.doc.pipeline.nodes and self._current is None:
+        if self._on_start_page():
             self.start.set_recent(self._recent())
             self.pages.setCurrentWidget(self.start)
             self.map_box.setVisible(False); self.map_handle.setVisible(False)
             self.askbar.setVisible(False)
+            self._apply_side_panels()
             return
+        self._apply_side_panels()
         self.askbar.setVisible(self._ask_open)       # only when asked for: Ask a question, or an answer selected
         self._apply_map_visibility()
         nid = self._current
@@ -593,6 +606,17 @@ class MainWindow(QMainWindow):
             return None
         return nid
 
+    def _on_start_page(self) -> bool:
+        return not self.doc.pipeline.nodes and self._current is None
+
+    def _apply_side_panels(self) -> None:
+        """The project list and the settings panel have nothing to show until the project has a step."""
+        start = self._on_start_page()
+        self.rail.setVisible(not start)
+        self.inspector.setVisible(not start and self.a_settings.isChecked())
+        for a in (self.a_settings, self.a_map, self.a_add, self.a_ask, self.a_run):
+            a.setEnabled(not start)
+
     def _toggle_map(self, on: bool) -> None:
         self._apply_map_visibility()
         if on:
@@ -620,7 +644,7 @@ class MainWindow(QMainWindow):
             self.mode_label.setText("runs automatically")
         else:
             mb = self.doc.source_bytes() / 1e6
-            self.mode_label.setText(f"large data ({mb:,.0f} MB): press Run to compute")
+            self.mode_label.setText(f"large data ({mb:,.0f} MB), press Run to compute")
         if self.table.nid:
             self.table._refresh_header()
 
@@ -803,7 +827,7 @@ class MainWindow(QMainWindow):
         r = QMessageBox.question(self, "Unsaved changes", text, QMessageBox.Yes | QMessageBox.No)
         if r == QMessageBox.Yes:
             self.doc.recover(pipe, rp)
-            self.status.showMessage("Recovered — save it to keep it", 8000)
+            self.status.showMessage("Recovered. Save it to keep it", 8000)
         else:
             rp.unlink(missing_ok=True)
 
@@ -822,7 +846,7 @@ class MainWindow(QMainWindow):
                 self.doc.restore_version(dlg.chosen())
             except Exception as e:  # noqa: BLE001
                 QMessageBox.critical(self, "Cannot restore", str(e)); return
-            self.status.showMessage("Restored — save to keep it, or Revert to go back. Autosave is paused until then.", 8000)
+            self.status.showMessage("Restored. Save to keep it, or Revert to go back. Autosave is paused until then.", 8000)
 
     def terminate(self) -> None:
         """The system asked us to quit (SIGTERM): no questions, keep an unsaved project recoverable, close cleanly."""
@@ -875,6 +899,12 @@ class MainWindow(QMainWindow):
         if isinstance(v, str):
             return [v] if v else []
         return [str(x) for x in (v or [])]
+
+    def _remove_recent(self, p: str) -> None:
+        self.settings.setValue("recent", [r for r in self._recent() if r != p])
+        self._refresh_recent()
+        if self._on_start_page():
+            self.start.set_recent(self._recent())
 
     def _push_recent(self, p: Path) -> None:
         rec = [str(p)] + [r for r in self._recent() if r != str(p)]
@@ -1014,6 +1044,18 @@ class MainWindow(QMainWindow):
             self.status.showMessage(f"Added {p.name}. It will load when you next run.", 6000)
         return nid
 
+    def open_example(self, key: str) -> None:
+        """Open an example project, making it first if it is not in ~/DANCR samples yet."""
+        from ..core.samples import write_example, example
+        if not (self._confirm_stop_run("open the example") and self.maybe_save()):
+            return
+        try:
+            path = write_example(key, Path.home() / "DANCR samples" / example(key)["title"])
+        except Exception as e:  # noqa: BLE001
+            log.exception("Could not make the example project")
+            QMessageBox.critical(self, "Example project", f"Couldn't make the example project: {e}"); return
+        self.open_path(str(path))
+
     def _start_template(self, key: str) -> None:
         # a template is a new project: it never replaces the open one's file (even one whose steps were all deleted)
         if not self.maybe_save():
@@ -1028,7 +1070,7 @@ class MainWindow(QMainWindow):
             build_template(key, pipe, data)
         except Exception as e:  # noqa: BLE001
             QMessageBox.critical(self, "Template", str(e)); return
-        self.doc.replace_pipeline(pipe)
+        self.doc.replace_pipeline(pipe)             # the files it saves wait for the project to be saved: they go next to it
         self.doc.undo.resetClean()
         self.doc.schedule_auto_run()
         self.status.showMessage(f"Sample data saved to {data}", 8000)
@@ -1128,13 +1170,6 @@ class MainWindow(QMainWindow):
     def show_help(self, section: str = "") -> None:
         from .helpdialog import HelpDialog
         HelpDialog(self, section).show()
-
-    def _maybe_tour(self, force: bool = False) -> None:
-        if self._disposed or (not force and self.settings.value("tour_shown")):
-            return
-        self.settings.setValue("tour_shown", True)
-        from .helpdialog import TourDialog
-        TourDialog(self).show()
 
     def show_log(self) -> None:
         from ..logsetup import log_path

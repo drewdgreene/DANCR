@@ -10,7 +10,9 @@ Two interfaces, same engine:
 
 - **MCP server** (preferred): `dancr mcp` (stdio). Register it once in your MCP
   client (for example: `claude mcp add dancr -- dancr mcp`); `--root DIR` sets the
-  folder pipelines may be created in (default: the folder it starts in). Tools: `ask`,
+  folder pipelines may be created in (default: the folder it starts in; started in
+  the home folder or at the top of a drive it creates and changes no pipelines
+  until `--root` names a folder). Tools: `ask`,
   `suggest_answers`, `change_answer`, `remove_answer`, `understand_data`, `list_node_types`,
   `formula_reference`, `inspect_file`, `create_pipeline`, `build_template`,
   `describe_pipeline`, `add_node`, `set_params`, `connect_nodes`,
@@ -41,12 +43,22 @@ window and has no console, so it cannot serve JSON or the MCP protocol.
 
 Where MCP may write: pipeline files (`create_pipeline`, `build_template`, and
 every tool that edits one) must be `.json` files inside the server's root
-folder. Every other file must be inside the folder that holds the pipeline
-file: `export_node(out_path)`, `render_chart(out_png)`, and the `path` of
-`export`, `workbook` and `report` steps when `run_pipeline` (or a reading tool)
-runs them; a step pointing elsewhere fails with a message. Relative paths are
+folder; `create_pipeline(overwrite=true)` replaces only a file that is already a
+DANCR pipeline. Every other file must be inside the folder that holds the pipeline
+file and must not be a data file the pipeline reads: `export_node(out_path)`,
+`render_chart(out_png)`, and the `path` of `export`, `workbook` and `report` steps
+(checked when the step is added or changed, and before `run_pipeline` or a reading
+tool runs it); a step pointing elsewhere fails with a message. Relative paths are
 taken from that folder. Put the pipeline next to the data and results you
 want. Reading (`inspect_file`, `load_file` paths) is not confined.
+
+One writer at a time: the MCP server, the CLI and the window each hold a project
+file's lock (`.dancr/locks/` next to it) while they read, change and save it, so
+none saves over another's change. A command that cannot get the lock within 30 s,
+or finds the file changed by something that does not take it, fails with a message
+and saves nothing: run it again. When the window reloads a project changed
+elsewhere, it does not run by itself a step that was added or repointed to save
+outside the project folder or over the project's data; the person runs it.
 
 ## Mental model
 
@@ -61,9 +73,10 @@ want. Reading (`inspect_file`, `load_file` paths) is not confined.
   `stack`, `report` and `workbook` have a multi-input (`tables` / `items`);
   `predict` has `data` and `model`.
 - **Running** materialises each step's output to Parquet under
-  `<project dir>/.dancr/cache/<name>/<node>/` (a project with no file yet uses
+  `<project dir>/.dancr/cache/<project file name>/<node>/` (a project with no file yet uses
   the user cache folder instead, so always save the project file first). Re-runs skip steps whose
-  settings, inputs and upstream data did not change; `export`, `workbook` and
+  settings, inputs and upstream data did not change (a source file counts as changed when its size,
+  time or a sample of its content differs); `export`, `workbook` and
   `report` steps also run again when their file was deleted or changed, or when
   the titles or column labels they show changed. `force` (`run --force`,
   `run_pipeline(force=true)`) recomputes everything and replaces the stored
@@ -74,11 +87,12 @@ want. Reading (`inspect_file`, `load_file` paths) is not confined.
   `dancr status`.
 - **Inputs**: `set_input(name, value, unit, note)`. Use them in formulas as
   `[name]`, as filter values, and as `min`/`max` of `check_limits` or chart
-  `limits`. Changing one recomputes only the steps that use it.
+  `limits`. Changing one recomputes only the steps that use it. A value with
+  leading zeros (`007`) stays text, like a code in a loaded file.
 - Errors are plain English and name the column or setting. Fix and re-run.
 - A project may also hold **Answers**: a question and the steps that answer it. An Answer has an
   `id`, a `title`, a `terminal` node id (the step whose output answers the question), a `view`, the
-  question as a `spec`, the `steps` it built (`{plan key: {node, made, title, hand?}}`), and the
+  question as a `spec`, the `steps` it built (`{plan key: {node, made, title, inputs, hand?}}`), and the
   `assumptions` it made (each with `choices` that change it). Answers are *not* part of the dataflow —
   the executor and cache ignore them entirely — so removing one never changes what a run computes.
   `dancr --json show` and MCP `describe_pipeline` list them under `answers`.
@@ -159,25 +173,25 @@ Here `log.csv` has the columns `time`, `value` and `temperature`.
 
 ## Settings cheat-sheet (full list: `dancr nodes -v` or `list_node_types`)
 
-- `load_file`: `path`, `sheet`, `has_header`, `skip_rows`, `separator` (auto), `parse_dates` (also joins a Date and a time-of-day column into `<Date> <Time>`), `parse_numbers` (reads `1,234.50` `£99` `31.5%` `(120)`; codes with leading zeros stay text), `date_format`, `day_first` (only for dates like 01/05/2024 that read either way; default month/day, and a run reads the whole column to choose), `decimal_comma`, `encoding` utf8|latin1, `infer_rows`, `ignore_errors`, `columns`.
+- `load_file`: `path`, `sheet`, `has_header`, `skip_rows`, `separator` (auto), `parse_dates` (also joins a Date and a time-of-day column into `<Date> <Time>`), `parse_numbers` (reads `1,234.50` `£99` `31.5%` `(120)`; codes with leading zeros stay text), `date_format`, `day_first` (only for dates like 01/05/2024 that read either way; default month/day, and a run reads the whole column to choose), `time_zone` (for times written with a UTC offset: empty keeps the file's own offset when it has one throughout, else UTC; or a name such as `Europe/London`), `decimal_comma`, `encoding` utf8|latin1, `infer_rows`, `ignore_errors`, `columns`.
 - `choose_columns`: `mode` keep|drop, `columns`, `rename`. `sort`: `columns`, `descending`. `remove_duplicates`: `columns`, `keep` first|last|none.
-- `fix_missing`: `method` drop|drop_all|value|forward|backward|interpolate|mean|zero, `value`, `columns`. `change_type`: `columns`, `to` number|integer|text|datetime|bool, `date_format`, `epoch_unit`.
+- `fix_missing`: `method` drop|drop_all|value|forward|backward|interpolate|mean|zero, `value`, `columns`. `change_type`: `columns`, `to` number|integer|text|datetime|bool, `date_format`, `epoch_unit`, `time_zone` (as `load_file`).
 - `unpivot` (columns into rows): `columns` (e.g. Jan … Dec), `name_column` (month), `value_column` (value), `year` (month columns then also get a `date`). Answers add it by themselves in front of a wide table.
 - `take_sample`: `mode` first|last|every|random, `rows`, `every`, `fraction`, `seed`. `stack`: `label_column`, `labels`; connect tables to `tables`.
 - `enter_data`: `columns` = `[{"name","type": text|number|datetime|bool}]`, `rows` = list of lists.
 - `keep_rows`: `mode` keep|remove, `conditions` = `{"match":"all"|"any","rules":[{"column","op","value","value2"}]}`
-  with ops `eq ne gt lt ge le between contains not_contains starts ends in empty not_empty true false year month` (`year`/`month` on date columns: `2024`, `3` or `March`); values may be input names; or `formula`. As in Excel, a blank cell counts as not equal to (and not containing) any value. `in` takes a list, or text separated by `;` or `,` (`"1,000; 2,500"` for numbers with thousands separators).
+  with ops `eq ne gt lt ge le between contains not_contains starts ends in empty not_empty true false year month` (`year`/`month` on date columns: `2024`, `3` or `March`); values may be input names; or `formula`. As in Excel (and as `=`/`<>` in formulas), text matches ignoring case, a blank cell counts as not equal to (and not containing) any value, blank cells are matched with `empty` / `not_empty`; a rule without the value it needs is left out until it has one (the step says so in `messages`). `in` takes a list, or text separated by `;` or `,` (`"1,000; 2,500"` for numbers with thousands separators).
 - `calculate`: `formulas` = `[{"name": "diff", "expr": "[b] - [a]"}]`, `only_new`. Whole-number `+ - *` work in 64 bits.
-- `fix_values`: `fixes` = `[{"row": 1-based, "column", "value", "was", "note"}]`.
-- `combine`: `method` match|nearest_time|side_by_side; match: `on`, `right_on`, `how`; nearest_time: `left_time`, `right_time`, `direction`, `tolerance` (e.g. `500ms`); `suffix`.
+- `fix_values`: `fixes` = `[{"row": 1-based, "column", "value", "was", "note"}]`. `was` is what the cell held (`null`: blank); when a cell no longer holds it (rows moved upstream) the step fails and names those corrections instead of changing the wrong cell. Leave `was` out to skip the check.
+- `combine`: `method` match|nearest_time|side_by_side; match: `on`, `right_on`, `how` (text keys match ignoring case, like VLOOKUP; the key keeps the values as written); nearest_time: `left_time`, `right_time`, `direction`, `tolerance` (e.g. `500ms`); `suffix`.
 - `time_buckets`: `every` (`1s 1m 15m 1h 1d`, calendar `1mo 1q 1y`), `by` (also split per value of these columns), `columns` (empty = every number column), `default_stats` (mean median min max std sum count first last n_unique rows — `count` is filled values, `rows` every row; one statistic keeps column names, several add `_stat`), `time_column`, `aggregations`, `count_column`.
-- `rolling`: `columns`, `stat` mean|median|min|max|std|sum, `window` (rows like `20` or a span like `30s`), `time_column`, `centered` (a span `w` then covers `[t - w/2, t + w/2]`; otherwise `(t - w, t]`), `replace`.
+- `rolling`: `columns`, `stat` mean|median|min|max|std|sum, `window` (rows like `20` or a span like `30s`), `time_column`, `centered` (default true, as the `ROLLING_*` formulas; a span `w` then covers `[t - w/2, t + w/2]`; otherwise `(t - w, t]`), `replace`.
 - `rate_of_change`: `columns`, `time_column`, `per` s|m|h|d, `span`. `find_gaps`: `time_column`, `expected`, `factor`. `regular_grid`: `time_column`, `every`, `method` nearest|backward|forward|interpolate.
 - `summarise_around`: `window`, `side` before|after|around, `columns`, `stats`, `sample_time`, `log_time`.
 - `remove_outliers`: `columns`, `method` rolling|zscore|iqr|range, `window`, `threshold`, `iqr_factor`, `local_spread`, `min`, `max`, `action` remove|blank|flag|clip, `flag_column`.
 - `fit_curve`: `x`, `y`, `kind` linear|saturating|exponential|power|logarithmic|polynomial, `degree`, `group`, `predicted_column`. Report: `fits` = list of {equation, r2, rmse, params, n, group}.
 - `predict`: inputs `data` (x values) and `model` (a fit_curve step); `x`, `output`, `group`.
-- `check_limits`: `column`, `min`, `max` (numbers or input names), `action` flag|remove|keep_failing, `flag_column`. Report: verdict PASS|FAIL, outside, rows.
+- `check_limits`: `column`, `min`, `max` (numbers or input names; a minimum above the maximum fails), `action` flag|remove|keep_failing, `flag_column`. Report: verdict PASS|FAIL|NOTHING CHECKED (every value blank), checked, outside, blank, rows.
 - `group_summary`: `by`, `columns`, `default_stats`, `aggregations`, `count_column`. `summarize`: `columns`.
 - `chart`: `kind` line|scatter|histogram|bar, `x`, `series` `[{"column","color","label"}]`, `color_by`, `split_by` (one panel per value), `limits` `[{"value","label"}]`, `fit`, `mean_line`, `column`, `bins`, `category`, `value`, `stat` mean|sum|count|min|max|median, `title`, `y_label`, `break_gaps`, `log_y`.
 - `export`: `path` (.csv | .tsv | .txt | .parquet | .xlsx). `workbook`: `path` (.xlsx); connect tables to `items`.
@@ -190,6 +204,6 @@ Here `log.csv` has the columns `time`, `value` and `temperature`.
 - Set display names and units with `set_column_label` / `dancr columns`; they appear in the table header, on charts and in reports.
 - Put thresholds and constants in Inputs rather than hard-coding them in formulas, so the person can change them on the Inputs page.
 - For a deliverable, end with a `report` step and run it; also `open_in_gui` / `dancr open` so the person can explore.
-- The window and the CLI/MCP may run the same project at the same time; the cache is safe for that.
+- The window and the CLI/MCP may run and change the same project at the same time; the cache and the project file's lock are safe for that.
 - Never write into the `.dancr` cache folder yourself. Exports and chart files go next to the project file (MCP enforces this).
 - If something goes wrong, `dancr log` prints the log file path and its last lines.

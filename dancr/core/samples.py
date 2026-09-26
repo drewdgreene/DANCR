@@ -123,3 +123,154 @@ def build_template(key: str, pipe, data_path: Path) -> None:
         ch = add("chart", {"kind": "line", "x": time_col or "", "series": [{"column": c} for c in nums[:2]], "title": "Hourly averages"}, "Hourly chart", y=120, after=avg)
         rep = add("report", {"title": "Hourly summary", "path": "report.html", "notes": "Hourly averages of both columns."}, "Report", after=ch, port="items")
         pipe.connect(avg, rep, "items")
+
+
+# ---------------------------------------------------------------- example projects
+# Each is a finished project on its own realistic data: the files, the questions it answers, and any steps
+# added by hand. They open from the start page into ~/DANCR samples/<title>.
+EXAMPLES = [
+    {"key": "shop", "title": "Shop sales",
+     "blurb": "A year of orders and a customer list, linked by customer. Sales by region, month, customer and product.",
+     "questions": ["total sales by region", "monthly sales", "top 10 customers by sales", "total sales by product"]},
+    {"key": "loggers", "title": "Two sensor logs",
+     "blurb": "A week of pressure and temperature from two loggers. Compared with each other, averaged per hour, "
+              "with the gaps and spikes found.",
+     "questions": ["compare logger_A and logger_B", "average pressure per hour", "gaps in logger_A", "spikes in pressure"]},
+    {"key": "budget", "title": "Department budget",
+     "blurb": "A spreadsheet with a column for each month. Turned into rows, then totalled by department, month and cost.",
+     "questions": ["total value by department", "total value per month", "total value by cost"]},
+    {"key": "batches", "title": "Batch tests",
+     "blurb": "Strength tests from three presses. Checked against a minimum strength, compared by press, and "
+              "strength fitted against curing temperature.",
+     "questions": ["average strength by machine", "strength against cure_temp", "strength per week"]},
+]
+
+
+def example(key: str) -> dict:
+    for e in EXAMPLES:
+        if e["key"] == key:
+            return e
+    raise ValueError(f"No example called {key!r}. Examples: {', '.join(e['key'] for e in EXAMPLES)}")
+
+
+def write_example(key: str, directory: Path | str) -> Path:
+    """Example ``key`` as a finished project in ``directory``: its files, its answers, and a report of their
+    charts. An example already there is reused as it is (the person may have changed it)."""
+    from .model import Pipeline
+    from .answers import build, model_for
+    from .ask import ask
+    from .executor import Executor
+    ex = example(key)
+    directory = Path(directory)
+    project = directory / f"{ex['title']}.json"
+    if project.exists():
+        return project
+    directory.mkdir(parents=True, exist_ok=True)
+    files = _EXAMPLE_DATA[key](directory)
+    p = Pipeline(ex["title"])
+    p.path = project
+    for name in files:
+        p.add_node("load_file", title=Path(name).stem, params={"path": name}, id=Path(name).stem)
+    model = model_for(p, Executor(p))                   # the tables; the answers only add steps after them
+    for q in ex["questions"]:
+        asked = ask(model, q)
+        if not asked.ok:
+            raise RuntimeError(f"The example question {q!r} is no longer understood: {asked.message}")
+        build(p, model, asked.spec)
+    items = [a.terminal for a in p.answers]
+    if key == "batches":
+        items.append(_batch_limit(p))
+    report = p.add_node("report", title="Report", id="report",
+                        params={"title": ex["title"], "path": f"{ex['title']} report.html", "notes": ex["blurb"]})
+    for nid in items:
+        p.connect(nid, report.id, "items")
+    p.save(project)
+    return project
+
+
+def _batch_limit(p) -> str:
+    """A pass/fail check against a minimum kept on the Inputs page, so changing it reruns the check."""
+    p.set_input("minimum strength", 30, "MPa", "from the product spec")
+    check = p.add_node("check_limits", title="Strength at least the minimum", id="strength_check",
+                       params={"column": "strength", "min": "minimum strength", "action": "flag"})
+    p.connect("batch_tests", check.id)
+    return check.id
+
+
+def _write_shop(d: Path) -> list[str]:
+    rng = np.random.default_rng(7)
+    first = ["Ava", "Ben", "Chloe", "Dan", "Ella", "Finn", "Grace", "Harry", "Isla", "Jack",
+             "Kate", "Leo", "Mia", "Noah", "Olivia", "Paul", "Ruby", "Sam", "Tom", "Zoe"]
+    last = ["Brown", "Clark", "Evans", "Green", "Hall", "Jones", "Khan", "Lewis", "Moore", "Patel",
+            "Reed", "Shaw", "Taylor", "Walsh", "Wood"]
+    nc = 60
+    pl.DataFrame({"customer_id": list(range(1001, 1001 + nc)),
+                  "customer": [f"{first[i % 20]} {last[(i * 7) % 15]}" for i in range(nc)],
+                  "region": [["North", "South", "East", "West"][i % 4] for i in range(nc)]}).write_csv(d / "customers.csv")
+    products = [("Hammer", 12.5), ("Screwdriver set", 18.0), ("Paint 1L", 9.75), ("Paint 5L", 38.0), ("Brush", 4.5),
+                ("Garden hose", 24.0), ("Spade", 29.0), ("Gloves", 6.25), ("Drill", 79.0), ("Ladder", 95.0)]
+    n = 3000
+    t0 = datetime(2024, 1, 1)
+    days = np.sort(rng.integers(0, 366, n))
+    item = rng.integers(0, len(products), n)
+    qty = rng.integers(1, 6, n)
+    pl.DataFrame({
+        "order_id": list(range(50001, 50001 + n)),
+        "ordered_at": [t0 + timedelta(days=int(dd), hours=int(h), minutes=int(mm))
+                       for dd, h, mm in zip(days, rng.integers(8, 19, n), rng.integers(0, 60, n))],
+        "customer_id": rng.integers(1001, 1001 + nc, n).tolist(),
+        "product": [products[i][0] for i in item],
+        "quantity": qty.tolist(),
+        "sales": [round(products[i][1] * int(q), 2) for i, q in zip(item, qty)],
+    }).write_csv(d / "orders.csv")
+    return ["orders.csv", "customers.csv"]
+
+
+def _write_loggers(d: Path) -> list[str]:
+    """A week at one reading a minute. B reads a little high, drifts and is noisier; A has a gap and a spike."""
+    rng = np.random.default_rng(3)
+    n = 7 * 24 * 60
+    t0 = datetime(2024, 5, 6)
+    secs = np.arange(n) * 60
+    daily = np.sin(2 * np.pi * secs / 86400)
+    pa = 4.2 + 0.15 * daily + rng.normal(0, 0.01, n)
+    pa[3000] += 1.5
+    keep = np.ones(n, bool)
+    keep[6000:6180] = False
+    pl.DataFrame({"time": [t0 + timedelta(seconds=int(s)) for s in secs], "pressure (bar)": np.round(pa, 4),
+                  "temperature (°C)": np.round(18 + 3 * daily + rng.normal(0, 0.05, n), 2)}
+                 ).filter(pl.Series(keep)).write_csv(d / "logger_A.csv")
+    pl.DataFrame({"time": [t0 + timedelta(seconds=int(s) + 13) for s in secs],
+                  "pressure (bar)": np.round(4.2 + 0.15 * daily + 0.0004 * np.arange(n) / 60 + rng.normal(0, 0.03, n), 4),
+                  "temperature (°C)": np.round(18.4 + 3 * daily + rng.normal(0, 0.08, n), 2)}).write_csv(d / "logger_B.csv")
+    return ["logger_A.csv", "logger_B.csv"]
+
+
+def _write_budget(d: Path) -> list[str]:
+    rng = np.random.default_rng(5)
+    lines = [("Operations", "Staff"), ("Operations", "Equipment"), ("Operations", "Travel"), ("Sales", "Staff"),
+             ("Sales", "Travel"), ("Marketing", "Staff"), ("Marketing", "Campaigns"), ("IT", "Staff"), ("IT", "Software"),
+             ("IT", "Hardware"), ("HR", "Staff"), ("HR", "Training"), ("Finance", "Staff"), ("Finance", "Audit")]
+    months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+    base = {line: rng.uniform(4, 40) * 1000 for line in lines}
+    rows: dict[str, list] = {"department": [a for a, _ in lines], "cost": [b for _, b in lines]}
+    for m in months:
+        busy = 1.4 if m in ("Nov", "Dec") else 1.0
+        rows[m] = [int(round(base[line] * (busy if line[1] == "Campaigns" else 1) * rng.uniform(0.9, 1.1), -2)) for line in lines]
+    pl.DataFrame(rows).write_csv(d / "spend_2024.csv")
+    return ["spend_2024.csv"]
+
+
+def _write_batches(d: Path) -> list[str]:
+    rng = np.random.default_rng(11)
+    n = 240
+    machine = rng.choice(["Press 1", "Press 2", "Press 3"], n)
+    temp = np.round(rng.uniform(160, 220, n), 1)
+    strength = 31 + 0.08 * (temp - 160) - 0.0015 * (temp - 200) ** 2 + np.where(machine == "Press 3", -1.2, 0) + rng.normal(0, 0.6, n)
+    pl.DataFrame({"batch": [f"B{2400 + i}" for i in range(n)],
+                  "tested_at": [datetime(2024, 3, 1) + timedelta(hours=int(h)) for h in np.sort(rng.integers(0, 24 * 60, n))],
+                  "machine": machine, "cure_temp": temp, "strength": np.round(strength, 2)}).write_csv(d / "batch_tests.csv")
+    return ["batch_tests.csv"]
+
+
+_EXAMPLE_DATA = {"shop": _write_shop, "loggers": _write_loggers, "budget": _write_budget, "batches": _write_batches}

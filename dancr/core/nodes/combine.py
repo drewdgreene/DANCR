@@ -9,7 +9,7 @@ from ..params import Param
 from ..registry import NodeType, InputSpec, Ctx, NodeResult, registry
 from ..timeutil import parse_duration
 from ._common import schema_of, require_column, temporal_columns
-from ..expr import TIME, NUM, STR, _kind_of_dtype
+from ..expr import TIME, NUM, STR, kind_of_dtype
 from ..dtypes import align_time_column, temp_name, is_date
 
 
@@ -81,7 +81,7 @@ def _combine(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, 
     restore: dict[str, pl.DataType] = {}
     for a, b in zip(on, right_on):
         if ls[a] != rs[b]:
-            ka, kb = _kind_of_dtype(ls[a]), _kind_of_dtype(rs[b])
+            ka, kb = kind_of_dtype(ls[a]), kind_of_dtype(rs[b])
             if ka == TIME and kb == TIME:
                 # a date against a date/time: both become date/times (midnight), then the key keeps the first table's type
                 target = pl.Datetime("us") if is_date(ls[a]) else ls[a]
@@ -99,13 +99,29 @@ def _combine(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, 
                 right = right.with_columns(pl.col(b).cast(common).alias(b))
                 if how in ("left", "inner"):
                     restore[a] = ls[a]           # every key comes from the first table, so its own type holds them
-    out = left.join(right, left_on=on, right_on=right_on, how=how, suffix=suffix, coalesce=True,
+    # text keys match ignoring case, as VLOOKUP does: the join uses lower-case copies and the key column keeps
+    # the values as written (the first table's, or the second's for rows only it has)
+    taken = {*ls, *rs}
+    lkeys, rkeys, folded = list(on), list(right_on), []
+    for i, (a, b) in enumerate(zip(on, right_on)):
+        if kind_of_dtype(ls[a]) == STR:
+            k, orig = temp_name(f"key{i}", taken), temp_name(f"orig{i}", taken)
+            taken |= {k, orig}
+            left = left.with_columns(pl.col(a).cast(pl.Utf8).str.to_lowercase().alias(k))
+            right = right.with_columns(pl.col(b).cast(pl.Utf8).str.to_lowercase().alias(k)).rename({b: orig})
+            lkeys[i] = rkeys[i] = k
+            folded.append((a, k, orig))
+    out = left.join(right, left_on=lkeys, right_on=rkeys, how=how, suffix=suffix, coalesce=True,
                     maintain_order="left" if how in ("left", "inner") else ("right" if how == "right" else "none"))
+    if folded:
+        if how in ("full", "right"):
+            out = out.with_columns([pl.coalesce(pl.col(a), pl.col(orig).cast(out.collect_schema()[a])).alias(a) for a, _, orig in folded])
+        out = out.drop([c for _, k, orig in folded for c in (k, orig)])
     if restore:
         out = out.with_columns([pl.col(c).cast(dt) for c, dt in restore.items()])
     if not ctx.preview:
         # like VLOOKUP people expect one match per row; say so when a key repeats in the second table
-        dup = int(right.select(pl.struct(right_on).is_duplicated().sum()).collect(engine="streaming")[0, 0])
+        dup = int(right.select(pl.struct(rkeys).is_duplicated().sum()).collect(engine="streaming")[0, 0])
         if dup:
             msgs.append(f"{dup:,} rows of the second table share their key with another row, so the rows of the first "
                         "table with those keys appear once per match. Use 'Remove duplicates' on the second table to keep one.")

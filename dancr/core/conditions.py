@@ -5,8 +5,9 @@ from typing import Any
 
 import polars as pl
 
-from .expr import _kind_of_dtype, NUM, STR, BOOL, TIME, DUR
+from .expr import kind_of_dtype, excel_compare, NUM, STR, BOOL, TIME, DUR
 from .dtypes import datetime_literal, is_date, number_from_text, text_to_bool
+from .params import find_input
 from .timeutil import parse_duration
 
 # op key -> (label, needs_value, needs_second_value, applies to kinds)
@@ -56,15 +57,17 @@ def _literal(value: Any, kind: str, what: str, dtype: pl.DataType | None = None)
 
 
 def _resolve_input(value: Any, inputs: dict[str, Any] | None) -> Any:
-    if inputs and isinstance(value, str):
-        key = value.strip().lower()
-        for k, v in inputs.items():
-            if k.lower() == key:
-                return v
-    return value
+    found = find_input(inputs, value)
+    return value if found is None else found[1]
+
+
+def _blank(v: Any) -> bool:
+    return v is None or (isinstance(v, str) and not v.strip()) or (isinstance(v, list) and not v)
 
 
 def rule_mask(schema: dict[str, pl.DataType], rule: dict[str, Any], inputs: dict[str, Any] | None = None) -> pl.Expr:
+    """One rule as a true/false column. A condition that needs a value and has none is refused: blank cells
+    are asked for with 'is empty' and 'is not empty'."""
     col = rule.get("column")
     op = rule.get("op", "eq")
     rule = {**rule, "value": _resolve_input(rule.get("value"), inputs), "value2": _resolve_input(rule.get("value2"), inputs)}
@@ -73,7 +76,7 @@ def rule_mask(schema: dict[str, pl.DataType], rule: dict[str, Any], inputs: dict
     if op not in OPS:
         raise ValueError(f"Filter: unknown condition {op!r}")
     dtype = schema[col]
-    kind = _kind_of_dtype(dtype)
+    kind = kind_of_dtype(dtype)
     if kind not in OPS[op][3] and kind != "any":
         raise ValueError(f"Filter: '{OPS[op][0]}' does not apply to {col} (a {kind} column)")
     c = pl.col(col)
@@ -83,6 +86,10 @@ def rule_mask(schema: dict[str, pl.DataType], rule: dict[str, Any], inputs: dict
     what = f"{col} {label}"
     v = rule.get("value")
     v2 = rule.get("value2")
+    if OPS[op][1] and _blank(v):
+        raise ValueError(f"{what}: enter a value. For blank cells, use 'is empty' or 'is not empty'")
+    if OPS[op][2] and _blank(v2):
+        raise ValueError(f"{what}: enter both ends of the range")
     if op == "empty":
         e = c.is_null()
         if kind == STR:
@@ -91,7 +98,7 @@ def rule_mask(schema: dict[str, pl.DataType], rule: dict[str, Any], inputs: dict
             e = e | c.cast(pl.Float64).is_nan()
         return e
     if op == "not_empty":
-        return ~rule_mask(schema, {**rule, "op": "empty"})
+        return ~rule_mask(schema, {"column": col, "op": "empty"})
     if op in ("year", "month"):
         n = _month_number(v) if op == "month" else int(number_from_text(v, what))
         if op == "month" and not 1 <= n <= 12:
@@ -103,7 +110,7 @@ def rule_mask(schema: dict[str, pl.DataType], rule: dict[str, Any], inputs: dict
         return c.cast(pl.Boolean) == False  # noqa: E712
     if op in ("contains", "not_contains", "starts", "ends"):
         s = c.cast(pl.Utf8)
-        needle = str(v or "")
+        needle = str(v)
         if not rule.get("case_sensitive", False):
             s = s.str.to_lowercase()
             needle = needle.lower()
@@ -120,8 +127,10 @@ def rule_mask(schema: dict[str, pl.DataType], rule: dict[str, Any], inputs: dict
         else:
             # items are separated by ";" or, when there is no ";", by ",": "100,200,300" is three numbers,
             # and "1,000; 2,500" is how to list numbers written with thousands separators
-            text = str(v or "")
+            text = str(v)
             items = [x.strip() for x in text.split(";" if ";" in text else ",") if x.strip()]
+        if not items:
+            raise ValueError(f"{what}: enter a value")
         if kind == NUM:
             nums = [number_from_text(x, what) for x in items]
             return c.cast(pl.Float64).is_in(nums)
@@ -131,54 +140,34 @@ def rule_mask(schema: dict[str, pl.DataType], rule: dict[str, Any], inputs: dict
             s = s.str.to_lowercase()
             wanted = [x.lower() for x in wanted]
         return s.is_in(wanted)
-    if kind == STR and op in ("eq", "ne"):
-        s = c.cast(pl.Utf8)
-        needle = pl.lit(str(v if v is not None else ""))
-        if not rule.get("case_sensitive", False):
-            s = s.str.to_lowercase()
-            needle = pl.lit(str(v if v is not None else "").lower())
-        return (s == needle) if op == "eq" else s.ne_missing(needle)     # a blank cell is not equal to it
-    if v in (None, ""):
-        raise ValueError(f"{what}: enter a value")
-    lit = _literal(v, kind, what, dtype)
     if kind == NUM:
-        c = c.cast(pl.Float64).fill_nan(None)     # NaN is a blank: it matches no comparison
-    if op == "eq":
-        return c == lit
-    if op == "ne":
-        return c.ne_missing(lit)
-    if op == "gt":
-        return c > lit
-    if op == "lt":
-        return c < lit
-    if op == "ge":
-        return c >= lit
-    if op == "le":
-        return c <= lit
+        c = c.cast(pl.Float64)
+    lit = _literal(v, kind, what, dtype)
+    case = bool(rule.get("case_sensitive", False))
     if op == "between":
-        if v2 in (None, ""):
-            raise ValueError(f"{what}: enter both ends of the range")
-        return (c >= lit) & (c <= _literal(v2, kind, what, dtype))
-    raise ValueError(f"Filter: unknown condition {op!r}")
+        return excel_compare(">=", c, lit, kind) & excel_compare("<=", c, _literal(v2, kind, what, dtype), kind)
+    sym = {"eq": "=", "ne": "!=", "gt": ">", "lt": "<", "ge": ">=", "le": "<="}.get(op)
+    if sym is None:
+        raise ValueError(f"Filter: unknown condition {op!r}")
+    return excel_compare(sym, c, lit, kind, case_sensitive=case)     # the same rule as = and <> in formulas
 
 
 def incomplete_rules(conditions: dict[str, Any]) -> list[dict[str, Any]]:
-    """Rules that name a column and an operator but still lack the value they need."""
+    """Rules that name a column and an operator but still lack the value they need (a rule just made from
+    the window, before its value is typed). The Filter step leaves them out and says so; rule_mask refuses them."""
     out = []
     for r in (conditions or {}).get("rules", []):
         op = r.get("op", "eq")
         if not r.get("column") or op not in OPS:
             continue
         _, needs_v, needs_v2, _ = OPS[op]
-        if (needs_v and str(r.get("value") if r.get("value") is not None else "").strip() == "") or \
-                (needs_v2 and str(r.get("value2") if r.get("value2") is not None else "").strip() == ""):
+        if (needs_v and _blank(r.get("value"))) or (needs_v2 and _blank(r.get("value2"))):
             out.append(r)
     return out
 
 
 def build_mask(schema: dict[str, pl.DataType], conditions: dict[str, Any], inputs: dict[str, Any] | None = None) -> pl.Expr | None:
-    skip = [id(r) for r in incomplete_rules(conditions)]
-    rules = [r for r in (conditions or {}).get("rules", []) if r.get("column") and id(r) not in skip]
+    rules = [r for r in (conditions or {}).get("rules", []) if r.get("column")]
     if not rules:
         return None
     masks = [rule_mask(schema, r, inputs) for r in rules]

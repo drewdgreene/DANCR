@@ -63,7 +63,7 @@ class VersionsDialog(QDialog):
             self._counts = Serial(self, waits_for_run=False)
             self._counts.submit(lambda: [_step_count(p) for p in versions], self._show_counts)
         if not self.list.count():
-            self.list.addItem("No earlier versions yet — they appear after you save.")
+            self.list.addItem("No earlier versions yet. They appear after you save.")
         bb = QDialogButtonBox(QDialogButtonBox.Cancel)
         self.restore = bb.addButton("Restore this version", QDialogButtonBox.AcceptRole)
         bb.accepted.connect(self.accept); bb.rejected.connect(self.reject)

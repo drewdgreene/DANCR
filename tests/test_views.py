@@ -1,8 +1,10 @@
+"""Chart queries, table formatting, statistics and the shared palette."""
 import numpy as np
 import polars as pl
+import pytest
 
 from dancr.core.executor import Executor
-from dancr.views import lod, table, stats, render
+from dancr.views import lod, render, stats, table
 
 
 def test_line_envelope_and_zoom(pipe):
@@ -53,3 +55,52 @@ def test_column_summary_and_render(pipe, tmp_path):
     for kind, extra in [("scatter", {"x": "temp_c", "series": [{"column": "pressure_psi"}]}), ("histogram", {"column": "pressure_psi"}),
                         ("bar", {"category": "temp_c", "value": "pressure_psi", "stat": "count"})]:
         render.render_chart(lf, {"kind": kind, **extra}, tmp_path / f"{kind}.png", width=300, height=200)
+
+
+def test_colour_by_counts_rows_once_and_says_what_it_leaves_out():
+    from dancr.views.chartquery import query_one
+    n = 2000
+    lf = pl.LazyFrame({"x": [float(i) for i in range(n)], "y": [1.0] * n,
+                       "g": [None if i % 50 == 0 else f"g{i % 15}" for i in range(n)]})
+    cd = query_one(lf, dict(lf.collect_schema()), {"kind": "line", "x": "x", "series": [{"column": "y"}], "color_by": "g"})
+    labels = [g for g, _ in cd.groups]
+    assert len(labels) == 12 and f"of {n:,} rows" in cd.summary()
+    assert "not shown" in cd.note
+
+
+def test_split_and_colour_by_a_true_false_column(tmp_path):
+    from dancr.views.chartquery import query_panels
+    lf = pl.LazyFrame({"x": [1.0, 2.0, 3.0, 4.0], "y": [1.0, 2.0, 3.0, 4.0], "ok": [True, False, True, False]})
+    schema = dict(lf.collect_schema())
+    panels = query_panels(lf, schema, {"kind": "line", "x": "x", "series": [{"column": "y"}], "split_by": "ok"})
+    assert len(panels) == 2 and all(cd.line.series[0].x.size == 2 for _, cd in panels)
+
+
+def test_series_palette_is_shared_between_the_view_and_the_renderer():
+    from dancr.views import palette, render
+
+    assert render.PALETTE == palette.SERIES_COLORS
+    assert palette.series_color(0) == palette.SERIES_COLORS[0]
+    assert palette.series_color(3, {"color": "#000000"}) == "#000000"
+    assert palette.series_color(len(palette.SERIES_COLORS)) == palette.SERIES_COLORS[0]
+
+
+def test_column_title_is_formatted_in_one_place():
+    from dancr.views.table import column_title
+
+    assert column_title("x", {"x": {"label": "Pressure", "unit": "psi"}}) == "Pressure (psi)"
+    assert column_title("x", {"x": {"label": "Pressure"}}) == "Pressure"
+    assert column_title("x", None) == "x"
+    assert column_title("", None) == ""
+
+
+def test_summary_quartiles_are_exact(pipe):
+    from dancr.views.stats import column_summary
+    ex = Executor(pipe); ex.run()
+    lf = ex.frame("a")
+    df = column_summary(lf)
+    row = df.filter(pl.col("column") == "pressure_psi").row(0, named=True)
+    assert row["median"] is not None and row["q25"] < row["median"] < row["q75"]
+    vals = np.sort(lf.select("pressure_psi").collect()["pressure_psi"].drop_nulls().to_numpy())
+    for key, q in (("q25", 0.25), ("median", 0.5), ("q75", 0.75)):
+        assert row[key] == pytest.approx(float(np.quantile(vals, q)))   # interpolated (QUARTILE.INC) over every row

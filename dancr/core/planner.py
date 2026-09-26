@@ -173,7 +173,7 @@ def protected_nodes(pipe, answer_id: str | None) -> set[str]:
 @dataclass
 class Applied:
     resolved: dict[str, str]                 # plan key -> node id
-    record: dict[str, dict]                  # the steps this answer owns: plan key -> {"node", "made", "title", "hand"?}
+    record: dict[str, dict]                  # the steps this answer owns: plan key -> {"node", "made", "title", "inputs", "hand"?}
     left: list[str] = field(default_factory=list)   # steps edited by hand that the change no longer fits: kept, set aside
 
 
@@ -184,11 +184,14 @@ def apply_plan(pipe, plan: Plan, edits: Edits, previous: dict[str, dict] | None 
 
     - a step this answer built and nobody changed since gets the new settings and inputs;
     - a step the person edited by hand keeps its settings while the change leaves that step's plan as it was;
-      when the change needs that step to be different, the person's step is left as it is (set aside, with
-      its edits) and the answer makes a new one;
+      when the change needs that step to be different, the person's step is left as it is (set aside, with its
+      edits) and the answer makes a new one;
+    - steps the person put in front of an answer's step stay there, and when the answer's step is to read from
+      somewhere new, their steps are moved onto the new input, so they stay in the answer's path;
     - a step another answer depends on (``protected``), or any step the answer did not make itself (found by
       its settings), is used as it is and never changed or removed by the answer;
-    - steps no longer needed are removed, unless something outside the answer reads from them."""
+    - steps no longer needed are removed, unless the person edited them or something outside the answer reads
+      from them."""
     previous = previous or {}
     protected = protected or set()
     resolved: dict[str, str] = {}
@@ -196,6 +199,7 @@ def apply_plan(pipe, plan: Plan, edits: Edits, previous: dict[str, dict] | None 
     left: list[str] = []
     sigs = signatures_of(pipe)
     kept_prev: set[str] = set()
+    owned = {p.get("node") for p in previous.values()}
     for step in plan.steps:
         if step.type == "@":
             if step.params["node"] not in pipe.nodes:
@@ -210,8 +214,12 @@ def apply_plan(pipe, plan: Plan, edits: Edits, previous: dict[str, dict] | None 
             now = _norm_params(node.type, node.params)
             made = _norm_params(node.type, prev.get("made") or {})
             wanted = _norm_params(step.type, step.params)
+            made_ins = _wiring(prev.get("inputs", pipe.inputs_of(nid)))
             hand = now != made
-            if hand and wanted != made:
+            rewired = _wiring(pipe.inputs_of(nid)) != made_ins     # the person put a step in front of it
+            moved = (rewired and not (hand and wanted != made) and _wiring(ins) != made_ins
+                     and _move_inserted(pipe, edits, nid, made_ins, _wiring(ins), owned | protected))
+            if (hand and wanted != made) or (rewired and _wiring(ins) != made_ins and not moved):
                 left.append(nid)                        # the person's edited step stays theirs; the answer moves on
             else:
                 if not hand and now != wanted:
@@ -219,13 +227,14 @@ def apply_plan(pipe, plan: Plan, edits: Edits, previous: dict[str, dict] | None 
                 titled_by_hand = node.title != prev.get("title")
                 if not titled_by_hand and node.title != step.title and step.title:
                     edits.set_title(nid, step.title)
-                _rewire(pipe, edits, nid, ins)
+                if not rewired:
+                    _rewire(pipe, edits, nid, ins)
                 kept_prev.add(nid)
                 resolved[step.key] = nid
                 record[step.key] = {"node": nid, "made": dict(prev.get("made") or {}) if hand else dict(step.params),
-                                    "title": pipe.nodes[nid].title if titled_by_hand else step.title}
-                if hand:
-                    record[step.key]["hand"] = True     # the person's own settings were kept
+                                    "title": pipe.nodes[nid].title if titled_by_hand else step.title, "inputs": ins}
+                if hand or rewired:
+                    record[step.key]["hand"] = True     # the person's own settings (or wiring) were kept
                 continue
         sig = signature(step.type, step.params, ins, pipe.directory)
         existing = sigs.get(sig)
@@ -236,10 +245,13 @@ def apply_plan(pipe, plan: Plan, edits: Edits, previous: dict[str, dict] | None 
         new = edits.create(step, ins, x, y)
         sigs[sig] = new
         resolved[step.key] = new
-        record[step.key] = {"node": new, "made": dict(step.params), "title": step.title}
-    # what the answer built before and needs no more
+        record[step.key] = {"node": new, "made": dict(step.params), "title": step.title, "inputs": ins}
+    # what the answer built before and needs no more; a step the person edited is theirs, and stays
     now_used = set(resolved.values())
     stale = {p["node"] for p in previous.values() if p.get("node") in pipe.nodes} - now_used - protected - set(left)
+    for p in previous.values():
+        if p.get("node") in stale and _edited(pipe.nodes[p["node"]], p):
+            stale.discard(p["node"]); left.append(p["node"])
     removable = set(stale)
     changed = True
     while changed:                     # keep a step something outside the answer still reads from
@@ -250,6 +262,55 @@ def apply_plan(pipe, plan: Plan, edits: Edits, previous: dict[str, dict] | None 
     if removable:
         edits.remove(sorted(removable))
     return Applied(resolved, record, left)
+
+
+def _wiring(ins: dict[str, list[str]]) -> dict[str, list[str]]:
+    return {port: list(srcs) for port, srcs in ins.items() if srcs}
+
+
+def _move_inserted(pipe, edits: Edits, nid: str, made: dict[str, list[str]], want: dict[str, list[str]],
+                   fixed: set[str]) -> bool:
+    """The person put steps of their own in front of an answer's step, and the answer now wants that step to read
+    from somewhere else: their steps stay in the path, now reading from the new input (a filter they added between
+    the file and the totals still filters the totals). False, changing nothing, when their steps are not a simple
+    chain back to what the answer's step read before, or belong to the answer or to another answer (``fixed``)."""
+    current = _wiring(pipe.inputs_of(nid))
+    if set(current) != set(made) or set(want) != set(made):
+        return False
+    moves = []
+    for port, was in made.items():
+        have, new = current[port], want[port]
+        if have == was:
+            if new != was:
+                moves += [("port", nid, port, was, new)]
+            continue
+        if len(have) != 1 or len(was) != 1 or len(new) != 1:
+            return False
+        node, seen = have[0], set()
+        while True:
+            if node in fixed or node in seen or node not in pipe.nodes:
+                return False
+            seen.add(node)
+            ins = _wiring(pipe.inputs_of(node))
+            if len(ins) != 1 or len(next(iter(ins.values()))) != 1:
+                return False
+            (p, (src,)), = ins.items()
+            if src == was[0]:
+                moves.append(("port", node, p, was, new))
+                break
+            node = src
+    for _, target, port, was, new in moves:
+        for src in was:
+            edits.disconnect(src, target, port)
+        for src in new:
+            edits.connect(src, target, port)
+    return True
+
+
+def _edited(node, rec: dict) -> bool:
+    """Whether the person changed a step since the answer made it: its settings, or its title."""
+    return (bool(rec.get("hand")) or _norm_params(node.type, node.params) != _norm_params(node.type, rec.get("made") or {})
+            or node.title != rec.get("title"))
 
 
 def _rewire(pipe, edits: Edits, nid: str, ins: dict[str, list[str]]) -> None:

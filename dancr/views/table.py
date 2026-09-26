@@ -7,7 +7,7 @@ from typing import Any
 
 import polars as pl
 
-from ..core.expr import _kind_of_dtype
+from ..core.expr import kind_of_dtype
 
 
 class TablePager:
@@ -17,7 +17,7 @@ class TablePager:
         self.max_pages = max_pages
         self.schema = dict(lf.collect_schema())
         self.columns = list(self.schema)
-        self.kinds = {c: _kind_of_dtype(dt) for c, dt in self.schema.items()}
+        self.kinds = {c: kind_of_dtype(dt) for c, dt in self.schema.items()}
         self._rows = rows
         self._pages: OrderedDict[int, pl.DataFrame] = OrderedDict()
 

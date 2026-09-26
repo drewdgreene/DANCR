@@ -53,8 +53,6 @@ def build(pipe, model: DataModel, spec: dict[str, Any], edits: Edits | None = No
     previous = existing.steps if existing is not None else None
     applied = apply_plan(pipe, plan, edits, previous, protected_nodes(pipe, answer_id))
     fields = answer_fields(pipe, plan, applied.resolved, applied.record)
-    fields["set_aside"] = [pipe.nodes[n].title for n in applied.left if n in pipe.nodes]
-    set_aside = fields.pop("set_aside")
     if existing is None:
         a = pipe.add_answer(fields["title"], fields["terminal"], fields["x"], fields["y"], fields["view"], fields["spec"],
                             steps=fields["steps"], assumptions=fields["assumptions"], rules=fields["rules"])
@@ -62,7 +60,7 @@ def build(pipe, model: DataModel, spec: dict[str, Any], edits: Edits | None = No
         for k, v in fields.items():
             setattr(existing, k, v)
         a = existing
-    plan.set_aside = set_aside
+    plan.set_aside = [pipe.nodes[n].title for n in applied.left if n in pipe.nodes]
     return a, plan
 
 
@@ -82,8 +80,24 @@ def remove(pipe, answer_id: str, remove_steps: bool, edits: Edits | None = None)
     gone = exclusive_steps(pipe, answer_id) if remove_steps else []
     if gone:
         (edits or PipelineEdits(pipe)).remove(gone)
+    if remove_steps:
+        _hand_over(pipe, a, set(gone))
     pipe.remove_answer(answer_id)
     return gone
+
+
+def _hand_over(pipe, a: Answer, gone: set[str]) -> None:
+    """Steps of a removed answer that another answer uses become that answer's own, so they change with it (and go
+    when it no longer needs them) rather than being left behind."""
+    for key, rec in a.steps.items():
+        nid = rec.get("node")
+        if nid in gone or nid not in pipe.nodes:
+            continue
+        for b in pipe.answers:
+            if b.id != a.id and key not in b.steps and nid not in b.nodes and b.terminal in pipe.nodes and \
+                    nid in pipe.upstream_closure(b.terminal) | {b.terminal}:
+                b.steps[key] = copy.deepcopy(rec)
+                break
 
 
 def exclusive_steps(pipe, answer_id: str) -> list[str]:
@@ -116,5 +130,5 @@ def set_aside_note(titles: list[str]) -> str:
     if not titles:
         return ""
     names = ", ".join(f"“{t}”" for t in titles)
-    return (f"You had edited {names}; the change needed it to be different, so it was left as you made it "
+    return (f"You had edited {names}, and the change needed it to be different. It was left as you made it, "
             "and the answer now uses a new step")

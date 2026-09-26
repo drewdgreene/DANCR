@@ -1,8 +1,37 @@
+"""Running a project: what runs, failures, previews and samples, concurrent runs and the disk."""
 import os
-import polars as pl
+import threading
+from pathlib import Path
 
-from dancr.core import Pipeline
+import polars as pl
+import pytest
+
+from dancr.core import Pipeline, PipelineError
 from dancr.core.executor import Executor
+
+
+def saved_table(tmp_path: Path, name: str = "p.json") -> Pipeline:
+    pl.DataFrame({"x": [1.0, 2.0, 3.0], "g": ["a", "b", "c"]}).write_csv(tmp_path / "in.csv")
+    p = Pipeline("t")
+    p.add_node("load_file", "Load", {"path": "in.csv"}, id="src")
+    p.path = tmp_path / name
+    p.save()
+    return p
+
+
+def _pipe_rows(tmp_path, n):
+    pl.DataFrame({"x": [float(i) for i in range(n)]}).write_parquet(tmp_path / "n.parquet")
+    p = Pipeline("t"); p.add_node("load_file", params={"path": "n.parquet"}, id="src"); p.path = tmp_path / "p.json"
+    return p
+
+
+def pipe_with(tmp_path, df, name="t.parquet"):
+    f = tmp_path / name
+    df.write_parquet(f)
+    p = Pipeline()
+    p.path = tmp_path / "p.json"
+    p.add_node("load_file", params={"path": str(f)}, id="src")
+    return p
 
 
 def test_cache_and_invalidation(pipe, probe_dir):
@@ -83,3 +112,96 @@ def test_disk_full_is_reported_as_disk_full(probe_dir, tmp_path, monkeypatch):
     st = ex.run()["a"]
     assert st.status == "failed" and "full" in st.error and "memory" not in st.error.lower()
     assert str(ex.cache_dir) in st.error
+
+
+def test_output_root_refuses_writes_outside(tmp_path):
+    p = saved_table(tmp_path)
+    p.add_node("export", params={"path": "../escaped.csv"}, id="ex")
+    p.connect("src", "ex")
+    st = Executor(p, output_root=tmp_path).run()["ex"]
+    assert st.status == "failed" and "inside the project folder" in st.error
+    assert not (tmp_path.parent / "escaped.csv").exists()
+    p.set_params("ex", path=str(tmp_path / "sub" / "fine.csv"))
+    assert Executor(p, output_root=tmp_path).run()["ex"].status == "done"
+
+
+def test_preview_sampling_never_returns_more_than_asked(tmp_path):
+    p = _pipe_rows(tmp_path, 15)
+    ex = Executor(p)
+    ex.run()
+    lf, kind = ex.sample_frame("src", 10)
+    assert kind == "spread" and lf.collect().height <= 10
+
+
+def test_schema_and_preview_handle_a_diamond_without_a_false_loop(tmp_path):
+    """Two branches sharing one not-yet-run ancestor must not be mistaken for a loop."""
+    p = pipe_with(tmp_path, pl.DataFrame({"x": [1.0, 2.0, 3.0], "y": [4.0, 5.0, 6.0]}))
+    p.add_node("calculate", params={"formulas": [{"name": "u", "expr": "x + 1"}]}, id="c1")
+    p.connect("src", "c1")
+    p.add_node("calculate", params={"formulas": [{"name": "v", "expr": "y + 1"}]}, id="c2")
+    p.connect("src", "c2")
+    p.add_node("combine", params={"method": "match", "on": ["x"], "right_on": ["x"], "how": "inner"}, id="cb")
+    p.connect("c1", "cb", "left")
+    p.connect("c2", "cb", "right")
+    ex = Executor(p)
+    schema = ex.schema("cb")
+    assert schema is not None and {"x", "y", "u", "v"} <= set(schema)
+    df, _res, _kind = ex.preview("cb")
+    assert df.height == 3
+
+
+def test_preview_failure_is_typed_and_friendly(tmp_path):
+    """A node that cannot run on a sample must raise PreviewUnavailable, never a raw traceback."""
+    from dancr.core.executor import PreviewUnavailable
+
+    p = pipe_with(tmp_path, pl.DataFrame({"x": [1.0], "y": [2.0]}))
+    p.add_node("fit_curve", params={"x": "x", "y": "y", "kind": "linear"}, id="fit")
+    p.connect("src", "fit")
+    with pytest.raises(PreviewUnavailable) as ei:
+        Executor(p).preview("fit")
+    assert "at least two points" in str(ei.value)
+
+
+def test_concurrent_runs_do_not_corrupt(probe_dir, tmp_path):
+    p = Pipeline(); p.add_node("load_file", params={"path": str(probe_dir / "probe_A.csv")}, id="a")
+    p.add_node("time_buckets", params={"every": "1m"}, id="tb"); p.connect("a", "tb")
+    p.save(tmp_path / "p.json")
+    errors = []
+
+    def go():
+        try:
+            res = Executor(Pipeline.load(tmp_path / "p.json")).run(force=True)
+            if any(s.status != "done" for s in res.values()):
+                errors.append([s.error for s in res.values() if s.error])
+        except Exception as e:
+            errors.append(repr(e))
+    ts = [threading.Thread(target=go) for _ in range(3)]
+    [t.start() for t in ts]; [t.join() for t in ts]
+    assert not errors, errors
+    ex = Executor(Pipeline.load(tmp_path / "p.json"))
+    st = ex.state("tb")
+    assert st.status == "done"
+    assert pl.read_parquet(st.output).height == st.rows      # file is fully readable
+
+
+def test_run_targets_unknown_raises(pipe):
+    with pytest.raises(PipelineError, match="No step called"):
+        Executor(pipe).run(targets=["nope"])
+
+
+def test_meta_written_atomically_and_preview_spread(pipe):
+    ex = Executor(pipe); ex.run()
+    assert not list(ex.node_dir("a").glob("*.tmp.json"))
+    lf, kind = ex.sample_frame("a", 1000)
+    assert kind == "spread"
+    df = lf.collect()
+    assert 900 <= len(df) <= 1100
+    span = (df["time"].max() - df["time"].min()).total_seconds()
+    assert span > 60 * 25       # covers most of the 30-minute file, not just the head
+
+
+def test_column_stats_in_meta(pipe):
+    ex = Executor(pipe); res = ex.run()
+    cs = res["a"].column_stats
+    assert cs["pressure_psi"]["nulls"] == 0 and cs["pressure_psi"]["min"] < cs["pressure_psi"]["max"]
+    assert "min" in cs["time"]

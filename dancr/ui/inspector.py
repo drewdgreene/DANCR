@@ -102,7 +102,7 @@ class InspectorPanel(QWidget):
         srow = QHBoxLayout(); srow.setSpacing(8)
         self.status_label = QLabel(); self.status_label.setWordWrap(True); self.status_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.run_btn = QPushButton("Run to here"); self.run_btn.setObjectName("primary"); self.run_btn.setIcon(icon("play", "#ffffff", 14))
-        self.run_btn.setToolTip("Run the pipeline up to and including this step (Ctrl+Shift+R)")
+        self.run_btn.setToolTip("Run the project up to and including this step (Ctrl+Shift+R)")
         self.run_btn.clicked.connect(lambda: self.runRequested.emit(self.nid))
         srow.addWidget(self.status_label, 1); srow.addWidget(self.run_btn, 0, Qt.AlignTop)
         lay.addLayout(srow)
@@ -193,7 +193,7 @@ class InspectorPanel(QWidget):
         nid = self.nid
         node = self.doc.pipeline.nodes[nid]
         nt = registry.get(node.type)
-        executor = self.doc.executor
+        executor = self.doc.snapshot_executor()          # a copy: the worker never reads the live project
         first = nt.inputs[0].name if nt.inputs else None
         path = self.widgets["path"].value() if "path" in self.widgets else ""
         pipeline_dir = self.doc.pipeline.directory
@@ -345,7 +345,7 @@ class InspectorPanel(QWidget):
         elif st.status == "running":
             txt = "Running…"
         elif st.status == "stale":
-            txt = "Settings changed — run again to update"
+            txt = "Settings changed. Run again to update"
         else:
             txt = "Not run yet"
         self.status_label.setText(status_dot(st.status, txt))

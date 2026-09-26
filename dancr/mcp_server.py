@@ -7,15 +7,15 @@ Every tool works on a pipeline file path. The GUI watches that file, so a person
 can have it open and see the pipeline change and results appear while the agent works.
 
 Where the server may write: pipeline files only inside its root folder; every other file (exports, reports,
-workbooks, chart images) only inside the folder of the pipeline file, checked when a step is added or changed
-and again when it runs. Tools may be called in parallel: edits to one pipeline file are made one at a time.
+workbooks, chart images) only inside the folder of the pipeline file and never over a data file the pipeline
+reads, checked when a step is added or changed and again before it runs. Edits to one pipeline file are made one
+at a time, also against the window and the command line (the file's lock, see headless.project_lock).
 """
 from __future__ import annotations
 
 import functools
 import json
 import logging
-import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -42,13 +42,12 @@ mcp = MCPServer("dancr", version=__version__, instructions=(
     "Call list_node_types once to learn node types and their settings. Paths inside a pipeline are relative to the pipeline file. "
     "Use open_in_gui so the person can watch; the GUI reloads the file whenever it changes. "
     "Pipeline files must be inside the server's root folder, and every file a pipeline or tool writes "
-    "(export, workbook and report steps, render_chart out_png, export_node) must be inside the pipeline file's folder. "
+    "(export, workbook and report steps, render_chart out_png, export_node) must be inside the pipeline file's folder "
+    "and must not be a data file the pipeline reads. "
     "Reading data files is not restricted; relative data paths are taken from the root folder."))
 
 ROOT = Path.cwd().resolve()        # where pipelines may be created; `dancr mcp --root DIR` sets it
-
-_locks: dict[Path, threading.Lock] = {}
-_locks_guard = threading.Lock()
+ROOT_REFUSED = False               # started in the home folder or at the top of a drive with no --root: no pipelines
 
 
 def friendly(fn):
@@ -69,12 +68,16 @@ def friendly(fn):
     return wrapper
 
 
-def _in_root(path: str | Path) -> Path:
-    """A pipeline file path (relative to the root), refused outside the server's root folder."""
+def _in_root(path: str | Path, change: bool = True) -> Path:
+    """A pipeline file path (relative to the root), refused outside the server's root folder. A server started
+    in the home folder or at the top of a drive reads pipelines there but does not create or change them."""
+    if ROOT_REFUSED and change:
+        raise ToolError(f"The DANCR MCP server was started in {ROOT}, so it won't create or change projects "
+                        "anywhere under it. Start it in the project's folder, or with --root <folder>.")
     p = Path(path).expanduser()
     p = (p if p.is_absolute() else ROOT / p).resolve()
     if not p.is_relative_to(ROOT):
-        raise ToolError(f"Pipelines can only be created inside {ROOT} (the folder the DANCR MCP server was started in), not {p}")
+        raise ToolError(f"Projects can only be created inside {ROOT} (the folder the DANCR MCP server was started in), not {p}")
     return p
 
 
@@ -85,7 +88,7 @@ def _from_root(path: str | Path) -> Path:
 
 
 def _load(path: str) -> Pipeline:
-    p = _in_root(path)
+    p = _in_root(path, change=False)
     if not p.exists():
         raise ValueError(f"No pipeline at {p}. Call create_pipeline first.")
     return Pipeline.load(p)
@@ -93,15 +96,13 @@ def _load(path: str) -> Pipeline:
 
 @contextmanager
 def _editing(path: str) -> Iterator[Pipeline]:
-    """Load, change and save one pipeline file with no other tool call editing it at the same time (agents call
-    tools in parallel; without this, one call's save would drop another's change)."""
+    """Load, change and save one pipeline file holding its lock, so no other tool call (agents call tools in
+    parallel), command or window saves over the change."""
     target = _in_root(path)
-    with _locks_guard:
-        lock = _locks.setdefault(target, threading.Lock())
-    with lock:
-        p = _load(path)
+    if not target.exists():
+        raise ValueError(f"No pipeline at {target}. Call create_pipeline first.")
+    with hl.editing(target) as p:
         yield p
-        p.save()
 
 
 def _folder(p: Pipeline) -> Path:
@@ -109,25 +110,36 @@ def _folder(p: Pipeline) -> Path:
 
 
 def _executor(p: Pipeline) -> Executor:
-    """Steps run from MCP may only write inside the pipeline file's folder."""
+    """Steps run from MCP may only write inside the pipeline file's folder (the executor refuses the rest)."""
     return Executor(p, output_root=_folder(p))
 
 
+def _unsafe_steps(p: Pipeline, targets: list[str] | None) -> dict[str, str]:
+    """Steps among those a run would do that would save outside the pipeline's folder or over a file it reads,
+    with why. Checked before running, since the file may have been changed by something other than these tools."""
+    folder = _folder(p)
+    return {nid: f"{p.nodes[nid].title}: {bad[0]}" for nid in p.topological_order(targets)
+            if (bad := hl.unsafe_outputs(p, nid, folder))}
+
+
 def _check_outputs(p: Pipeline, node_id: str) -> None:
-    """Refuse a step that would save a file outside the pipeline's folder, when it is added or changed: the
-    window runs steps too (open_in_gui), and it must never be handed one that writes elsewhere."""
-    outside = hl.output_paths_outside(p, node_id, _folder(p))
-    if outside:
-        raise ToolError(f"Can only save inside the project folder {_folder(p)}, not {outside[0]}")
+    """Refuse a step that would save a file outside the pipeline's folder or over a data file the pipeline
+    reads, when it is added or changed: the window runs steps too (open_in_gui), and it must never be handed
+    one that writes elsewhere."""
+    bad = hl.unsafe_outputs(p, node_id, _folder(p))
+    if bad:
+        raise ToolError(f"{p.nodes[node_id].title}: {bad[0]}")
 
 
 def _inside_project(p: Pipeline, out: str) -> Path:
-    """Resolve a write target and refuse anything outside the folder of the pipeline file (relative paths are taken from there)."""
+    """Resolve a write target (relative paths are taken from the pipeline file's folder) and refuse anything
+    outside that folder or over a data file the pipeline reads."""
     folder = _folder(p)
     target = Path(out).expanduser()
     target = (target if target.is_absolute() else folder / target).resolve()
-    if not target.is_relative_to(folder):
-        raise ToolError(f"Can only write inside the project folder {folder}, not {target}")
+    why = hl.unsafe_write(p, target, folder)
+    if why:
+        raise ToolError(why)
     return target
 
 
@@ -168,14 +180,26 @@ def formula_reference() -> str:
 @friendly
 def create_pipeline(path: str, name: str | None = None, overwrite: bool = False) -> str:
     """Create an empty pipeline file (JSON) inside the server's root folder. Use a path ending in .json,
-    ideally next to the data files."""
+    ideally next to the data files. overwrite replaces an existing DANCR pipeline (never any other file)."""
     p = _in_root(path)
     if p.suffix.lower() != ".json":
-        raise ToolError(f"A pipeline file name must end in .json, not {p.name}")
-    if p.exists() and not overwrite:
-        return _dump({"ok": True, "path": str(p), "note": "already exists; loaded as-is"})
-    Pipeline(name or p.stem).save(p)
+        raise ToolError(f"A project file name must end in .json, not {p.name}")
+    with hl.project_lock(p):
+        if p.exists():
+            if not _is_pipeline(p):
+                raise ToolError(f"{p} already exists and is not a DANCR project. Choose another file name.")
+            if not overwrite:
+                return _dump({"ok": True, "path": str(p), "note": "already exists; loaded as-is"})
+        Pipeline(name or p.stem).save(p)
     return _dump({"ok": True, "path": str(p)})
+
+
+def _is_pipeline(p: Path) -> bool:
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(data, dict) and "dancr" in data
 
 
 @mcp.tool()
@@ -184,13 +208,15 @@ def build_template(path: str, template: str, data_file: str | None = None) -> st
     """Create a starter project from a template: compare | limits | fit | report. Uses a generated sample
     file (two values over time) unless data_file is given (relative paths are taken from the pipeline's folder).
     The pipeline file must not exist yet."""
-    from .core.samples import TEMPLATES
+    from .core.samples import TEMPLATES, check_template
     out = _in_root(path)
     if out.suffix.lower() != ".json":
-        raise ToolError(f"A pipeline file name must end in .json, not {out.name}")
-    if out.exists():
-        raise ValueError(f"{out} already exists")
-    pipe, data = hl.build_template(out, template, data_file)
+        raise ToolError(f"A project file name must end in .json, not {out.name}")
+    check_template(template)                        # before anything is written, the lock included
+    with hl.project_lock(out):
+        if out.exists():
+            raise ValueError(f"{out} already exists")
+        pipe, data = hl.build_template(out, template, data_file)
     return _dump({"ok": True, "path": str(out), "data": str(data), "nodes": list(pipe.nodes), "templates": TEMPLATES})
 
 
@@ -215,16 +241,24 @@ def _data_files(files: list[str] | None) -> list[str]:
     return [str(_from_root(f).resolve()) for f in files or []]
 
 
+def _with_files(path: str, files: list[str] | None) -> Pipeline:
+    """The pipeline with a load step for each data file named, added under its lock (only when there are files).
+    The slow reading that follows is done without the lock, so the window and other tools never wait on it."""
+    if files:
+        with _editing(path) as p:
+            hl.add_files(p, _data_files(files))
+        return p
+    return _load(path)
+
+
 @mcp.tool()
 @friendly
 def understand_data(path: str, files: list[str] | None = None) -> str:
     """How DANCR reads the project's tables: each column's role (time, id, category, measure...), each table's shape
     (series, lookup, events), and how tables relate (links on a key with how many match, stacks, time alignments).
     `files` adds load steps for data files first (relative to the server's root)."""
-    with _editing(path) as p:
-        hl.add_files(p, _data_files(files))
-        model = hl.data_model(p)
-    return _dump(model.to_dict())
+    p = _with_files(path, files)
+    return _dump(hl.data_model(p).to_dict())
 
 
 @mcp.tool()
@@ -233,13 +267,13 @@ def suggest_answers(path: str, files: list[str] | None = None, focus: str | None
     """Answers DANCR can give on its own for the project's tables, best first ({index, title, recipe, why, spec}).
     `files` adds data files first; `focus` limits them to one step's output; `build` = an index builds that answer
     (its steps and an Answer) and returns it. Run run_pipeline afterwards to compute it."""
+    p = _with_files(path, files)
+    sugs = hl.suggestions(p, focus)
+    if build is None:
+        return _dump({"suggestions": sugs})
+    if not 0 <= build < len(sugs):
+        raise ToolError(f"There are {len(sugs)} suggestions (numbered from 0)")
     with _editing(path) as p:
-        hl.add_files(p, _data_files(files))
-        sugs = hl.suggestions(p, focus)
-        if build is None:
-            return _dump({"suggestions": sugs})
-        if not 0 <= build < len(sugs):
-            raise ToolError(f"There are {len(sugs)} suggestions (numbered from 0)")
         out = hl.build_answer(p, sugs[build]["spec"])
         _check_outputs(p, out["terminal"])
     return _dump({"answer": out})
@@ -382,12 +416,19 @@ def set_column_label(path: str, column: str, label: str | None = None, unit: str
 def run_pipeline(path: str, node_ids: list[str] | None = None, force: bool = False) -> str:
     """Execute the pipeline (or only the given nodes and what they depend on). Unchanged nodes are served from cache.
     Returns per-node status, row counts, messages, reports and errors."""
+    from .core.executor import NodeState
     p = _load(path)
     for nid in node_ids or []:
         hl.require_node(p, nid)
     ex = _executor(p)
     t0 = time.perf_counter()
-    res = ex.run(targets=node_ids, force=force)
+    unsafe = _unsafe_steps(p, node_ids)
+    # those steps, and what needs them, are not run: they fail with the reason
+    wanted = [n for n in (node_ids or list(p.nodes))
+              if n not in unsafe and not set(unsafe) & p.upstream_closure(n)]
+    res = ex.run(targets=wanted, force=force) if wanted else {}
+    for nid, why in unsafe.items():
+        res[nid] = NodeState(nid, status="failed", error=why)
     return _dump(hl.run_record(p, ex, res, time.perf_counter() - t0))
 
 
@@ -401,6 +442,10 @@ def node_status(path: str, node_id: str) -> str:
 
 def _frame(path: str, node_id: str, run: bool) -> tuple[Pipeline, pl.LazyFrame]:
     p = _load(path)
+    hl.require_node(p, node_id)
+    unsafe = _unsafe_steps(p, [node_id])
+    if unsafe and run:
+        raise ToolError(next(iter(unsafe.values())))
     return p, hl.result_frame(p, _executor(p), node_id, run)
 
 
@@ -497,11 +542,17 @@ def inspect_file(file_path: str, rows: int = 5) -> str:
 
 def main(root: str | None = None) -> None:
     from .logsetup import configure
-    global ROOT
+    global ROOT, ROOT_REFUSED
     if root:
         ROOT = Path(root).expanduser().resolve()
         if not ROOT.is_dir():
             raise ValueError(f"--root {ROOT} is not a folder")      # a usage error: exit 2, JSON with --json
+        ROOT_REFUSED = False
+    else:
+        # started from the home folder or the top of a drive (an agent launched from there): every file of the
+        # person's would be in reach, so creating or changing pipelines is refused until --root names a folder.
+        # Reading and running existing ones still works.
+        ROOT_REFUSED = ROOT == Path.home().resolve() or ROOT.parent == ROOT
     configure(stderr_level=logging.WARNING)      # stdout carries the protocol; the log file and stderr get the rest
     mcp.run(transport="stdio")
 

@@ -80,6 +80,14 @@ def trap(d: Path) -> list[str]:
     return ["visits.csv", "prescriptions.csv"]
 
 
+def stock(d: Path) -> list[str]:
+    """Two small counting ids with different names (they must not be linked), and codes written as numbers."""
+    pl.DataFrame({"store_id": list(range(1, 201)), "zip": [10000 + i * 7 for i in range(200)],
+                  "city": [f"C{i % 30}" for i in range(200)]}).write_csv(d / "stores.csv")
+    pl.DataFrame({"stock_id": [i % 150 + 1 for i in range(1000)], "units": [i % 9 for i in range(1000)]}).write_csv(d / "inventory.csv")
+    return ["stores.csv", "inventory.csv"]
+
+
 def plain(d: Path) -> list[str]:
     """No dates and no categories: just measurements."""
     rng = np.random.default_rng(5)
@@ -91,12 +99,20 @@ def plain(d: Path) -> list[str]:
 
 CASES = {
     "shop": (shop, ["total quantity by region", "top 5 customers by quantity", "average price per month",
-                    "quantity by category for North", "orders where price above 30", "how many orders by segment"]),
+                    "quantity by category for North", "orders where price above 30", "how many orders by segment",
+                    "orders before March", "orders since March", "average price from 2024-02-01 to 2024-03-01",
+                    "total quantity for North and South", "orders in North or South", "what is the average price",
+                    "orders where price is above 30", "price is between 10 and 20", "orders not in North",
+                    "total quantity last month", "orders in the last 7 days", "total quantity above 3",
+                    "total quantity except North", "total quantity per product", "top 5 products by price", "biggest month"]),
     "probes": (probes, ["compare logger_site_A and logger_site_B", "average pressure per minute",
-                        "temperature against pressure", "gaps in logger_site_B", "spikes in pressure"]),
-    "monthly": (monthly, ["total sales by store", "sales per week", "sales by store for 2024-02"]),
+                        "temperature against pressure", "gaps in logger_site_B", "spikes in pressure",
+                        "hottest hour in logger_site_A"]),
+    "monthly": (monthly, ["total sales by store", "sales per week", "sales by store for 2024-02", "compare Leeds and York",
+                          "sales in Leeds vs York", "highest sales day", "total sales since February"]),
     "trap": (trap, ["total visit_cost by drug", "visit_cost by patient"]),
     "plain": (plain, ["weight against length", "average weight", "spread of width"]),
+    "stock": (stock, ["total units by city", "average units"]),
 }
 
 

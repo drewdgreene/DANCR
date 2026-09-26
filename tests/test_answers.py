@@ -421,7 +421,7 @@ def test_row_spacing_is_measured_on_consecutive_rows_of_a_stored_result(probe_di
     assert next(r for r in m.relations if r.kind == "align").tolerance == "50ms"
 
 
-# ------------------------------------------------------------------- review 2026-09-24 (answer engine)
+# ------------------------------------------------------------------- bare ids, questions read in context, logs and readings
 def _frames(tmp_path, **frames):
     p = Pipeline("r"); p.path = tmp_path / "r.json"
     for name, df in frames.items():

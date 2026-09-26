@@ -5,21 +5,7 @@ from datetime import datetime, timedelta
 import polars as pl
 import pytest
 
-from PySide6.QtCore import QSettings
-
 from helpers import pump
-
-
-@pytest.fixture
-def window(app, tmp_path):
-    from dancr.ui.mainwindow import MainWindow
-    QSettings().setValue("tour_shown", True)
-    w = MainWindow()
-    w.show(); app.processEvents()
-    yield w
-    w.doc.stop(wait=True)                     # a run still going would ask "Stop the run and quit?"
-    w.doc.undo.setClean()
-    w.close()
 
 
 def until(app, pred, secs=15.0):

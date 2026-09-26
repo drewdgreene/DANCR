@@ -6,7 +6,7 @@ from typing import Any
 import polars as pl
 
 from ..conditions import build_mask, incomplete_rules, describe as describe_conditions
-from ..expr import compile_formula, FormulaError, _kind_of_dtype, excel_round
+from ..expr import compile_formula, FormulaError, kind_of_dtype, excel_round
 from ..params import Param
 from ..registry import NodeType, InputSpec, Ctx, NodeResult, registry
 from ._common import first_input, schema_of, require_column, number_param
@@ -17,15 +17,21 @@ from ..dtypes import datetime_literal, is_temporal, temp_name, text_to_bool, tex
 def _keep_rows(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, Any]) -> NodeResult:
     lf = first_input(inputs)
     schema = schema_of(lf)
-    mask = build_mask(schema, params.get("conditions") or {}, ctx.inputs)
+    conditions = params.get("conditions") or {}
+    # a rule made from a column's menu has no value until the person types one: the step passes rows
+    # through meanwhile and says so, as Check limits does with no limit yet
+    unfinished = incomplete_rules(conditions)
+    n = len(unfinished)
+    msgs = ([f"{n} conditions have no value yet, so they're skipped for now" if n > 1
+             else "A condition has no value yet, so it's skipped for now"] if n else [])
+    conditions = {**conditions, "rules": [r for r in conditions.get("rules", []) if r not in unfinished]}
+    mask = build_mask(schema, conditions, ctx.inputs)
     formula = (params.get("formula") or "").strip()
     if formula:
         expr, kind, _ = compile_formula(formula, schema, ctx.inputs)
         if kind not in ("true/false", "any"):
             raise FormulaError("The formula must give a true/false answer, e.g. Value > 100")
         mask = expr if mask is None else (mask & expr)
-    n_skip = len(incomplete_rules(params.get("conditions") or {}))
-    msgs = [f"{n_skip} condition{'s' if n_skip != 1 else ''} without a value yet — ignored until you fill it in"] if n_skip else []
     if mask is None:
         return NodeResult(lf, messages=msgs)
     if params.get("mode") == "remove":
@@ -64,7 +70,7 @@ def _choose_columns(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dic
     renames = {k: v.strip() for k, v in renames.items() if k in current}
     for old, new in renames.items():
         if new in current and new not in renames:
-            raise ValueError(f"Cannot rename {old!r} to {new!r}: there is already a column called {new!r}")
+            raise ValueError(f"Can't rename {old!r} to {new!r} because there is already a column called {new!r}")
     if len(set(renames.values())) != len(renames):
         raise ValueError("Two columns would get the same new name")
     if renames:
@@ -164,7 +170,7 @@ def _fix_missing(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[s
     for c in cols:
         e = pl.col(c)
         dt = schema[c]
-        kind = _kind_of_dtype(dt)
+        kind = kind_of_dtype(dt)
         if method == "value":
             v = params.get("value")
             if v in (None, ""):
@@ -174,7 +180,7 @@ def _fix_missing(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[s
                 if num is None:
                     raise ValueError(f"{v!r} is not a number, but {c} is a number column")
                 if dt.is_integer() and not float(num).is_integer():
-                    raise ValueError(f"{v!r} has decimals but {c} holds whole numbers; fill it with a whole number or convert the column first")
+                    raise ValueError(f"{v!r} has decimals but {c} holds whole numbers. Fill it with a whole number or convert the column first")
                 lit = pl.lit(int(num) if dt.is_integer() else num).cast(dt)   # keep the column's dtype
             elif is_temporal(dt):
                 lit = datetime_literal(v, dt, c)
@@ -260,9 +266,9 @@ def _change_type(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[s
         elif to == "datetime":
             fmt = (params.get("date_format") or "").strip() or None
             if dt in (pl.Utf8, pl.String):
+                from ..timeutil import detect_datetime_format, settle_day_month, offset_time_zone, has_offset
+                sample = lf.select(e.alias(c)).head(2000).collect(engine="streaming")[c]
                 if fmt is None:
-                    from ..timeutil import detect_datetime_format, settle_day_month
-                    sample = lf.select(e.alias(c)).head(2000).collect(engine="streaming")[c]
                     fmt = detect_datetime_format(sample)
                     if fmt is None:
                         raise ValueError(f"Could not work out the date format of {c}. Set it under 'Date format' (e.g. %d/%m/%Y)")
@@ -270,6 +276,11 @@ def _change_type(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[s
                     if settled:
                         msgs.append(settled.replace("tick 'Day comes before month' (or set 'Date format')", "set 'Date format' (e.g. %d/%m/%Y)"))
                 e = e.str.strip_chars().str.to_datetime(fmt, strict=False)
+                if has_offset(fmt):
+                    tz, note = offset_time_zone(c, sample, (params.get("time_zone") or "").strip() or None)
+                    e = e.dt.convert_time_zone(tz)
+                    if note:
+                        msgs.append(note)
             elif dt.is_numeric():
                 unit = params.get("epoch_unit") or "s"
                 to_us = {"s": 1e6, "ms": 1e3, "us": 1.0}.get(unit)
@@ -300,6 +311,9 @@ registry.register(NodeType(
               help="Leave blank to detect. Examples: %Y-%m-%d %H:%M:%S, %d/%m/%Y"),
         Param("epoch_unit", "Number means", "choice", default="s", visible_when={"to": "datetime"},
               choices=[("s", "seconds since 1970"), ("ms", "milliseconds since 1970"), ("us", "microseconds since 1970")]),
+        Param("time_zone", "Time zone", "text", default="", visible_when={"to": "datetime"}, advanced=True,
+              help="The zone to show times with a UTC offset (…+02:00) in, such as Europe/London. Leave empty to keep "
+                   "the text's own offset if it's the same throughout, or UTC if not"),
     ],
 ))
 
@@ -314,7 +328,7 @@ def _stack(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, An
     if label_col:
         for f in frames:
             if label_col in f.collect_schema():
-                raise ValueError(f"There is already a column called {label_col!r}; choose another name for the label column")
+                raise ValueError(f"There is already a column called {label_col!r}. Choose another name for the label column")
         frames = [f.with_columns(pl.lit(str(labels[i]) if i < len(labels) and labels[i] is not None else f"table {i + 1}").alias(label_col))
                   for i, f in enumerate(frames)]
     frames, msgs = _same_time_zones(frames)
@@ -343,8 +357,8 @@ def _same_time_zones(frames: list[pl.LazyFrame]) -> tuple[list[pl.LazyFrame], li
                 e = e.dt.convert_time_zone("UTC") if dt.time_zone else e.dt.replace_time_zone("UTC")
                 fixes.append(e.alias(c))
         out.append(f.with_columns(fixes) if fixes else f)
-    return out, [f"{', '.join(mixed)}: the tables use different time zones, so every time is shown in UTC "
-                 "(times without a zone are taken as UTC)"]
+    return out, [f"{', '.join(mixed)}: the tables use different time zones, so all times are shown in UTC. "
+                 "Times without a zone are taken as UTC"]
 
 
 registry.register(NodeType(
@@ -408,7 +422,7 @@ def _sample(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, A
 
 registry.register(NodeType(
     key="take_sample", label="Take a sample", category="Filter & sort", icon="✂",
-    description="Keep just part of the data: the first rows, every Nth row, or a random fraction.",
+    description="Keep part of the data: the first rows, every Nth row or a random fraction.",
     apply=_sample,
     summary=lambda p: {"first": f"first {p.get('rows')}", "last": f"last {p.get('rows')}", "every": f"every {p.get('every')}th row",
                        "random": f"random {float(p.get('fraction') or 0) * 100:g}%"}.get(p.get("mode", "first"), ""),
@@ -459,12 +473,12 @@ def _unpivot(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, 
     keep = [c for c in schema if c not in cols]
     for n in (name_col, value_col):
         if n in keep:
-            raise ValueError(f"There is already a column called {n!r}; choose another name")
-    kinds = {_kind_of_dtype(schema[c]) for c in cols}
+            raise ValueError(f"There is already a column called {n!r}. Choose another name")
+    kinds = {kind_of_dtype(schema[c]) for c in cols}
     if len(kinds) > 1:
         lf = lf.with_columns([pl.col(c).cast(pl.Utf8) for c in cols])
     out = lf.unpivot(on=cols, index=keep, variable_name=name_col, value_name=value_col)
-    msgs = [f"{len(cols)} columns turned into rows: one row per {', '.join(keep[:2]) or 'row'} and {name_col}"]
+    msgs = [f"Turned {len(cols)} columns into rows, one row per {', '.join(keep[:2]) or 'row'} and {name_col}"]
     year = params.get("year")
     months = [month_of(c) for c in cols]
     if year not in (None, "") and all(months):
@@ -482,8 +496,8 @@ def _unpivot(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, 
 
 registry.register(NodeType(
     key="unpivot", label="Columns into rows", category="Combine", icon="⤓",
-    description="Turn columns like Jan, Feb, Mar … into rows: one row per item and month, with the numbers in one column. "
-                "Wide spreadsheets (a column per month or year) become tables that can be totalled and charted over time.",
+    description="Turn columns like Jan, Feb, Mar … into rows, giving one row per item and month with the numbers in one column. "
+                "A wide spreadsheet with a column per month or year becomes a table you can total and chart over time.",
     apply=_unpivot,
     summary=lambda p: f"{len(p.get('columns') or [])} columns into {p.get('name_column') or 'month'}",
     params=[

@@ -217,7 +217,7 @@ class Rail(QWidget):
     def _build_flow(self) -> None:
         p = self.doc.pipeline
         if not p.nodes:
-            self._hint("no steps yet — open a data file")
+            self._hint("no steps yet. Open a data file")
             return
         order = {nid: i for i, nid in enumerate(p.topological_order())}
         incoming: dict[str, list] = {nid: [] for nid in p.nodes}
@@ -256,7 +256,7 @@ class Rail(QWidget):
 
     def _build_type(self) -> None:
         secs = self._section_items()
-        hints = {"tables": "none yet — open a data file", "charts": "none yet — right-click a column", "reports": "none yet"}
+        hints = {"tables": "none yet. Open a data file", "charts": "none yet. Right-click a column", "reports": "none yet"}
         for key, label in SECTIONS:
             self._header(label)
             for n in secs[key]:
@@ -284,7 +284,7 @@ class Rail(QWidget):
             it.setIcon(0, icon("sparkle", T.accent, 16))
             st = self.doc.state(a.terminal).status if a.terminal in self.doc.pipeline.nodes else "idle"
             it.setData(0, KIND_ROLE, "answer"); it.setData(0, ID_ROLE, a.id); it.setData(0, STATUS_ROLE, st)
-            it.setToolTip(0, "A guided answer — click to see its result")
+            it.setToolTip(0, "A guided answer. Click to see its result")
             it.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
             self._answer_items[a.id] = it
 

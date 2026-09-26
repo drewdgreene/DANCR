@@ -15,7 +15,9 @@
         "skip_rows": 0,
         "separator": "auto",
         "parse_dates": true,
+        "parse_numbers": true,
         "date_format": "",
+        "day_first": false,
         "decimal_comma": false,
         "encoding": "utf8",
         "infer_rows": 10000,
@@ -36,7 +38,9 @@
         "skip_rows": 0,
         "separator": "auto",
         "parse_dates": true,
+        "parse_numbers": true,
         "date_format": "",
+        "day_first": false,
         "decimal_comma": false,
         "encoding": "utf8",
         "infer_rows": 10000,
@@ -153,6 +157,7 @@
           "min",
           "max"
         ],
+        "by": [],
         "time_column": null,
         "aggregations": [],
         "count_column": "n"
@@ -226,6 +231,7 @@
           "max",
           "std"
         ],
+        "by": [],
         "time_column": null,
         "aggregations": [],
         "count_column": "readings"
@@ -384,24 +390,55 @@
       }
     },
     {
-      "id": "load_file_1",
-      "type": "load_file",
-      "title": "calc_full",
-      "x": 700.3,
-      "y": -304.7,
+      "id": "fix_missing_1",
+      "type": "fix_missing",
+      "title": "Central caldera (MJ03F) without empty rows",
+      "x": 240.0,
+      "y": 426.0,
       "params": {
-        "path": "calc_full.csv",
-        "sheet": "",
-        "has_header": true,
-        "skip_rows": 0,
-        "separator": "auto",
-        "parse_dates": true,
-        "date_format": "",
-        "decimal_comma": false,
-        "encoding": "utf8",
-        "infer_rows": 10000,
-        "ignore_errors": false,
+        "method": "drop_all",
+        "value": "",
         "columns": []
+      }
+    },
+    {
+      "id": "stack_1",
+      "type": "stack",
+      "title": "All 2 tables together",
+      "x": 530.0,
+      "y": 426.0,
+      "params": {
+        "label_column": "source",
+        "labels": [
+          "MJ03F",
+          "MJ03E"
+        ]
+      }
+    },
+    {
+      "id": "chart_2",
+      "type": "chart",
+      "title": "Spread of pressure_psia",
+      "x": 820.0,
+      "y": 426.0,
+      "params": {
+        "kind": "histogram",
+        "x": null,
+        "series": [],
+        "column": "pressure_psia",
+        "bins": 60,
+        "category": null,
+        "value": null,
+        "stat": "mean",
+        "color_by": null,
+        "split_by": null,
+        "limits": [],
+        "fit": "",
+        "mean_line": false,
+        "title": "Spread of pressure_psia",
+        "y_label": "",
+        "break_gaps": true,
+        "log_y": false
       }
     }
   ],
@@ -495,10 +532,109 @@
       "source": "fit",
       "target": "chart_1",
       "port": "in"
+    },
+    {
+      "source": "probe_f",
+      "target": "fix_missing_1",
+      "port": "in"
+    },
+    {
+      "source": "fix_missing_1",
+      "target": "stack_1",
+      "port": "tables"
+    },
+    {
+      "source": "probe_e",
+      "target": "stack_1",
+      "port": "tables"
+    },
+    {
+      "source": "stack_1",
+      "target": "chart_2",
+      "port": "in"
     }
   ],
   "notes": [],
+  "answers": [
+    {
+      "id": "answer_1",
+      "title": "Spread of pressure_psia",
+      "x": 1120.0,
+      "y": 466.0,
+      "terminal": "chart_2",
+      "view": "chart",
+      "spec": {
+        "recipe": "distribution",
+        "table": "probe_f",
+        "measure": [
+          "probe_f",
+          "pressure_psia"
+        ]
+      },
+      "steps": {
+        "blank:probe_f": {
+          "node": "fix_missing_1",
+          "made": {
+            "method": "drop_all"
+          },
+          "title": "Central caldera (MJ03F) without empty rows"
+        },
+        "stack": {
+          "node": "stack_1",
+          "made": {
+            "label_column": "source",
+            "labels": [
+              "MJ03F",
+              "MJ03E"
+            ]
+          },
+          "title": "All 2 tables together"
+        },
+        "chart": {
+          "node": "chart_2",
+          "made": {
+            "kind": "histogram",
+            "column": "pressure_psia",
+            "bins": 60,
+            "title": "Spread of pressure_psia",
+            "series": [],
+            "mean_line": false
+          },
+          "title": "Spread of pressure_psia"
+        }
+      },
+      "assumptions": [
+        {
+          "id": "blank:probe_f",
+          "text": "Left out 1 empty row of Central caldera (MJ03F)",
+          "choices": [
+            {
+              "label": "Keep them",
+              "set": {
+                "keep_blank_rows": true
+              }
+            }
+          ]
+        },
+        {
+          "id": "together",
+          "text": "Put MJ03F, MJ03E together; each row keeps which one it came from (2 tables with the same columns (time, pressure_psia, temperature_c); each row keeps which one it came from)",
+          "choices": [
+            {
+              "label": "Only Central caldera (MJ03F)",
+              "set": {
+                "together": false
+              }
+            }
+          ]
+        }
+      ],
+      "rules": 1
+    }
+  ],
   "inputs": [],
   "columns": {},
-  "meta": {}
+  "meta": {
+    "autosaved": true
+  }
 }

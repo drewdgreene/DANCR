@@ -1,4 +1,7 @@
-"""Headless chart rendering to PNG (matplotlib, Agg). Used by the CLI, MCP and reports."""
+"""Headless chart rendering to PNG (matplotlib, Agg). Used by the CLI, MCP and reports.
+
+Each chart is its own Figure on its own Agg canvas, never pyplot's shared state, so charts can be drawn
+on several threads at once (the MCP server runs tools in parallel)."""
 from __future__ import annotations
 
 import functools
@@ -15,11 +18,10 @@ from .table import column_title
 
 
 def _mpl():
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
+    from matplotlib.figure import Figure
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
     import matplotlib.dates as mdates
-    return plt, mdates
+    return Figure, FigureCanvasAgg, mdates
 
 
 def _title(c: str | None, columns: dict[str, dict] | None) -> str:
@@ -32,12 +34,13 @@ def render_chart(lf: pl.LazyFrame, params: dict[str, Any], out: Path | str, widt
     from ..core.nodes.outputs import validate_chart
     schema = dict(lf.collect_schema())
     validate_chart(schema, params)
-    plt, mdates = _mpl()
+    Figure, FigureCanvasAgg, mdates = _mpl()
     out = Path(out)
     title = params.get("title") or ""
     panels = query_panels(lf, schema, params, x_range=x_range, width_px=width, height_px=height)
-    fig, axes = plt.subplots(len(panels), 1, figsize=(width / dpi, (height if len(panels) == 1 else height * 0.55 * len(panels)) / dpi),
-                             dpi=dpi, sharex=(len(panels) > 1), squeeze=False)
+    fig = Figure(figsize=(width / dpi, (height if len(panels) == 1 else height * 0.55 * len(panels)) / dpi), dpi=dpi)
+    FigureCanvasAgg(fig)
+    axes = fig.subplots(len(panels), 1, sharex=(len(panels) > 1), squeeze=False)
     axes = [a[0] for a in axes]
     for i, ((label, cd), ax) in enumerate(zip(panels, axes)):
         x_dt = schema.get(cd.x) if cd.x else None
@@ -56,7 +59,6 @@ def render_chart(lf: pl.LazyFrame, params: dict[str, Any], out: Path | str, widt
     fig.tight_layout()
     out.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out)
-    plt.close(fig)
     return out
 
 

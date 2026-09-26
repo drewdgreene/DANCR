@@ -10,7 +10,7 @@ import numpy as np
 import polars as pl
 
 from . import lod
-from ..core.expr import _kind_of_dtype, TIME, NUM
+from ..core.expr import kind_of_dtype, TIME, NUM
 from ..core.dtypes import resolve_number
 
 MAX_PANELS = 8
@@ -93,10 +93,10 @@ def resolve_columns(schema: dict[str, pl.DataType], spec: dict[str, Any]) -> tup
     if x is not None and x not in schema:
         x = None
     if x is None and kind == "line":
-        x = next((c for c, dt in schema.items() if _kind_of_dtype(dt) == TIME), None)
+        x = next((c for c, dt in schema.items() if kind_of_dtype(dt) == TIME), None)
     ys = [s["column"] for s in (spec.get("series") or []) if s.get("column") and s["column"] in schema]
     if not ys:
-        ys = [c for c, dt in schema.items() if _kind_of_dtype(dt) == NUM and c != x][:4]
+        ys = [c for c, dt in schema.items() if kind_of_dtype(dt) == NUM and c != x][:4]
     return x, ys
 
 

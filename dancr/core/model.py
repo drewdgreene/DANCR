@@ -100,8 +100,9 @@ def _version_number(f: Path) -> int | None:
 
 def _coerce_input(v: Any) -> Any:
     """Inputs are numbers when they look like numbers (read as everywhere else: '1,5' is 1.5, whole numbers
-    stay exact), otherwise text. Lists and objects are refused rather than stored as their Python text."""
-    from .dtypes import typed_value
+    stay exact, and codes with leading zeros such as 007 stay text), otherwise text. Lists and objects are
+    refused rather than stored as their Python text."""
+    from .dtypes import typed_value, is_code_text
     if isinstance(v, bool) or v is None:
         return v
     if isinstance(v, float) and (v != v or v in (float("inf"), float("-inf"))):
@@ -111,7 +112,7 @@ def _coerce_input(v: Any) -> Any:
     if isinstance(v, (list, dict, tuple, set)):
         raise PipelineError("An input holds one number or one piece of text, not a list or an object")
     s = str(v).strip()
-    n = typed_value(s)
+    n = None if is_code_text(s) else typed_value(s)
     return s if n is None else n
 
 
@@ -241,7 +242,7 @@ class Pipeline:
         if not _ID_RE.match(node_id):
             raise PipelineError(f"Invalid node id {node_id!r}")
         if node_id in self.nodes:
-            raise PipelineError(f"Node id {node_id!r} already exists")
+            raise PipelineError(f"Step id {node_id!r} already exists")
         node = Node(id=node_id, type=type_key, title=title or nt.label, x=x, y=y,
                     params=nt.normalize_params(params or {}, strict=strict))
         self.nodes[node_id] = node
@@ -272,7 +273,7 @@ class Pipeline:
 
     def _require(self, node_id: str) -> Node:
         if node_id not in self.nodes:
-            raise PipelineError(f"No node with id {node_id!r}. Nodes: {list(self.nodes)}")
+            raise PipelineError(f"No step with id {node_id!r}. Steps: {list(self.nodes)}")
         return self.nodes[node_id]
 
     # ---------------------------------------------------------------- edges
@@ -289,7 +290,7 @@ class Pipeline:
         src = self._require(source)
         dst = self._require(target)
         if source == target:
-            raise PipelineError("A node cannot feed itself")
+            raise PipelineError("A step can't feed itself")
         dst_type = registry.get(dst.type)
         if dst_type.kind == "source" or not dst_type.inputs:
             raise PipelineError(f"{dst.title} does not take inputs")
@@ -364,7 +365,7 @@ class Pipeline:
         if targets is not None:
             unknown = [t for t in targets if t not in self.nodes]
             if unknown:
-                raise PipelineError(f"No node called {unknown[0]!r}. Nodes: {list(self.nodes)}")
+                raise PipelineError(f"No step called {unknown[0]!r}. Steps: {list(self.nodes)}")
             wanted = set(targets)
             for t in targets:
                 wanted |= self.upstream_closure(t)
@@ -384,7 +385,7 @@ class Pipeline:
                 if indeg[t] == 0:
                     ready.append(t)
         if len(order) != len(indeg):
-            raise PipelineError("The pipeline contains a loop")
+            raise PipelineError("The project contains a loop")
         return order
 
     # ---------------------------------------------------------------- notes
@@ -458,13 +459,13 @@ class Pipeline:
     @classmethod
     def from_dict(cls, data: Any, path: Path | None = None) -> "Pipeline":
         if not isinstance(data, dict) or data.get("dancr") != FORMAT_VERSION:
-            raise PipelineError("This file is not a DANCR 2 pipeline (missing \"dancr\": 2)")
+            raise PipelineError("This file is not a DANCR 2 project (missing \"dancr\": 2)")
         try:
             return cls._from_dict(data, path)
         except PipelineError:
             raise
         except (KeyError, TypeError, AttributeError, ValueError) as e:
-            raise PipelineError(f"This pipeline file is damaged: {type(e).__name__}: {e}") from e
+            raise PipelineError(f"This project file is damaged ({type(e).__name__}: {e})") from e
 
     @classmethod
     def _from_dict(cls, data: dict[str, Any], path: Path | None) -> "Pipeline":
@@ -515,11 +516,14 @@ class Pipeline:
                          for k, v in cols.items() if isinstance(v, dict)}
         return p
 
-    def _rebase_paths(self, old_dir: Path, new_dir: Path) -> None:
+    def _rebase_paths(self, old_dir: Path, new_dir: Path, outputs: bool = True) -> None:
         """Save As to another folder: every path setting keeps pointing at the same file (relative when
-        that file is inside the new folder, absolute otherwise)."""
+        that file is inside the new folder, absolute otherwise). ``outputs=False`` (a project saved for the
+        first time) leaves the files steps save alone: named without a folder, they mean next to the project."""
+        from .registry import registry
         for node in self.nodes.values():
-            node.params = rebase_params(node.type, node.params, old_dir, new_dir)
+            if outputs or registry.get(node.type).kind != "sink":
+                node.params = rebase_params(node.type, node.params, old_dir, new_dir)
 
     def dumps(self) -> str:
         return json.dumps(self.to_dict(), indent=2, ensure_ascii=False) + "\n"
@@ -531,7 +535,7 @@ class Pipeline:
         if target is None:
             raise PipelineError("No file path to save to")
         if target.is_dir():
-            raise PipelineError(f"{target} is a folder; choose a file name")
+            raise PipelineError(f"{target} is a folder. Choose a file name")
         old_path = self.path
         old_dir = self.directory
         before = ({nid: n.params for nid, n in self.nodes.items()}, dict(self.meta))   # restored if the write fails
@@ -541,7 +545,7 @@ class Pipeline:
             self.meta.pop("autosaved", None)
         self.path = target
         if old_dir.resolve() != target.parent:
-            self._rebase_paths(old_dir, target.parent)
+            self._rebase_paths(old_dir, target.parent, outputs=old_path is not None)
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
             text = self.dumps()

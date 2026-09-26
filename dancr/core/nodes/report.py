@@ -44,8 +44,10 @@ def _item_html(i: int, lf: pl.LazyFrame, meta: dict[str, Any], params: dict[str,
     parts.append(f"<h2>{heading}</h2>")
     rep = meta.get("report") or {}
     if meta.get("node_type") == "check_limits" and rep.get("verdict"):
-        cls = "pass" if rep["verdict"] == "PASS" else "fail"
-        parts.append(f"<p class='verdict {cls}'>{rep['verdict']}: {rep.get('outside', 0):,} of {rep.get('rows', 0):,} rows outside {html.escape(str(rep.get('limit', '')))}</p>")
+        cls = {"PASS": "pass", "FAIL": "fail"}.get(rep["verdict"], "none")
+        what = (f"{rep.get('outside', 0):,} of {rep.get('checked', 0):,} values outside" if cls != "none"
+                else "no row has a value to check against")
+        parts.append(f"<p class='verdict {cls}'>{rep['verdict']}: {what} {html.escape(str(rep.get('limit', '')))}</p>")
     for m in meta.get("messages") or []:
         parts.append(f"<p class='muted'>{html.escape(str(m))}</p>")
     shown = {k: v for k, v in rep.items() if k not in ("fits", "parameters") and not isinstance(v, (list, dict))}
@@ -104,8 +106,11 @@ def build_report(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[s
     node_index = {m.get("node"): i for i, m in enumerate(item_meta) if m.get("node")}
     verdicts = [(m.get("title"), (m.get("report") or {}).get("verdict")) for m in item_meta if (m.get("report") or {}).get("verdict")]
     if verdicts:
-        overall = "PASS" if all(v == "PASS" for _, v in verdicts) else "FAIL"
-        parts.append(f"<p class='verdict {'pass' if overall == 'PASS' else 'fail'}'>Overall: {overall}</p>")
+        found = {v for _, v in verdicts}
+        # a check that had nothing to compare is neither a pass nor a fail
+        overall = "FAIL" if "FAIL" in found else ("PASS" if found == {"PASS"} else "NOT EVERYTHING CHECKED")
+        cls = {"PASS": "pass", "FAIL": "fail"}.get(overall, "none")
+        parts.append(f"<p class='verdict {cls}'>Overall: {overall}</p>")
     blocks = params.get("blocks") or [{"type": "item", "index": i} for i in range(len(frames))]
     used = set()
     for b in blocks:
@@ -131,6 +136,7 @@ def build_report(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[s
     .company { font-size: 13px; letter-spacing: 1px; text-transform: uppercase; color: #555; margin-bottom: 0; }
     .verdict { font-weight: 700; padding: 6px 10px; border-radius: 4px; display: inline-block; }
     .verdict.pass { background: #dcfce7; color: #166534; } .verdict.fail { background: #fee2e2; color: #991b1b; }
+    .verdict.none { background: #f1f5f9; color: #334155; }
     .text p { margin: 6px 0; }
     body { font-family: -apple-system, 'Segoe UI', 'Adwaita Sans', 'Noto Sans', Helvetica, Arial, sans-serif; color: #1c1c1e; max-width: 1100px; margin: 32px auto; padding: 0 24px; line-height: 1.45; }
     h1 { font-size: 26px; margin-bottom: 4px; } h2 { font-size: 18px; margin-top: 36px; border-bottom: 1px solid #ddd; padding-bottom: 4px; }
@@ -155,7 +161,7 @@ def _apply(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, An
     if out.suffix.lower() not in (".html", ".htm"):
         raise ValueError("Save the report as a .html file (it opens in any browser and prints to PDF)")
     if ctx.preview:
-        return NodeResult(frames[0], messages=[f"Will write {out.name} when the pipeline runs"])
+        return NodeResult(frames[0], messages=[f"Will write {out.name} when the project runs"])
     meta = getattr(ctx, "item_meta", None) or []
     doc = build_report(ctx, inputs, params, meta, getattr(ctx, "columns", None), ctx.inputs)
     out.parent.mkdir(parents=True, exist_ok=True)

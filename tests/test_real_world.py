@@ -163,7 +163,7 @@ def test_a_workbook_brings_in_every_sheet(tmp_path):
     assert out["answer"]["title"] == "Total amount by region"
 
 
-# ------------------------------------------------------------------ round two
+# ------------------------------------------------------------------ title lines above the header, and a till log
 def test_a_title_line_above_the_header_is_skipped(tmp_path):
     (tmp_path / "rep.csv").write_text("Monthly report — generated 2024-10-01\n\nRegion,Units,Revenue\n"
                                       + "".join(f"{r},{i},{i * 2.5}\n" for i, r in enumerate(["N", "S", "E", "W"] * 3)))
@@ -205,7 +205,7 @@ def pos(tmp_path):
     ("average subtotal per table", {"recipe": "breakdown", "by": ["tickets", "table"]}),
     ("total tip for IT", {"filters": [{"column": ["tickets", "server"], "op": "eq", "value": "IT"}]}),   # a value spelled like a word
 ])
-def test_round_two_questions(pos, question, expect):
+def test_till_log_questions(pos, question, expect):
     _, m = pos
     a = ask(m, question)
     assert a.ok, a.message
@@ -217,7 +217,7 @@ def test_round_two_questions(pos, question, expect):
     ("total by server", "which number"),
     ("tips per hour per day", "two time steps"),
 ])
-def test_round_two_refusals(pos, question, words):
+def test_till_log_refusals(pos, question, words):
     _, m = pos
     a = ask(m, question)
     assert not a.ok and words in a.message
@@ -229,9 +229,10 @@ def test_weather_readings_are_averaged_and_the_hottest_day_is_one_day(tmp_path):
            for i in range(60)])
     p, m = project(tmp_path, "station.csv")
     assert suggest(m)[0].spec.get("stat") == "mean"
-    a = ask(m, "hottest day")
-    assert a.ok and a.title == "Hottest day (by tmax_F)"
-    assert result(p, a.spec).height == 1
+    a = ask(m, "hottest day")                   # two stations a day: the day whose readings average highest
+    assert a.ok and a.title == "Hottest day (by average tmax_F)"
+    df = result(p, a.spec)
+    assert df.height == 1 and df["tmax_F"].to_list() == [85.5]
 
 
 def test_a_column_named_with_its_sheet_uses_that_sheet(tmp_path):

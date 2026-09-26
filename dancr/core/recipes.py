@@ -17,13 +17,14 @@ from __future__ import annotations
 import copy
 import json
 from collections import deque
+from datetime import datetime
 from dataclasses import dataclass
 from typing import Any
 
 from .planner import Plan, PlanStep
-from .understand import (DataModel, Table, Column, Relation, ID, TEXT, SERIES, LOOKUP, bucket_for, norm)
+from .understand import (DataModel, Table, Column, Relation, ID, TEXT, SERIES, LOOKUP, bucket_for, norm, name_words)
 
-RULES_VERSION = 1           # bump when a change to these rules would build a different plan from the same spec
+RULES_VERSION = 3           # bump when a change to these rules would build a different plan from the same spec
 
 STAT_WORDS = {"sum": "Total", "mean": "Average", "count": "Number of rows", "max": "Highest", "min": "Lowest",
               "median": "Median", "std": "Spread of"}
@@ -70,6 +71,20 @@ def _col(model: DataModel, ref: list | None) -> Column | None:
     return t.column(ref[1]) if t else None
 
 
+def plural(name: str) -> str:
+    """customer -> customers, category -> categories; a name that is not a plain word (product_id) stays."""
+    head, _, word = name.rpartition(" ")
+    if not word.isalpha() or word.endswith("s"):
+        return name
+    if word.endswith("y") and word[-2:-1] not in "aeiou":
+        word = word[:-1] + "ies"
+    elif word.endswith(("ch", "sh", "x", "z")):
+        word += "es"
+    else:
+        word += "s"
+    return f"{head} {word}" if head else word
+
+
 def stat_title(stat: str, what: str) -> str:
     """'Average' + 'Avg Time on Page (s)' reads 'Average time on page (s)', not 'Average Avg Time on Page (s)'."""
     import re
@@ -102,7 +117,7 @@ def groupables(model: DataModel, table: str) -> list[list]:
     st = model.stack_of(table)
     if st is not None:
         out.append([st.id, "source"])
-    for node in _reachable(model, table):
+    for node in reachable(model, table):
         u = model.table(node)
         out += [[node, c.name] for c in u.categories if [node, c.name] not in out]
         if u.shape == LOOKUP:
@@ -120,7 +135,7 @@ def _usable_links(model: DataModel, node: str, avoid: set[str]) -> list[Relation
             and r.cardinality != "many-to-many" and r.match_pct > 0]
 
 
-def _reachable(model: DataModel, table: str, avoid: set[str] | None = None) -> list[str]:
+def reachable(model: DataModel, table: str, avoid: set[str] | None = None) -> list[str]:
     """Tables whose columns can be brought next to ``table``'s rows without multiplying them, nearest first."""
     starts = _members(model, table)
     seen, order = set(starts), []
@@ -158,13 +173,11 @@ def _path(model: DataModel, starts: list[str], goal: str, avoid: set[str]) -> li
     return None
 
 
-def _ordered_measures(t: Table) -> list[Column]:
+def ordered_measures(t: Table) -> list[Column]:
     """The numbers most worth answering about first: amounts (sales, visits, quantity), then numbers with a unit
     (what a logger measures), then the rest, each in column order."""
-    from .understand import _words
-
     def rank(c: Column) -> tuple:
-        words = set(_words(c.name)) | set(_words(c.label or ""))
+        words = set(name_words(c.name)) | set(name_words(c.label or ""))
         money = (c.unit or "").strip().lower() in CURRENCY_UNITS or words & MONEY_WORDS
         where = words & {"lat", "lon", "lng", "latitude", "longitude", "x", "y", "easting", "northing"}
         return (4 if where else 0 if money else 1 if words & AMOUNT_WORDS else (2 if c.unit else 3), t.columns.index(c))
@@ -191,16 +204,15 @@ def default_stat(model: DataModel, table: str, measure: list | None = None) -> s
     """Amounts are added up (the total sales per month); readings are averaged (the mean pressure per hour).
     Decided by what the number is — its name and unit — and, when that says nothing, by its table: a logger's
     numbers are readings, a lookup's numbers describe its rows (a product's unit cost), anything else adds up."""
-    from .understand import _words
     col = _col(model, measure) if measure and not measure[0].startswith("stack:") else None
     if col is not None:
-        words = set(_words(col.name)) | set(_words(col.label or ""))
+        words = set(name_words(col.name)) | set(name_words(col.label or ""))
         unit = (col.unit or "").strip().lower()
         if words & AMOUNT_WORDS and not words & {"price", "rate", "average", "mean", "ratio", "percent", "pct"}:
             return "sum"
         if unit in CURRENCY_UNITS:
             return "sum"
-        if words & READING_WORDS or unit or (len(_words(col.name)) > 1 and _words(col.name)[-1] in ("f", "c", "k", "degc", "degf")):
+        if words & READING_WORDS or unit or (len(name_words(col.name)) > 1 and name_words(col.name)[-1] in ("f", "c", "k", "degc", "degf")):
             return "mean"                                  # tmax_F, temp_C: a reading in degrees
     t = model.table(measure[0] if measure and not measure[0].startswith("stack:") else table)
     return "mean" if t is not None and t.shape in (SERIES, LOOKUP) else "sum"
@@ -269,7 +281,7 @@ def _score(model: DataModel, t: Table, spec: dict) -> float:
 
 def _candidates(model: DataModel, t: Table) -> list[dict]:
     out: list[dict] = []
-    measures = _ordered_measures(t)
+    measures = ordered_measures(t)
     m0 = [t.node, measures[0].name] if measures else None
     stat = default_stat(model, t.node, m0)
     st = model.stack_of(t.node)
@@ -310,7 +322,7 @@ def _candidates(model: DataModel, t: Table) -> list[dict]:
         out.append({"recipe": "single", "table": t.node, "measure": m0, "stat": stat})
     if m0 and (t.rows or t.sampled) >= 20 and not (t.shape == LOOKUP and others):
         out.append({"recipe": "distribution", "table": t.node, "measure": m0})
-    if _reachable(model, t.node) and t.shape != LOOKUP:
+    if reachable(model, t.node) and t.shape != LOOKUP:
         out.append({"recipe": "linked", "table": t.node})
     if st is not None:
         out.append({"recipe": "stacked", "table": t.node})
@@ -361,7 +373,7 @@ class _Builder:
                 self.assume(f"blank:{node}", f"Left out {t.blank_rows:,} empty row{'s' if t.blank_rows != 1 else ''} of {t.title}",
                             [{"label": "Keep them", "set": {"keep_blank_rows": True}}])
             key = k
-        if t.total_row and not self.spec.get("keep_total_row") and t.wide is None or (t.total_row and t.wide and not self.spec.get("keep_total_row")):
+        if t.total_row and not self.spec.get("keep_total_row"):
             k = f"total:{node}"
             if k not in keys:
                 c, v = t.total_row["column"], t.total_row["value"]
@@ -373,7 +385,7 @@ class _Builder:
                     what = f"“{v}” row"
                 self.add(k, "keep_rows", f"{t.title} without its total row",
                          {"mode": "remove", "conditions": {"match": "all", "rules": rules}}, {"in": [key]})
-                self.assume(f"total:{node}", f"Left out the {what} at the bottom of {t.title}: it adds up the others",
+                self.assume(f"total:{node}", f"Left out the {what} at the bottom of {t.title}, since it adds up the others",
                             [{"label": "Keep it", "set": {"keep_total_row": True}}])
             key = k
         if t.wide:
@@ -383,8 +395,8 @@ class _Builder:
                 self.add(k, "unpivot", f"{t.title}: {w['columns'][0]}–{w['columns'][-1]} as rows",
                          {"columns": list(w["columns"]), "name_column": "month", "value_column": "value",
                           "year": str(w["year"] or "")}, {"in": [key]})
-                self.assume(f"long:{node}", f"Turned the month columns of {t.title} ({w['columns'][0]} … {w['columns'][-1]}) into rows: "
-                            "one row per item and month, the numbers in “value”"
+                self.assume(f"long:{node}", f"Turned the month columns of {t.title} ({w['columns'][0]} … {w['columns'][-1]}) into rows, "
+                            "one per item and month, with the numbers in “value”"
                             + (f", dated in {w['year']}" if w["year"] else ""))
             key = k
         if not self.spec.get("keep_spellings"):
@@ -433,7 +445,7 @@ class _Builder:
                 for c in m.table(node).columns:
                     self.names[(node, c.name)] = c.name
             self.names[(st.id, "source")] = label_col
-            self.assume("together", f"Put {', '.join(st.labels)} together; each row keeps which one it came from ({st.why})",
+            self.assume("together", f"Put {', '.join(st.labels)} together. {st.why}",
                         [{"label": f"Only {t.title}", "set": {"together": False}}])
         else:
             self.current = self.table(table)
@@ -488,7 +500,7 @@ class _Builder:
                   and x.cardinality != "many-to-many"]
         choices = [{"label": f"Link on {x.left_on} ↔ {x.right_on} instead", "set": {"avoid": sorted(self.avoid | {r.id})}}
                    for x in others[:3]]
-        self.assume(f"link:{r.id}", f"Linked {_tlabel(m, r.tables[0])} to {right.title} on {r.left_on} ↔ {r.right_on}: {r.why}", choices)
+        self.assume(f"link:{r.id}", f"Linked {_tlabel(m, r.tables[0])} to {right.title} on {r.left_on} ↔ {r.right_on}. {r.why}", choices)
 
     def name(self, ref: list | None) -> str:
         if not ref:
@@ -505,6 +517,10 @@ class _Builder:
             self.need(f["column"], f.get("column2"))
             if f.get("column2"):                       # one column against another: stock level below reorder level
                 formulas.append(f"[{self.name(f['column'])}] {ops[f['op']]} [{self.name(f['column2'])}]")
+                continue
+            if f["op"] == "outside":                   # not between 10 and 20
+                c = self.name(f["column"])
+                formulas.append(f"([{c}] < {f['value']} OR [{c}] > {f['value2']})")
                 continue
             rule = {"column": self.name(f["column"]), "op": f["op"], "value": f.get("value", "")}
             if f.get("value2") not in (None, ""):
@@ -543,7 +559,7 @@ def _free_name(base: str, taken: list[str]) -> str:
 
 def filter_text(model: DataModel, filters: list[dict]) -> str:
     words = {"eq": "is", "ne": "is not", "gt": "above", "lt": "below", "ge": "at least", "le": "at most",
-             "between": "between", "contains": "contains", "in": "is one of"}
+             "between": "between", "outside": "not between", "contains": "contains", "in": "is one of"}
     words.update({"year": "in", "month": "in"})
     parts = []
     for f in filters:
@@ -551,7 +567,11 @@ def filter_text(model: DataModel, filters: list[dict]) -> str:
             parts.append(f"{label(model, f['column'])} {f['text']}")
             continue
         v = f.get("value", "")
-        if f["op"] == "between":
+        if f["op"] == "in":
+            v = " or ".join(str(x) for x in v) if isinstance(v, list) else v
+            parts.append(f"{label(model, f['column'])} is {v}")
+            continue
+        if f["op"] in ("between", "outside"):
             v = f"{v} and {f.get('value2', '')}"
         if f.get("column2"):
             v = label(model, f["column2"])
@@ -568,7 +588,7 @@ def plan(model: DataModel, spec: dict) -> Plan:
     if not spec.get("table") or model.table(spec["table"]) is None:
         raise PlanError("Choose a table to answer from")
     b = _Builder(model, copy.deepcopy(spec))
-    terminal, view, title, why = globals()[f"_plan_{recipe}"](b)
+    terminal, view, title, why = PLANNERS[recipe](b)
     b.spec.pop("title", None)
     if spec.get("filters") and recipe not in ("rows", "single"):
         title += " where " + filter_text(model, spec["filters"])
@@ -607,7 +627,8 @@ def _plan_trend(b: _Builder):
     together = st is not None and spec.get("together", True)
     own = lambda r: r[0] in (st.tables if st else [t.node])            # noqa: E731 - a column of the tables themselves
     ys = [_bucket_name(r[1], stat) for r in measures] or ["rows"]
-    if together and not by and all(own(r) for r in measures) and all(own(f["column"]) for f in spec.get("filters") or []):
+    if together and not by and all(own(r) for r in measures) and all(
+            own(f["column"]) and not f.get("column2") and f["op"] != "outside" for f in spec.get("filters") or []):
         # bucket each table first (small), then stack the buckets with a label: one line per table
         label_col = _free_name("source", [c.name for c in t.columns])
         keys = []
@@ -621,7 +642,7 @@ def _plan_trend(b: _Builder):
                               {"every": every, "time_column": time[1], **_bucket_stats(measures, stat, time[1])}, {"in": [cur]}))
         b.add("stack", "stack", f"All {len(st.tables)} together", {"label_column": label_col, "labels": list(st.labels)},
               {"tables": keys})
-        b.assume("together", f"One line for each of {', '.join(st.labels)} ({st.why})",
+        b.assume("together", f"One line for each of {', '.join(st.labels)}. {st.why}",
                  [{"label": f"Only {t.title}", "set": {"together": False}}])
         split = len(ys) > 1                              # several quantities: one panel per table, a line each
         chart = b.add("chart", "chart", "", {"kind": "line", "x": time[1], "series": [{"column": y} for y in ys],
@@ -674,10 +695,14 @@ def _asked_span(t: Table, filters: list[dict] | None) -> float | None:
             spans.append(31 * 86400.0)
         elif f["op"] == "year":
             spans.append(365 * 86400.0)
+        elif f["op"] in ("gt", "ge") and t.end is not None:          # "since March", "in the last 7 days"
+            try:
+                spans.append(max(86400.0, (t.end - datetime.fromisoformat(str(f["value"])[:19])).total_seconds()))
+            except (ValueError, TypeError):
+                pass
         elif f["op"] == "between":
             try:
-                from datetime import datetime as _dt
-                a, b = (_dt.fromisoformat(str(f[k])[:19]) for k in ("value", "value2"))
+                a, b = (datetime.fromisoformat(str(f[k])[:19]) for k in ("value", "value2"))
                 spans.append(max(86400.0, (b - a).total_seconds()))
             except (ValueError, KeyError):
                 pass
@@ -717,9 +742,8 @@ def group_label(model: DataModel, ref: list | None, base: str | None = None, spo
         return spoken
     if ref[0].startswith("stack:"):
         rel = model.relation(ref[0])
-        from .understand import _words
-        common = [w for w in _words(model.tables[rel.tables[0]].title)
-                  if all(w in _words(model.tables[n].title) for n in rel.tables)] if rel else []
+        common = [w for w in name_words(model.tables[rel.tables[0]].title)
+                  if all(w in name_words(model.tables[n].title) for n in rel.tables)] if rel else []
         return common[0] if common else "table"          # device_1, device_2: "by device"
     t = model.table(ref[0])
     c = _col(model, ref)
@@ -773,7 +797,7 @@ def _plan_breakdown(b: _Builder, top: int | None = None):
     what = "rows" if stat == "count" else label(m, measure)
     if top:
         b.current = b.add("top", "take_sample", f"{'Bottom' if bottom else 'Top'} {top}", {"mode": "first", "rows": int(top)}, {"in": [b.current]})
-        title = (f"{'Bottom' if bottom else 'Top'} {top} {gl} by " +
+        title = (f"{'Bottom' if bottom else 'Top'} {top} {plural(gl) if int(top) != 1 else gl} by " +
                  ("number of rows" if stat == "count" else f"{STAT_WORDS.get(stat, stat).lower()} {what}"))
     else:
         title = f"{stat_title(stat, what)} by {gl}" if stat != "count" else f"Rows by {gl}"
@@ -795,14 +819,52 @@ def _part_formula(part: str, col: str) -> str:
         names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
         expr = '""'
         for i in range(7, 0, -1):
-            expr = f'IF(WEEKDAY([{col}]) = {i}, "{i} {names[i - 1]}", {expr})'
+            expr = f'IF(WEEKDAY([{col}], 2) = {i}, "{i} {names[i - 1]}", {expr})'
         return expr
     return {"hour": f"HOUR([{col}])", "month": f"MONTH([{col}])", "day": f"DAY([{col}])"}[part]
 
 
 def _plan_top(b: _Builder):
     n = int(b.spec.get("n") or 10)
+    if b.spec.get("every") and not b.spec.get("by"):
+        return _plan_top_times(b, n)
     return _plan_breakdown(b, top=n)
+
+
+def _plan_top_times(b: _Builder, n: int):
+    """The days (hours, months) with the largest total or average: each one added up first, then ranked, so
+    "the highest sales day" is the day whose sales add up to most, not the single biggest sale."""
+    m, spec = b.m, b.spec
+    t = m.table(spec["table"])
+    if not t.time:
+        raise PlanError(f"{t.title} has no date or time column")
+    measure = spec.get("measure")
+    stat = spec.get("stat") or ("count" if not measure else default_stat(m, t.node, measure))
+    if not measure:
+        stat = "count"
+    every, bottom = spec["every"], bool(spec.get("bottom"))
+    per = EVERY_WORDS.get(every, every)
+    b.base()
+    b.need(measure)
+    b.filters()
+    tname = b.name([t.node, t.time])
+    value = "rows" if stat == "count" else b.name(measure)
+    b.current = b.add("buckets", "time_buckets", f"{STAT_WORDS.get(stat, stat)} per {per}",
+                      {"every": every, "time_column": tname, **_bucket_stats([[None, value]] if measure else [], stat, tname)},
+                      {"in": [b.current]})
+    b.current = b.add("order", "sort", "Smallest first" if bottom else "Largest first", {"columns": [value], "descending": not bottom},
+                      {"in": [b.current]})
+    what = "number of rows" if stat == "count" else stat_title(stat, label(m, measure))
+    what = what[0].lower() + what[1:]
+    if spec.get("superlative") and n == 1:
+        title = f"{spec['superlative'].capitalize()} {spec.get('noun') or per} (by {what})"
+    else:
+        title = f"{'Bottom' if bottom else 'Top'} {n} {per}s by {what}"
+    key = b.add("top", "take_sample", title, {"mode": "first", "rows": n}, {"in": [b.current]})
+    if not spec.get("stat") and measure:
+        b.assume("stat", ("Averaged the values" if stat == "mean" else "Added the amounts up") + f" for each {per}",
+                 [{"label": "Add them up" if stat == "mean" else "Average them", "set": {"stat": "sum" if stat == "mean" else "mean"}}])
+    return key, "table", title, f"{t.title} has {t.time}"
 
 
 def _plan_toprows(b: _Builder):
@@ -870,7 +932,7 @@ def _plan_compare(b: _Builder):
     if spec.get("fit", True):
         b.add("fit", "fit_curve", f"{tb.title} against {ta.title}", {"x": col, "y": y, "kind": "linear"}, {"in": ["pair"]})
         diff = f"{y}_residual"
-        b.assume("fit", f"{tb.title} is a straight-line function of {ta.title} (offset and scale); what is left over is the difference",
+        b.assume("fit", f"Treated {tb.title} as a straight-line function of {ta.title} (offset and scale). What's left over is the difference",
                  [{"label": "Show the plain difference instead", "set": {"fit": False}}])
     else:
         diff = _free_name("difference", [c.name for c in ta.columns] + [y])
@@ -976,7 +1038,7 @@ def _plan_distribution(b: _Builder):
 def _plan_linked(b: _Builder):
     m, spec = b.m, b.spec
     t = m.table(spec["table"])
-    reach = _reachable(m, t.node, b.avoid)
+    reach = reachable(m, t.node, b.avoid)
     if not reach:
         raise PlanError(f"{t.title} is not linked to another table")
     b.base()
@@ -1021,6 +1083,12 @@ def _plan_describe(b: _Builder):
     return key, "table", title, "one row per column: count, blanks, average, range"
 
 
+PLANNERS = {"compare": _plan_compare, "trend": _plan_trend, "breakdown": _plan_breakdown, "top": _plan_top,
+            "toprows": _plan_toprows, "relationship": _plan_relationship, "gaps": _plan_gaps, "outliers": _plan_outliers,
+            "single": _plan_single, "distribution": _plan_distribution, "linked": _plan_linked, "stacked": _plan_stacked,
+            "rows": _plan_rows, "describe": _plan_describe}
+
+
 # =================================================================== chips
 def chips(model: DataModel, spec: dict) -> list[dict[str, Any]]:
     """The choices behind an answer, as chips: each has a ``key`` in the spec, a ``text`` and ``choices``
@@ -1030,11 +1098,11 @@ def chips(model: DataModel, spec: dict) -> list[dict[str, Any]]:
     t = model.table(spec.get("table", ""))
     if t is None:
         return out
-    measures = [[t.node, c.name] for c in _ordered_measures(t)]
-    reach = _reachable(model, t.node)
+    measures = [[t.node, c.name] for c in ordered_measures(t)]
+    reach = reachable(model, t.node)
     for node in reach:
         u = model.table(node)
-        measures += [[node, c.name] for c in _ordered_measures(u)]
+        measures += [[node, c.name] for c in ordered_measures(u)]
     cols = lambda refs: [{"label": _ref_label(model, ref, t.node), "value": ref} for ref in refs]  # noqa: E731
     if r in ("trend", "breakdown", "top", "single"):
         first = spec.get("measure") or (spec.get("measures") or [None])[0]
@@ -1054,7 +1122,11 @@ def chips(model: DataModel, spec: dict) -> list[dict[str, Any]]:
         if r in ("breakdown", "top", "single"):
             choices = [{"label": "rows", "value": None}] + choices
         out.append({"key": "measure", "text": label(model, measure) if measure else "rows", "value": measure, "choices": choices})
-    if r in ("breakdown", "top"):
+    if r == "top" and spec.get("every") and not spec.get("by"):
+        every = spec["every"]
+        out.append({"key": "every", "text": f"per {EVERY_WORDS.get(every, every)}", "value": every,
+                    "choices": [{"label": f"per {EVERY_WORDS.get(e, e)}", "value": e} for e in EVERY_CHOICES]})
+    elif r in ("breakdown", "top"):
         by = spec.get("by")
         out.append({"key": "by", "text": f"by {_group_ref_label(model, by, t.node)}" if by else "by …", "value": by,
                     "choices": [{"label": f"by {_group_ref_label(model, g, t.node)}", "value": g} for g in groupables(model, t.node)]})

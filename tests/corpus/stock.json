@@ -1,0 +1,34 @@
+{
+ "tables": {
+  "stores": {
+   "shape": "lookup",
+   "rows": 200,
+   "time": null,
+   "columns": {
+    "store_id": "id",
+    "zip": "id",
+    "city": "category"
+   }
+  },
+  "inventory": {
+   "shape": "events",
+   "rows": 1000,
+   "time": null,
+   "columns": {
+    "stock_id": "id",
+    "units": "measure"
+   }
+  }
+ },
+ "relations": [],
+ "suggestions": [
+  "distribution: Spread of units",
+  "single: Total units",
+  "describe: What is in stores",
+  "describe: What is in inventory"
+ ],
+ "questions": {
+  "total units by city": "(not answered) Those columns are in tables that are not linked to each other",
+  "average units": "Average units"
+ }
+}

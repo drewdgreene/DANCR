@@ -21,6 +21,8 @@ from typing import Any, Callable
 
 import polars as pl
 
+from .params import find_input
+
 
 class FormulaError(ValueError):
     def __init__(self, message: str, pos: int | None = None) -> None:
@@ -171,12 +173,12 @@ class Parser:
         return left
 
     def parse_pow(self) -> Any:
-        """Excel precedence: a sign on the base binds tighter than ^ (-2^2 = 4); ^ is right-associative."""
-        base = self.parse_signed()
-        if self.peek().text == "^":
+        """Excel precedence: a sign binds tighter than ^ (-2^2 = 4), and ^ works left to right (2^3^2 = 64)."""
+        left = self.parse_signed()
+        while self.peek().text == "^":
             self.take()
-            return Binary("^", base, self.parse_exponent())
-        return base
+            left = Binary("^", left, self.parse_signed())
+        return left
 
     def parse_signed(self) -> Any:
         if self.peek().text == "-":
@@ -186,15 +188,6 @@ class Parser:
             self.take()
             return self.parse_signed()
         return self.parse_atom()
-
-    def parse_exponent(self) -> Any:
-        if self.peek().text == "-":
-            self.take()
-            return Unary("-", self.parse_exponent())
-        if self.peek().text == "+":
-            self.take()
-            return self.parse_exponent()
-        return self.parse_pow()
 
     def parse_atom(self) -> Any:
         t = self.take()
@@ -236,7 +229,7 @@ class Parser:
 NUM, STR, BOOL, TIME, DUR, ANY = "number", "text", "true/false", "date/time", "duration", "any"
 
 
-def _kind_of_dtype(dt: pl.DataType) -> str:
+def kind_of_dtype(dt: pl.DataType) -> str:
     if dt.is_numeric():
         return NUM
     if dt == pl.Boolean:
@@ -264,7 +257,6 @@ class Compiler:
         self.lower = {k.lower(): k for k in schema}
         self.columns_used: set[str] = set()
         self.inputs = inputs or {}
-        self.inputs_lower = {k.lower(): k for k in self.inputs}
         self.inputs_used: set[str] = set()
 
     # -- columns ----------------------------------------------------------
@@ -279,7 +271,7 @@ class Compiler:
         if len(squashed) == 1:
             return squashed[0]
         if len(squashed) > 1:
-            raise FormulaError(f"{name!r} could mean {squashed[0]!r} or {squashed[1]!r}; write the exact name in [brackets]", pos)
+            raise FormulaError(f"{name!r} could mean {squashed[0]!r} or {squashed[1]!r}. Write the exact name in [brackets]", pos)
         close = [c for c in self.schema if name.lower()[:3] and name.lower()[:3] in c.lower()]
         hint = f" Did you mean {close[0]!r}?" if close else ""
         cols = ", ".join(list(self.schema)[:12]) + (" ..." if len(self.schema) > 12 else "")
@@ -306,11 +298,10 @@ class Compiler:
         return Typed(pl.lit(None), ANY, None)
 
     def c_Col(self, n: Col) -> Typed:
-        key = n.name.lower()
-        if n.name not in self.schema and key not in self.lower and key in self.inputs_lower:
-            real = self.inputs_lower[key]
+        found = None if n.name in self.schema or n.name.lower() in self.lower else find_input(self.inputs, n.name)
+        if found is not None:                   # a column always wins over an input of the same name
+            real, v = found
             self.inputs_used.add(real)
-            v = self.inputs[real]
             if isinstance(v, bool):
                 return Typed(pl.lit(v), BOOL, v)
             if isinstance(v, (int, float)):
@@ -318,7 +309,7 @@ class Compiler:
             return Typed(pl.lit(str(v)), STR, str(v))
         name = self.resolve_column(n.name, n.pos)
         self.columns_used.add(name)
-        return Typed(pl.col(name), _kind_of_dtype(self.schema[name]), dtype=self.schema[name])
+        return Typed(pl.col(name), kind_of_dtype(self.schema[name]), dtype=self.schema[name])
 
     def c_Unary(self, n: Unary) -> Typed:
         v = self.compile(n.operand)
@@ -374,11 +365,8 @@ class Compiler:
                     a = Typed(text_to_number_expr(a.expr), NUM)
                 else:
                     b = Typed(text_to_number_expr(b.expr), NUM)
-            fn = {"=": pl.Expr.eq, "!=": pl.Expr.ne, "<": pl.Expr.lt, ">": pl.Expr.gt,
-                  "<=": pl.Expr.le, ">=": pl.Expr.ge}[op]
-            ea = a.expr.fill_nan(None) if a.kind == NUM else a.expr      # NaN is a blank: never "above" anything
-            eb = b.expr.fill_nan(None) if b.kind == NUM else b.expr
-            return Typed(fn(ea, eb), BOOL)
+            kind = STR if STR in (a.kind, b.kind) else (NUM if NUM in (a.kind, b.kind) else a.kind)
+            return Typed(excel_compare(op, a.expr, b.expr, kind), BOOL)
         if op == "&":
             return Typed(pl.concat_str([_as_text(a), _as_text(b)]), STR)
         if op == "+":
@@ -401,7 +389,7 @@ class Compiler:
             # dividing by zero has no answer (Excel shows #DIV/0!): a blank, not an infinity that breaks charts and totals
             return Typed(pl.when(den == 0).then(None).otherwise(a.expr.cast(pl.Float64) / den), NUM)
         if op == "%":
-            return Typed(pl.when(_num(b) == 0).then(None).otherwise(_num(a) % _num(b)), NUM)
+            return _mod(a, b)
         if op == "^":
             return Typed(a.expr.cast(pl.Float64).pow(b.expr.cast(pl.Float64)), NUM)
         raise FormulaError(f"Unknown operator {op}")
@@ -432,16 +420,54 @@ class Compiler:
             raise FormulaError(f"{name}: {e}", n.pos) from e
 
 
+def excel_compare(op: str, a: pl.Expr, b: pl.Expr, kind: str, case_sensitive: bool = False) -> pl.Expr:
+    """``a op b`` as Excel compares, one rule for formulas and filter rules. Text is compared ignoring case
+    ("abc" = "ABC"), and for = and <> a blank cell is empty text, so a blank equals "" and differs from "a".
+    A blank number or date differs from every value (<> is true) and matches no other comparison; NaN
+    counts as blank. ``op`` is one of = != < > <= >=."""
+    if kind == STR:
+        a, b = a.cast(pl.Utf8), b.cast(pl.Utf8)
+        if op in ("=", "!="):
+            a, b = a.fill_null(""), b.fill_null("")
+        if not case_sensitive:
+            a, b = a.str.to_lowercase(), b.str.to_lowercase()
+    elif kind == NUM:
+        a, b = a.fill_nan(None), b.fill_nan(None)      # NaN is a blank: never "above" anything
+    if op == "!=":
+        return a.ne_missing(b)
+    fn = {"=": pl.Expr.eq, "<": pl.Expr.lt, ">": pl.Expr.gt, "<=": pl.Expr.le, ">=": pl.Expr.ge}[op]
+    return fn(a, b)
+
+
 # ----------------------------------------------------------------- functions
+def number_text(e: pl.Expr, integer: bool = False) -> pl.Expr:
+    """A number as Excel shows it in text: 15 significant digits (0.1 + 0.2 is "0.3") and no ".0" on a
+    whole number. Whole-number columns (``integer``) keep every digit. A blank stays blank."""
+    if integer:
+        return e.cast(pl.Utf8)
+    x = e.cast(pl.Float64)
+    x = pl.when(x.is_finite()).then(x)                     # NaN and infinity are Excel errors: blank here
+    # 15 significant digits only where they are ordinary decimals: rounding to significant digits is itself
+    # inexact at extreme sizes (1e300 would gain digits), and those print shortest-exact already
+    f = pl.when((x.abs() >= 1e-15) & (x.abs() < 1e15)).then(x.round_sig_figs(15)).otherwise(x)
+    whole = (f == f.round(0)) & (f.abs() < 1e15)
+    return pl.when(whole).then(f.cast(pl.Int64, strict=False).cast(pl.Utf8)).otherwise(f.cast(pl.Utf8).str.strip_suffix(".0"))
+
+
+def _to_text(t: Typed) -> pl.Expr:
+    if t.kind == NUM:
+        return number_text(t.expr, t.dtype is not None and t.dtype.is_integer())
+    return t.expr.cast(pl.Utf8)
+
+
 def _as_text(t: Typed) -> pl.Expr:
-    """A value as text for joining, as Excel's & does: a blank is "" (not a blank result) and a whole
-    number has no ".0"."""
-    e = t.expr
-    if t.kind == NUM and not (t.dtype is not None and t.dtype.is_integer()):
-        f = e.cast(pl.Float64)
-        whole = (f == f.round(0)) & (f.abs() < 1e15)
-        e = pl.when(whole).then(f.cast(pl.Int64).cast(pl.Utf8)).otherwise(f.cast(pl.Utf8))
-    return e.cast(pl.Utf8).fill_null("")
+    """A value as text for joining, as Excel's & and CONCAT do: a blank is "" (not a blank result)."""
+    return _to_text(t).fill_null("")
+
+
+def _mod(a: Typed, b: Typed) -> Typed:
+    """The remainder with the sign of the divisor, as Excel's MOD; MOD(x, 0) is blank (Excel: #DIV/0!)."""
+    return Typed(pl.when(_num(b) == 0).then(None).otherwise(_num(a) % _num(b)), NUM)
 
 
 def _wide(t: Typed) -> pl.Expr:
@@ -514,8 +540,14 @@ def excel_round(e: pl.Expr, digits: int = 0) -> pl.Expr:
     decimal but not quite in binary counts as a half (1.005 -> 1.01). ``digits`` may be negative (-2 rounds
     to hundreds)."""
     scale = 10.0 ** digits
-    scaled = (e.cast(pl.Float64) * scale).round(9)          # 100.49999999999999 -> 100.5: the half the person typed
-    return scaled.round(0, mode="half_away_from_zero") / scale + 0.0      # + 0.0: no "-0"
+    # 15 significant digits first, as Excel keeps: 1.005 * 100 is 100.49999999999999 in binary, which is the
+    # 100.5 the person typed, while 2.4999999999 stays below the half
+    x = e.cast(pl.Float64)
+    scaled = x * scale
+    # at 1e15 and beyond a double has no fractional digits left to round: the value stays as it is
+    small = scaled.abs() < 1e15
+    r = pl.when(small).then(scaled.round_sig_figs(15).round(0, mode="half_away_from_zero") / scale).otherwise(x)
+    return pl.when(r == 0).then(0.0).otherwise(r)          # no "-0"
 
 
 def _f_round(c: Compiler, args: list[Typed]) -> Typed:
@@ -543,7 +575,7 @@ def _f_isnull(c: Compiler, args: list[Typed]) -> Typed:
 
 
 def _f_concat(c: Compiler, args: list[Typed]) -> Typed:
-    return Typed(pl.concat_str([a.expr.cast(pl.Utf8) for a in args]), STR)
+    return Typed(pl.concat_str([_as_text(a) for a in args]), STR)
 
 
 def _count_lit(t: Typed, what: str) -> int:
@@ -581,7 +613,40 @@ def _str_fn(method: str, kind: str = STR) -> Callable:
 
 
 def _f_replace(c: Compiler, args: list[Typed]) -> Typed:
-    return Typed(args[0].expr.cast(pl.Utf8).str.replace_all(args[1].expr, args[2].expr, literal=True), STR)
+    """Excel's REPLACE(text, start, num_chars, new): num_chars characters from position start become new."""
+    for a, what in ((args[1], "REPLACE start"), (args[2], "REPLACE number of characters")):
+        if a.kind not in (NUM, ANY):
+            raise FormulaError(f"{what} must be a number")
+    if args[1].literal is not None and _int_lit(args[1], "REPLACE start") < 1:
+        raise FormulaError("REPLACE start must be 1 or more")
+    if args[2].literal is not None:
+        _count_lit(args[2], "REPLACE number of characters")
+    s = args[0].expr.cast(pl.Utf8)
+    start = args[1].expr.cast(pl.Float64).floor().cast(pl.Int64)
+    count = args[2].expr.cast(pl.Float64).floor().cast(pl.Int64)
+    # from a column, a start below 1 or a negative count is Excel's #VALUE!: a blank cell here, never a
+    # slice counted from the end
+    ok = (start >= 1) & (count >= 0)
+    first = pl.when(ok).then(start - 1).otherwise(0).cast(pl.UInt64)
+    rest = pl.when(ok).then(start - 1 + count).otherwise(0).cast(pl.UInt64)
+    out = pl.concat_str([s.str.slice(0, first), _as_text(args[3]), s.str.slice(rest)])
+    return Typed(pl.when(ok).then(out), STR)
+
+
+def _f_substitute(c: Compiler, args: list[Typed]) -> Typed:
+    """Excel's SUBSTITUTE(text, old, new[, instance]): every old becomes new, or only the instance-th one."""
+    s, old, new = args[0].expr.cast(pl.Utf8), _as_text(args[1]), _as_text(args[2])
+    if len(args) == 3:
+        out = s.str.replace_all(old, new, literal=True)
+    else:
+        n = _int_lit(args[3], "SUBSTITUTE instance")
+        if n < 1:
+            raise FormulaError("SUBSTITUTE instance must be 1 or more")
+        parts = s.str.split(old)
+        out = (pl.when(parts.list.len() > n)
+               .then(pl.concat_str([parts.list.slice(0, n).list.join(old), new, parts.list.slice(n).list.join(old)]))
+               .otherwise(s))
+    return Typed(pl.when(old == "").then(s).otherwise(out), STR)        # nothing to find: the text is unchanged
 
 
 def _f_text(c: Compiler, args: list[Typed]) -> Typed:
@@ -591,7 +656,7 @@ def _f_text(c: Compiler, args: list[Typed]) -> Typed:
         if not isinstance(args[1].literal, str):
             raise FormulaError("TEXT format must be plain text in quotes, e.g. \"%Y-%m-%d\"")
         return Typed(args[0].expr.dt.strftime(args[1].literal), STR)
-    return Typed(args[0].expr.cast(pl.Utf8), STR)
+    return Typed(_to_text(args[0]), STR)
 
 
 def _f_value(c: Compiler, args: list[Typed]) -> Typed:
@@ -604,24 +669,24 @@ def _f_date(c: Compiler, args: list[Typed]) -> Typed:
     e = args[0].expr
     if args[0].kind == TIME:
         if len(args) == 2:
-            raise FormulaError("DATE is already given a date/time here; a format is only needed when parsing text, e.g. DATE(\"01/02/2024\", \"%d/%m/%Y\")")
+            raise FormulaError("DATE is already given a date/time here. A format is only needed when parsing text, e.g. DATE(\"01/02/2024\", \"%d/%m/%Y\")")
         return Typed(e, TIME)
     if len(args) == 2:
         if not isinstance(args[1].literal, str):
             raise FormulaError("DATE format must be plain text in quotes, e.g. \"%d/%m/%Y\"")
         return Typed(e.cast(pl.Utf8).str.to_datetime(args[1].literal, strict=False), TIME)
     if args[0].kind == NUM:
-        raise FormulaError("DATE of a number needs a unit; use DATE(TEXT(x)) or convert the column type first")
+        raise FormulaError("DATE of a number needs a unit. Use DATE(TEXT(x)) or convert the column type first")
     # the formats DANCR reads everywhere, month first when a date reads both ways (01/02/2024 is 2 January),
     # tried in order for each value; times with a UTC offset need their format given
-    from .timeutil import DATE_FORMATS, _DAY_FIRST
+    from .timeutil import DATE_FORMATS, DAY_FIRST, has_offset
     text = e.cast(pl.Utf8).str.strip_chars()
     fmts = []
     for f in DATE_FORMATS:
-        if "%z" in f or f == "%+":
+        if has_offset(f):
             continue
-        if f in _DAY_FIRST:                        # %d/%m/…: its month-first twin goes first
-            fmts.append(_DAY_FIRST[f])
+        if f in DAY_FIRST:                         # %d/%m/…: its month-first twin goes first
+            fmts.append(DAY_FIRST[f])
         if f not in fmts:
             fmts.append(f)
     return Typed(pl.coalesce([text.str.to_datetime(f, strict=False, time_unit="us") for f in fmts]), TIME)
@@ -633,6 +698,21 @@ def _dt_part(attr: str) -> Callable:
             raise FormulaError("This function needs a date/time column")
         return Typed(getattr(args[0].expr.dt, attr)(), NUM)
     return f
+
+
+def _f_weekday(c: Compiler, args: list[Typed]) -> Typed:
+    """Excel's WEEKDAY: return type 1 (default) Sunday = 1 … Saturday = 7, 2 Monday = 1 … Sunday = 7,
+    3 Monday = 0 … Sunday = 6, 11-17 the week starting Monday … Sunday = 1."""
+    if args[0].kind != TIME:
+        raise FormulaError("WEEKDAY needs a date/time column")
+    rt = _int_lit(args[1], "WEEKDAY return type") if len(args) == 2 else 1
+    iso = args[0].expr.dt.weekday().cast(pl.Int64)          # Monday = 1 … Sunday = 7
+    if rt == 3:
+        return Typed(iso - 1, NUM)
+    first = {1: 7, 2: 1}.get(rt, rt - 10 if 11 <= rt <= 17 else None)     # the day counted as 1
+    if first is None:
+        raise FormulaError(f"WEEKDAY return type must be 1, 2, 3 or 11 to 17, not {rt}")
+    return Typed((iso - first) % 7 + 1, NUM)
 
 
 def _f_elapsed(c: Compiler, args: list[Typed]) -> Typed:
@@ -680,7 +760,7 @@ def _rolling(method: str) -> Callable:
         n = _int_lit(args[1], "window size")
         if n < 1:
             raise FormulaError("window size must be at least 1")
-        center = False
+        center = True                         # centred, as the Smooth step and spike removal are by default
         if len(args) == 3:
             if not isinstance(args[2].literal, bool):
                 raise FormulaError("The third argument says whether to centre the window: TRUE or FALSE")
@@ -768,7 +848,7 @@ FUNCTIONS: dict[str, tuple[int, int | None, Callable[[Compiler, list[Typed]], Ty
     "CEIL": (1, 1, _simple(lambda e: e.ceil()), "Round up"),
     "CEILING": (1, 1, _simple(lambda e: e.ceil()), "Round up"),
     "SIGN": (1, 1, _simple(lambda e: e.sign()), "-1, 0 or 1"),
-    "MOD": (2, 2, lambda c, a: Typed(_num(a[0]) % _num(a[1]), NUM), "Remainder"),
+    "MOD": (2, 2, lambda c, a: _mod(a[0], a[1]), "MOD(a, b) remainder, with the sign of b; blank when b is 0"),
     "SIN": (1, 1, _simple(lambda e: e.sin()), "Sine (radians)"),
     "COS": (1, 1, _simple(lambda e: e.cos()), "Cosine (radians)"),
     "TAN": (1, 1, _simple(lambda e: e.tan()), "Tangent (radians)"),
@@ -801,12 +881,12 @@ FUNCTIONS: dict[str, tuple[int, int | None, Callable[[Compiler, list[Typed]], Ty
     "LEAD": (1, 2, _shift(-1), "LEAD(col, n) value n rows later"),
     "DIFF": (1, 2, _f_diff, "Change from previous row (seconds for date/time)"),
     "PCT_CHANGE": (1, 2, _f_pct_change, "Percent change from previous row"),
-    "ROLLING_MEAN": (2, 3, _rolling("mean"), "ROLLING_MEAN(col, n[, centered])"),
-    "ROLLING_MEDIAN": (2, 3, _rolling("median"), "ROLLING_MEDIAN(col, n)"),
-    "ROLLING_STD": (2, 3, _rolling("std"), "ROLLING_STD(col, n)"),
-    "ROLLING_MIN": (2, 3, _rolling("min"), "ROLLING_MIN(col, n)"),
-    "ROLLING_MAX": (2, 3, _rolling("max"), "ROLLING_MAX(col, n)"),
-    "ROLLING_SUM": (2, 3, _rolling("sum"), "ROLLING_SUM(col, n)"),
+    "ROLLING_MEAN": (2, 3, _rolling("mean"), "ROLLING_MEAN(col, n) over n rows centred on each row; ROLLING_MEAN(col, n, FALSE) the n rows ending at it"),
+    "ROLLING_MEDIAN": (2, 3, _rolling("median"), "ROLLING_MEDIAN(col, n[, centred])"),
+    "ROLLING_STD": (2, 3, _rolling("std"), "ROLLING_STD(col, n[, centred])"),
+    "ROLLING_MIN": (2, 3, _rolling("min"), "ROLLING_MIN(col, n[, centred])"),
+    "ROLLING_MAX": (2, 3, _rolling("max"), "ROLLING_MAX(col, n[, centred])"),
+    "ROLLING_SUM": (2, 3, _rolling("sum"), "ROLLING_SUM(col, n[, centred])"),
     "FILL_FORWARD": (1, 1, _f_fill_forward, "Replace blanks with the previous value"),
     "INTERPOLATE": (1, 1, _f_interpolate, "Fill blanks by straight-line interpolation"),
     # logic
@@ -829,9 +909,10 @@ FUNCTIONS: dict[str, tuple[int, int | None, Callable[[Compiler, list[Typed]], Ty
     "CONTAINS": (2, 2, lambda c, a: Typed(a[0].expr.cast(pl.Utf8).str.contains(a[1].expr, literal=True), BOOL), "CONTAINS(text, part)"),
     "STARTSWITH": (2, 2, _str_fn("starts_with", BOOL), "STARTSWITH(text, prefix)"),
     "ENDSWITH": (2, 2, _str_fn("ends_with", BOOL), "ENDSWITH(text, suffix)"),
-    "REPLACE": (3, 3, _f_replace, "REPLACE(text, old, new)"),
-    "CONCAT": (1, None, _f_concat, "Join text pieces"),
-    "TEXT": (1, 2, _f_text, "Convert to text; TEXT(date, \"%Y-%m-%d\")"),
+    "REPLACE": (4, 4, _f_replace, "REPLACE(text, start, n, new) puts new in place of n characters from position start"),
+    "SUBSTITUTE": (3, 4, _f_substitute, "SUBSTITUTE(text, old, new) replaces every old; SUBSTITUTE(text, old, new, k) only the k-th"),
+    "CONCAT": (1, None, _f_concat, "Join text pieces (a blank joins as nothing)"),
+    "TEXT": (1, 2, _f_text, "Convert to text (15 significant digits, as Excel); TEXT(date, \"%Y-%m-%d\")"),
     "VALUE": (1, 1, _f_value, "Convert text to a number"),
     "NUMBER": (1, 1, _f_value, "Convert text to a number"),
     # dates
@@ -842,7 +923,7 @@ FUNCTIONS: dict[str, tuple[int, int | None, Callable[[Compiler, list[Typed]], Ty
     "HOUR": (1, 1, _dt_part("hour"), "Hour"),
     "MINUTE": (1, 1, _dt_part("minute"), "Minute"),
     "SECOND": (1, 1, _dt_part("second"), "Second"),
-    "WEEKDAY": (1, 1, _dt_part("weekday"), "1 = Monday ... 7 = Sunday"),
+    "WEEKDAY": (1, 2, _f_weekday, "1 = Sunday ... 7 = Saturday; WEEKDAY(d, 2): 1 = Monday ... 7 = Sunday; WEEKDAY(d, 3): 0 = Monday"),
     "DAYOFYEAR": (1, 1, _dt_part("ordinal_day"), "Day of year"),
     "ELAPSED": (1, 2, _f_elapsed, "Time since the first row: ELAPSED(time, \"min\")"),
     "SECONDS_BETWEEN": (2, 2, _f_seconds_between, "SECONDS_BETWEEN(start, end)"),

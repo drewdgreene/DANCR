@@ -342,7 +342,7 @@ class Grid(QWidget):
         f = m.addAction(icon("note-pencil", T.text, 14), "Fix this value…"); f.triggered.connect(lambda: self.cellAction.emit("fix", idx.row() + 1, col, value))
         if not self.can_fix_values():
             f.setEnabled(False)
-            f.setText("Fix this value… (run this step first: a preview shows only a sample of the rows)")
+            f.setText("Fix this value… (run this step first, since the preview only shows a sample)")
         sel_cols = sorted({i.column() for i in self.table.selectionModel().selectedIndexes()})
         nums = [self.model.pager.columns[i] for i in sel_cols if self.model.pager.kinds.get(self.model.pager.columns[i]) == NUM]
         if len(nums) >= 1:

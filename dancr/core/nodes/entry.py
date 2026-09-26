@@ -61,7 +61,7 @@ def _enter(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, An
 
 registry.register(NodeType(
     key="enter_data", label="Type in a table", category="Get data", icon="⌨",
-    description="A small table you fill in yourself: a short list of items, a lookup table, a few new values. Paste from Excel works.",
+    description="A small table you type in yourself, such as a short list or a lookup table. You can paste from Excel.",
     apply=_enter, kind="source", inputs=[],
     summary=lambda p: f"{len(p.get('rows') or [])} rows × {len(p.get('columns') or [])} columns",
     params=[
@@ -73,24 +73,56 @@ registry.register(NodeType(
 
 # --------------------------------------------------------------- fix values
 def _stale_fixes(lf: pl.LazyFrame, fixes: list[dict[str, Any]], rowc: str) -> list[str]:
-    """Corrections that no longer do what they were made for: the row is past the end of the table, or the
-    cell no longer holds the value it had when it was corrected (the data or an earlier step changed)."""
+    """Corrections that no longer fit the data: the row is past the end of the table, or the cell no longer
+    holds the value it had when it was corrected (rows were added, removed or reordered upstream). A
+    correction without a "was" is not checked; an earlier correction of the same cell counts as its value."""
+    schema = lf.collect_schema()
     rows = sorted({int(f["row"]) - 1 for f in fixes if int(f["row"]) >= 1})
     cols = sorted({f["column"] for f in fixes})
     n = int(lf.select(pl.len()).collect(engine="streaming")[0, 0])
-    cells = (lf.with_row_index(rowc).filter(pl.col(rowc).is_in(rows)).select([rowc, *[pl.col(c).cast(pl.Utf8) for c in cols]])
-             .collect(engine="streaming"))
-    now = {(r[rowc], c): r[c] for r in cells.iter_rows(named=True) for c in cols}
+    cells = lf.with_row_index(rowc).filter(pl.col(rowc).is_in(rows)).select([rowc, *cols]).collect(engine="streaming")
+    now: dict[tuple[int, str], Any] = {(r[rowc], c): r[c] for r in cells.iter_rows(named=True) for c in cols}
     out = []
     for f in fixes:
-        row = int(f["row"]) - 1
-        if row >= n:
-            out.append(f"Row {row + 1} is past the end of the table ({n:,} rows): the correction of {f['column']} changed nothing")
+        row, col = int(f["row"]) - 1, f["column"]
+        if row < 0:
             continue
-        was, cur = f.get("was"), now.get((row, f["column"]))
-        if was not in (None, "") and cur is not None and str(was) != cur and _as_number(str(was)) != _as_number(cur):
-            out.append(f"Row {row + 1}, {f['column']} is {cur!r} now but was {was!r} when it was corrected: check this correction still fits the data")
+        if row >= n:
+            out.append(f"row {row + 1}, {col}: the table has only {n:,} rows")
+            continue
+        cur = now.get((row, col))
+        if "was" in f and not _same(cur, f["was"], schema[col]):
+            out.append(f"row {row + 1}, {col}: it holds {_shown(cur)} now but held {_shown(f['was'])} when it was corrected")
+        now[(row, col)] = f.get("value")          # what a later correction of this cell sees
     return out
+
+
+def _shown(v: Any) -> str:
+    return "nothing" if v is None or (isinstance(v, str) and not v.strip()) else repr(str(v))
+
+
+def _same(cur: Any, was: Any, dtype: pl.DataType) -> bool:
+    """Whether a cell (a value, or the text of an earlier correction) still holds the recorded value."""
+    def blank(v: Any) -> bool:
+        return v is None or (isinstance(v, str) and not v.strip())
+    if blank(was) or blank(cur):
+        return blank(was) and blank(cur)
+    if str(cur) == str(was):
+        return True
+    if isinstance(cur, bool):
+        return str(was).strip().lower() in ("true", "false", "yes", "no", "1", "0", "y", "n", "t", "f", "on", "off") \
+            and text_to_bool(was) == cur
+    a, b = _as_number(str(cur)) if isinstance(cur, str) else (float(cur) if isinstance(cur, (int, float)) else None), _as_number(str(was))
+    if a is not None or b is not None:
+        return a is not None and a == b
+    if isinstance(dtype, (pl.Datetime, pl.Date)):
+        try:
+            return pl.select(datetime_literal(was, dtype).alias("w"), datetime_literal(cur, dtype).alias("c")
+                             if isinstance(cur, str) else pl.lit(cur).cast(pl.Datetime("us") if is_date(dtype) else dtype).alias("c")) \
+                .select(pl.col("w") == pl.col("c")).item() is True
+        except (ValueError, pl.exceptions.PolarsError):
+            return False
+    return False
 
 
 def _as_number(text: str) -> float | None:
@@ -111,9 +143,18 @@ def _fix(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, Any]
                     f"({', '.join(gone)}) and changed nothing")
     if not fixes:
         return NodeResult(lf, messages=msgs)
+    if ctx.preview and ctx.sample != "all":
+        # a preview of a big table is a sample, whose row numbers are not the table's: a correction would
+        # land on the wrong row
+        return NodeResult(lf, messages=msgs + [f"The {len(fixes)} correction{'s are' if len(fixes) != 1 else ' is'} not shown in this "
+                                               "preview, which is a sample of the rows. Run the step to see them."])
     rowc = temp_name("row", schema)
-    if not ctx.preview:
-        msgs += _stale_fixes(lf, fixes, rowc)
+    stale = _stale_fixes(lf, fixes, rowc)
+    if stale:
+        # never write into a cell that is not the one that was corrected
+        raise ValueError(f"{len(stale)} correction{'s no longer fit' if len(stale) != 1 else ' no longer fits'} the data because rows above this step were "
+                         "added, removed or reordered. Nothing was changed. " + "; ".join(stale[:5])
+                         + (" …" if len(stale) > 5 else "") + ". Remove or redo these corrections.")
     lf = lf.with_row_index(rowc)
     exprs: dict[str, pl.Expr] = {}
     for f in fixes:
@@ -149,7 +190,7 @@ def _fix(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, Any]
 
 registry.register(NodeType(
     key="fix_values", label="Fix values", category="Clean up", icon="✎",
-    description="Correct individual cells. Every correction is recorded here with the old value and a note, so nothing is hidden.",
+    description="Correct individual cells. Each correction is kept here with the old value and a note.",
     apply=_fix,
     summary=lambda p: f"{len(p.get('fixes') or [])} corrections",
     params=[Param("fixes", "Corrections", "fixes", default=[])],
@@ -168,7 +209,7 @@ def _workbook(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str,
     if out.suffix.lower() != ".xlsx":
         raise ValueError("Save the workbook as an .xlsx file")
     if ctx.preview:
-        return NodeResult(frames[0], messages=[f"Will write {out.name} when the pipeline runs"])
+        return NodeResult(frames[0], messages=[f"Will write {out.name} when the project runs"])
     import os
     from xlsxwriter import Workbook
     meta = (ctx.upstream_meta or {}).get("items") or []

@@ -44,6 +44,10 @@
  "questions": {
   "total sales by store": "Total sales by store",
   "sales per week": "Total sales per week",
-  "sales by store for 2024-02": "Total sales by store in sales_2024-02"
+  "sales by store for 2024-02": "Total sales by store in sales_2024-02",
+  "compare Leeds and York": "Total sales by store where store is Leeds or York",
+  "sales in Leeds vs York": "Total sales by store where store is Leeds or York",
+  "highest sales day": "Highest day (by total sales)",
+  "total sales since February": "Total sales where date from February 2024"
  }
 }

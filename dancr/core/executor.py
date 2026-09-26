@@ -13,7 +13,6 @@ import hashlib
 import json
 import logging
 import os
-import re
 import shutil
 import threading
 import time
@@ -28,16 +27,12 @@ import polars as pl
 
 from .model import Pipeline, PipelineError
 from .registry import registry, Ctx, NodeResult, NodeType, resolve_path
+from .params import inputs_named
 from .dtypes import json_safe
 
 log = logging.getLogger("dancr.executor")
 
 IMPL_VERSION = "4"     # bump to invalidate every cache
-
-
-# engine modules that never shape a step's output (help text, reading tables and planning answers, sample
-# data): editing them must not throw every cached result away
-NOT_SEMANTIC = {"examples.py", "understand.py", "recipes.py", "ask.py", "answers.py", "planner.py", "samples.py"}
 
 
 def _version_of(package: str) -> str:
@@ -48,20 +43,60 @@ def _version_of(package: str) -> str:
         return "none"
 
 
-def _code_fingerprint() -> str:
-    """Hash of the code that can shape a step's output, so cached outputs are invalidated when it changes.
+def engine_files() -> list[Path]:
+    """The DANCR modules a run executes: this module, every step module, and every DANCR module they import,
+    read from their import statements (imports inside functions too). Nothing is listed by hand, so a module
+    can be neither forgotten nor included for no reason (the window, the answer engine)."""
+    import ast
+    package = Path(__file__).resolve().parent.parent          # dancr/
+    top = package.parent
 
-    Every engine module and every renderer (report/workbook/export steps write charts and tables),
-    plus the Polars version. Listing files by hand is how a module gets forgotten, so nothing is listed."""
-    import numpy
-    here = Path(__file__).parent
-    h = hashlib.sha1(IMPL_VERSION.encode())
-    for lib in (pl.__version__, numpy.__version__, _version_of("fastexcel")):   # the libraries that compute and read
-        h.update(lib.encode())
-    semantic = [f for f in [*here.rglob("*.py"), *(here.parent / "views").rglob("*.py")] if f.name not in NOT_SEMANTIC]
-    for f in sorted(semantic):
+    def file_of(module: str) -> Path | None:
+        base = top.joinpath(*module.split("."))
+        return next((f for f in (base.with_suffix(".py"), base / "__init__.py") if f.is_file()), None)
+
+    todo = [Path(__file__).resolve(), *sorted((Path(__file__).resolve().parent / "nodes").glob("*.py"))]
+    seen: set[Path] = set()
+    while todo:
+        f = todo.pop()
+        if f in seen:
+            continue
+        seen.add(f)
+        parts = list(f.relative_to(top).with_suffix("").parts)
+        if parts[-1] == "__init__":
+            parts.pop()
+        else:
+            todo += [p / "__init__.py" for p in f.parents if top in p.parents]      # its packages run first
+        here = parts if f.name == "__init__.py" else parts[:-1]         # the package relative imports start from
         try:
-            h.update(f.relative_to(here.parent).as_posix().encode())
+            tree = ast.parse(f.read_bytes())
+        except (OSError, SyntaxError):
+            continue
+        for node in ast.walk(tree):
+            names: list[str] = []
+            if isinstance(node, ast.Import):
+                names = [a.name for a in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                base = ".".join(here[:len(here) - node.level + 1]) if node.level else ""
+                mod = ".".join(x for x in (base, node.module or "") if x)
+                names = [mod] + [f"{mod}.{a.name}" for a in node.names]     # "from . import nodes" names a module
+            for name in names:
+                if name.split(".")[0] == package.name and (g := file_of(name)) is not None:
+                    todo += [g] + [top.joinpath(*name.split(".")[:i]) / "__init__.py" for i in range(1, name.count(".") + 1)]
+    return sorted(f for f in seen if f.is_file())
+
+
+def _code_fingerprint() -> str:
+    """Hash of the code that can shape a step's output, so cached outputs are invalidated when it changes:
+    the modules a run executes (see ``engine_files``) and the versions of the libraries that compute and read."""
+    import numpy
+    top = Path(__file__).resolve().parent.parent.parent
+    h = hashlib.sha1(IMPL_VERSION.encode())
+    for lib in (pl.__version__, numpy.__version__, _version_of("fastexcel")):
+        h.update(lib.encode())
+    for f in engine_files():
+        try:
+            h.update(f.relative_to(top).as_posix().encode())
             h.update(f.read_bytes())
         except OSError:
             pass
@@ -114,7 +149,8 @@ class PreviewUnavailable(PipelineError):
 
 def default_cache_dir(pipeline: Pipeline) -> Path:
     if pipeline.path is not None:
-        return (pipeline.path.parent / ".dancr" / "cache" / pipeline.path.stem).resolve()
+        # the file's whole name: two projects in one folder never share (and sweep) one results folder
+        return (pipeline.path.parent / ".dancr" / "cache" / pipeline.path.name).resolve()
     from ..logsetup import untitled_cache_root
     return untitled_cache_root() / f"untitled-{_PROCESS_ID}"
 
@@ -192,10 +228,36 @@ def _file_stamp(path: Path) -> list[int] | None:
     return [st.st_size, st.st_mtime_ns]
 
 
-BLANK_NOTE = "Blank or unreadable cells — "      # a source's note about blanks; reports leave it out
+def _content_sample(path: Path, size: int) -> str:
+    """A cheap check of a source file's content, so a same-size replacement that kept the old modification
+    time (``cp -p``, a restored backup) is noticed: a small file is hashed whole, a big one at its start,
+    middle and end."""
+    block = 64 * 1024
+    h = hashlib.sha1()
+    with open(path, "rb") as f:
+        if size <= 4 * block:
+            h.update(f.read())
+        else:
+            for at in (0, size // 2, size - block):
+                f.seek(at)
+                h.update(f.read(block))
+    return h.hexdigest()[:16]
+
+
+BLANK_NOTE = "Blank or unreadable cells: "      # a source's note about blanks; reports leave it out
 LIVE_DIR = ".live"
 LEASE_FOREIGN_MAX_AGE = 7 * 86400
-_HOST = __import__("socket").gethostname()      # per-process lists of the results each DANCR process is using (see Executor.hold)
+def _process_space() -> str:
+    """Where this process's id means something: the machine, and on Linux its process-id namespace (a Flatpak
+    sandbox or a container numbers its processes apart from the host, so their ids cannot be checked from here)."""
+    host = __import__("socket").gethostname()
+    try:
+        return f"{host} {os.readlink('/proc/self/ns/pid')}"
+    except OSError:
+        return host
+
+
+_HOST = _process_space()      # per-process lists of the results each DANCR process is using (see Executor.hold)
 
 
 class Executor:
@@ -216,7 +278,7 @@ class Executor:
                 try:
                     path = resolve_path(self.pipeline.directory, str(params[p.name]))
                     st = path.stat()
-                    fp.append([str(path.resolve()), st.st_size, st.st_mtime_ns])
+                    fp.append([str(path.resolve()), st.st_size, st.st_mtime_ns, _content_sample(path, st.st_size)])
                 except (OSError, ValueError, TypeError):
                     fp.append([str(params[p.name]), "missing"])
         return fp
@@ -240,16 +302,16 @@ class Executor:
                   for port, srcs in sorted(self.pipeline.inputs_of(node_id).items())}
         return {"titles": titles, "columns": self.pipeline.columns}
 
-    def inputs_used(self, node_id: str, params_json: str | None = None) -> dict[str, Any]:
-        """Project inputs whose names appear in this node's settings (so only they affect its cache hash)."""
-        vals = self.pipeline.input_values()
-        if not vals:
-            return {}
-        # every text in the settings as written (not as JSON, where a newline is "\\n" and would hide the name after it)
-        params = json.loads(params_json) if params_json else self.pipeline.nodes[node_id].params
-        texts = [t.lower() for t in _texts(params)]
-        return {k: v for k, v in vals.items()
-                if any(re.search(r"(?<![\w])" + re.escape(k.lower()) + r"(?![\w])", t) for t in texts)}
+    def inputs_used(self, node_id: str) -> dict[str, Any]:
+        """The project inputs this node's settings name (see ``params.inputs_named``). Only their values go
+        into its cache hash, and only they are handed to the step, so it cannot read one the hash leaves out.
+        A file-writing step also gets those its inputs' settings name (a report draws its charts' limit lines);
+        their values are already in those steps' hashes, which are part of its own."""
+        node = self.pipeline.nodes[node_id]
+        settings = [node.params]
+        if registry.get(node.type).kind == "sink":
+            settings += [self.pipeline.nodes[s].params for srcs in self.pipeline.inputs_of(node_id).values() for s in srcs]
+        return inputs_named(self.pipeline.input_values(), *settings)
 
     def plan_hash(self, node_id: str, memo: dict[str, str] | None = None) -> str:
         memo = {} if memo is None else memo
@@ -258,7 +320,6 @@ class Executor:
         node = self.pipeline.nodes[node_id]
         nt = registry.get(node.type)
         ins = self.pipeline.inputs_of(node_id)
-        params_json = json.dumps(node.params, sort_keys=True, default=str, ensure_ascii=False)   # once: reused for the inputs scan
         paths = self._resolved_paths(nt, node.params)
         payload = {
             "v": CODE_FINGERPRINT,
@@ -267,7 +328,7 @@ class Executor:
             "paths": paths,            # resolved: the same file after Save As hashes the same, another file does not
             "inputs": {port: [self.plan_hash(s, memo) for s in srcs] for port, srcs in sorted(ins.items())},
             "src": self._source_fingerprint(nt, node.params),
-            "values": self.inputs_used(node_id, params_json),
+            "values": self.inputs_used(node_id),
             "sink": self._sink_fingerprint(node_id, nt, node.params),
         }
         h = hashlib.sha1(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()[:16]
@@ -356,9 +417,16 @@ class Executor:
         # A path set, not a global seen-set: two branches that share one not-yet-run ancestor
         # (a diamond) are not a loop, so each branch descends with its own copy of the path.
         _visiting = _visiting | {node_id}
-        inputs = {port: [self.sample_frame(s, rows, _visiting, memo)[0] for s in srcs]
-                  for port, srcs in self.pipeline.inputs_of(node_id).items()}
+        kinds: set[str] = set()
+        inputs: dict[str, list[pl.LazyFrame]] = {}
+        for port, srcs in self.pipeline.inputs_of(node_id).items():
+            inputs[port] = []
+            for s in srcs:
+                lf, kind = self.sample_frame(s, rows, _visiting, memo)
+                inputs[port].append(lf)
+                kinds.add(kind)
         ctx = self._ctx(node_id, preview=True, memo=memo)
+        ctx.sample = _sample_kind(kinds)
         res = nt.apply(ctx, inputs, node.params)
         lf = res.frame if isinstance(res, NodeResult) else res
         return lf.head(rows) if nt.kind == "source" else lf
@@ -412,10 +480,11 @@ class Executor:
                     frames.append(lf)
                     kinds.add(kind)
                 inputs[port] = frames
+            kind = _sample_kind(kinds)
             ctx = self._ctx(node_id, preview=True, memo=memo)
+            ctx.sample = kind
             res = nt.apply(ctx, inputs, node.params)
             lf = res.frame if isinstance(res, NodeResult) else res
-            kind = "head" if "head" in kinds else ("spread" if "spread" in kinds else ("all" if kinds else "head"))
             return lf.head(rows).collect(engine="streaming"), (res if isinstance(res, NodeResult) else None), kind
         except PreviewUnavailable:
             raise
@@ -426,7 +495,7 @@ class Executor:
         node = self.pipeline.nodes[nid]
         ctx = Ctx(self.pipeline.directory, nid, node.title, preview=preview, cache_dir=self.cache_dir,
                   output_root=self.output_root)
-        ctx.inputs = self.pipeline.input_values()
+        ctx.inputs = self.inputs_used(nid)
         ctx.columns = self.pipeline.columns
         meta: dict[str, list[dict]] = {}
         for port, srcs in self.pipeline.inputs_of(nid).items():
@@ -597,6 +666,8 @@ class Executor:
         self._check_disk()
         try:
             try:
+                # not interruptible: Polars (1.44) neither stops a cancelled background sink nor survives its
+                # handle being dropped, so Cancel takes effect between steps
                 lf.sink_parquet(tmp, compression="zstd", statistics=True, maintain_order=True)
             except Exception as e:
                 msg = str(e)
@@ -605,7 +676,7 @@ class Executor:
                                     "Free some space, or use Run → Clear cached results, and run again.") from e
                 log.error("step %s could not be streamed: %s", nid, msg)
                 raise RuntimeError(f"'{self.pipeline.nodes[nid].title}' could not be computed as a streaming step "
-                                   f"({msg.splitlines()[0] if msg else type(e).__name__}). This is a DANCR bug; please report it with the log file.") from e
+                                   f"({msg.splitlines()[0] if msg else type(e).__name__}). This is a bug in DANCR. Please report it with the log file.") from e
             _validate_parquet(tmp)
             if not replace and out.exists() and _parquet_ok(out):
                 tmp.unlink(missing_ok=True)      # someone else published the same result first
@@ -687,8 +758,8 @@ class Executor:
             except (OSError, ValueError, KeyError, TypeError):
                 continue                             # being written right now, or unreadable: ignore this pass
             if data.get("host", _HOST) != _HOST:
-                # another machine sharing the folder: its processes cannot be checked from here, so its lease
-                # is trusted until it is a week old (a live window rewrites it whenever what it shows changes)
+                # another machine or sandbox sharing the folder: its processes cannot be checked from here, so
+                # its lease is trusted until it is a week old (a live window rewrites it whenever what it shows changes)
                 if age > LEASE_FOREIGN_MAX_AGE:
                     f.unlink(missing_ok=True)
                     continue
@@ -703,12 +774,19 @@ class Executor:
            memo: dict[str, str] | None = None) -> None:
         """Delete stale cached outputs of the given nodes (default: all nodes of this pipeline).
         Older versions are kept while younger than `grace_seconds` so a quick undo stays instant.
-        Never raises."""
+        Never raises.
+
+        Another process may start using a result between reading the leases and deleting it, so a result is
+        first renamed out of the way, the leases are read again, and only then is it deleted (or put back if
+        a lease now holds it). A reader records its lease before it looks for a result, so it either sees the
+        result gone (and computes it again) or holds it before the second look."""
         if not self.cache_dir.exists():
             return
         memo = {} if memo is None else memo
         nodes = only if only is not None else list(self.pipeline.nodes)
         held = self._held()
+        token = uuid.uuid4().hex[:8]
+        marked: list[tuple[str, str, Path, Path]] = []       # (node, hash, original, renamed)
         for nid in nodes:
             nd = self.node_dir(nid)
             try:
@@ -722,7 +800,7 @@ class Executor:
                 for f in nd.iterdir():
                     name, mtime = f.name, f.stat().st_mtime
                     if ".tmp." in name:
-                        if now - mtime > 3600:          # left by a writer that died
+                        if now - mtime > 3600:          # left by a writer (or a sweep) that died
                             f.unlink(missing_ok=True)
                     elif name.endswith((".parquet", ".json")) and not name.endswith(".failed.json"):
                         stem = name.split(".")[0]
@@ -736,24 +814,55 @@ class Executor:
                 if kept < keep_per_node and now - mtime < grace_seconds:
                     kept += 1
                     continue
-                for f in (nd / f"{stem}.parquet", nd / f"{stem}.json"):
+                for f in (nd / f"{stem}.json", nd / f"{stem}.parquet"):      # the record first: then it is not "done"
+                    gone = f.with_name(f"{stem}.{token}.gc.tmp{f.suffix}")
                     try:
-                        f.unlink(missing_ok=True)
+                        os.replace(f, gone)
+                        marked.append((nid, stem, f, gone))
                     except OSError:
-                        pass
+                        pass                             # already gone, or open in another program (Windows)
             try:
                 for j in nd.glob("*.failed.json"):
                     if j.name.split(".")[0] not in live:
                         j.unlink(missing_ok=True)
             except OSError:
                 pass
+        dirs: list[tuple[str, Path]] = []
         if only is None:
             # directories of nodes that no longer exist
             try:
                 for nd in self.cache_dir.iterdir():
-                    if nd.is_dir() and nd.name not in self.pipeline.nodes and not nd.name.startswith(".") \
-                            and nd.name not in held:
-                        shutil.rmtree(nd, ignore_errors=True)
+                    if not nd.is_dir():
+                        continue
+                    if nd.name.startswith(".gc-"):
+                        if time.time() - nd.stat().st_mtime > 3600:      # left by a sweep that died
+                            shutil.rmtree(nd, ignore_errors=True)
+                    elif nd.name not in self.pipeline.nodes and not nd.name.startswith(".") and nd.name not in held:
+                        gone = self.cache_dir / f".gc-{token}-{nd.name}"
+                        try:
+                            os.replace(nd, gone)
+                            dirs.append((nd.name, gone))
+                        except OSError:
+                            pass
+            except OSError:
+                pass
+        if not marked and not dirs:
+            return
+        held = self._held()                              # a run that started meanwhile has its lease in place now
+        for nid, stem, f, gone in reversed(marked):      # the table before its record
+            try:
+                if stem in held.get(nid, set()) and not f.exists():
+                    os.replace(gone, f)
+                else:
+                    gone.unlink(missing_ok=True)
+            except OSError:
+                pass
+        for name, gone in dirs:
+            try:
+                if name in held and not (self.cache_dir / name).exists():
+                    os.replace(gone, self.cache_dir / name)
+                else:
+                    shutil.rmtree(gone, ignore_errors=True)
             except OSError:
                 pass
 
@@ -767,15 +876,10 @@ class Executor:
             return 0
 
 
-def _texts(obj: Any) -> list[str]:
-    """Every string in a settings value (keys included), however deeply nested."""
-    if isinstance(obj, str):
-        return [obj]
-    if isinstance(obj, dict):
-        return [t for k, v in obj.items() for t in (_texts(k) + _texts(v))]
-    if isinstance(obj, (list, tuple)):
-        return [t for v in obj for t in _texts(v)]
-    return [str(obj)] if obj is not None else []
+def _sample_kind(kinds: set[str]) -> str:
+    """How a preview's inputs were sampled, the least complete one winning. A source (no inputs) is read from
+    its first rows."""
+    return "head" if "head" in kinds or not kinds else ("spread" if "spread" in kinds else "all")
 
 
 def column_stats(scan: pl.LazyFrame) -> dict[str, dict[str, Any]]:
@@ -837,7 +941,7 @@ def friendly_error(e: BaseException) -> str:
     if isinstance(e, IsADirectoryError):
         return f"{e.filename or 'That path'} is a folder, not a file"
     if isinstance(e, MemoryError):
-        return "DANCR ran out of memory in this step, which should not happen: every step is meant to stream. Please report it with the log file (Help → Show log file)."
+        return "DANCR ran out of memory in this step. Steps are meant to stream, so this is a bug. Please report it with the log file (Help → Show log file)."
     if "ColumnNotFoundError" in name or ("not found" in msg and "column" in msg.lower()):
         first = msg.splitlines()[0] if msg else "column not found"
         return f"Column not found: {first}"

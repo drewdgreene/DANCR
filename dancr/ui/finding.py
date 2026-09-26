@@ -117,12 +117,15 @@ class FindingCard(QFrame):
             shown = True
         elif st.status == "done" and node_type == "check_limits" and rep.get("verdict"):
             ok = rep["verdict"] == "PASS"
-            color = T.ok if ok else T.danger
+            color = {"PASS": T.ok, "FAIL": T.danger}.get(rep["verdict"], T.warn)     # nothing checked is not a failure
             self._heading("Result", color)
             self._big(rep["verdict"], size=15, color=color)
-            n, bad = int(rep.get("rows") or 0), int(rep.get("outside") or 0)
-            self._stats([(f"{bad:,}", "outside"), (f"{rep.get('outside_percent', 0):.2f}%", "of rows"), (f"{n:,}", "checked")])
-            self._text(f"Limit: {rep.get('limit', '')}." + (" Every row is within it." if ok else (f" About 1 in {round(n / bad)} rows is outside." if bad and n / bad >= 2 else "")))
+            n, bad = int(rep.get("checked") or 0), int(rep.get("outside") or 0)
+            self._stats([(f"{bad:,}", "outside"), (f"{rep.get('outside_percent', 0):.2f}%", "of values"), (f"{n:,}", "checked")])
+            if rep["verdict"] not in ("PASS", "FAIL"):
+                self._text(f"Limit: {rep.get('limit', '')}. No row has a value to check.")
+            else:
+                self._text(f"Limit: {rep.get('limit', '')}." + (" Every row is within it." if ok else (f" About 1 in {round(n / bad)} rows is outside." if bad and n / bad >= 2 else "")))
             shown = True
         elif st.status == "done" and node_type == "find_gaps":
             self._heading("Result")

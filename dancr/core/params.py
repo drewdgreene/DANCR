@@ -205,3 +205,41 @@ def _whole_number(value: Any) -> int:
         raise ValueError(f"{value!r} is not a whole number")
     return int(f)
 
+
+
+# ------------------------------------------------------------------ project inputs
+# How a setting names a project input, one rule everywhere (formulas, filter values, limits, ranges, chart
+# lines): the input's name, in any case, as a whole word of a setting's text. The executor finds the inputs a
+# step names with ``inputs_named`` and hands the step only those, and only their values go into its cache
+# key, so a step can never read an input its cache key leaves out.
+
+def find_input(inputs: dict[str, Any] | None, text: Any) -> tuple[str, Any] | None:
+    """(name, value) of the input a piece of settings text names, or None."""
+    if not inputs or not isinstance(text, str):
+        return None
+    key = text.strip().lower()
+    for name, value in inputs.items():
+        if name.lower() == key:
+            return name, value
+    return None
+
+
+def inputs_named(inputs: dict[str, Any] | None, *settings: Any) -> dict[str, Any]:
+    """The inputs whose names appear as a whole word in the text values (not the keys) of ``settings``."""
+    import re
+    if not inputs:
+        return {}
+    texts = [t.lower() for s in settings for t in _string_values(s)]
+    return {name: value for name, value in inputs.items()
+            if any(re.search(r"(?<!\w)" + re.escape(name.lower()) + r"(?!\w)", t) for t in texts)}
+
+
+def _string_values(obj: Any) -> list[str]:
+    """Every text value in a settings value, however deeply nested (dict keys are names, not values)."""
+    if isinstance(obj, str):
+        return [obj]
+    if isinstance(obj, dict):
+        return [t for v in obj.values() for t in _string_values(v)]
+    if isinstance(obj, (list, tuple)):
+        return [t for v in obj for t in _string_values(v)]
+    return []

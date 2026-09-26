@@ -17,7 +17,7 @@ from ..dtypes import is_date, align_time_column, temp_name
 def _time_col(schema: dict[str, pl.DataType], params: dict[str, Any], key: str = "time_column") -> str:
     name = params.get(key) or next(iter(temporal_columns(schema)), None)
     if not name:
-        raise ValueError("This table has no date/time column. Use 'Change type' to turn a column into a date/time first.")
+        raise ValueError("This table has no date/time column. Use 'Fix numbers and dates' to turn a column into a date/time first.")
     return require_column(schema, name, "time column", TIME)
 
 
@@ -40,7 +40,7 @@ def _counts_blank_times(port: str = "in", key: str = "time_column", when: Callab
             t = _time_col(schema_of(lf), params, key)
             n = int(lf.select(pl.col(t).null_count()).collect(engine="streaming")[0, 0])
             if n:
-                res.messages.append(f"{n:,} rows with a blank {t} were left out: they cannot be placed in time")
+                res.messages.append(f"{n:,} rows with a blank {t} were left out because they can't be placed in time")
             return res
         apply.__name__ = fn.__name__
         return apply
@@ -57,7 +57,7 @@ def _time_buckets(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[
     only = [require_column(schema, c, "column", NUM) for c in (params.get("columns") or [])]
     by = [require_column(schema, c, "group column") for c in (params.get("by") or [])]
     if t in by:
-        raise ValueError("The time column is already how rows are grouped; choose another column to group by")
+        raise ValueError("Rows are already grouped by the time column. Choose another column to group by")
     aggs = build_aggregations(schema, params.get("aggregations"), exclude=[t, *by],
                               default_stats=tuple(params.get("default_stats") or ["mean"]), only=only or None, order_by=t)
     if not aggs:
@@ -65,7 +65,7 @@ def _time_buckets(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[
     count_col = (params.get("count_column") or "").strip()
     if count_col:
         if count_col == t or count_col in {a.meta.output_name() for a in aggs}:
-            raise ValueError(f"The count column cannot be called {count_col!r}: that name is already used in the output")
+            raise ValueError(f"The count column can't be called {count_col!r} because that name is already used in the output")
         aggs.append(pl.len().alias(count_col))
     bucket = pl.col(t).dt.truncate(every).alias(t)
     out = lf.group_by([bucket, *by]).agg(aggs).sort([t, *by], nulls_last=True)
@@ -75,7 +75,7 @@ def _time_buckets(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[
 registry.register(NodeType(
     key="time_buckets", label="Average over time", category="Time", icon="◷",
     description="Group rows into time buckets (every second, minute, hour...) and summarise each bucket. "
-                "The fastest way to shrink millions of rows into something you can chart and reason about.",
+                "Use it to shrink millions of rows into something you can chart.",
     apply=_counts_blank_times()(_time_buckets),
     summary=lambda p: f"every {p.get('every') or '1m'}",
     params=[
@@ -111,7 +111,7 @@ def _rolling(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, 
     if not replace:
         clash = [name(c) for c in cols if name(c) in schema]
         if clash:
-            raise ValueError(f"There is already a column called {clash[0]!r}; tick 'Replace the original columns' or rename it first")
+            raise ValueError(f"There is already a column called {clash[0]!r}. Tick 'Replace the original columns' or rename it first")
     exprs = []
     if window.isdigit():
         n = int(window)
@@ -172,7 +172,7 @@ def _rate(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, Any
     unit = {"s": "second", "m": "minute", "h": "hour", "d": "day"}[per]
     clash = [f"{c}_per_{unit}" for c in cols if f"{c}_per_{unit}" in schema]
     if clash:
-        raise ValueError(f"There is already a column called {clash[0]!r}; rename it first")
+        raise ValueError(f"There is already a column called {clash[0]!r}. Rename it first")
     exprs = []
     for c in cols:
         dy = pl.col(c).cast(pl.Float64) - pl.col(c).cast(pl.Float64).shift(n)
@@ -226,7 +226,7 @@ def _gaps(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, Any
                  pl.max_horizontal((pl.col("__dt").cast(pl.Float64) / 1e6 / exp_s).round(0) - 1, pl.lit(1)).cast(pl.Int64).alias("missing_readings")])
              .drop("__dt"))
     return NodeResult(out, report={"expected_spacing_s": exp_s, "threshold_s": exp_s * factor},
-                      messages=[f"Normal spacing is {format_seconds(exp_s)}; a gap is anything over {format_seconds(exp_s * factor)}"])
+                      messages=[f"Normal spacing is {format_seconds(exp_s)}. A gap is anything over {format_seconds(exp_s * factor)}"])
 
 
 registry.register(NodeType(

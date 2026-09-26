@@ -6,7 +6,7 @@ from typing import Any
 
 import polars as pl
 
-from ..expr import _kind_of_dtype, NUM, TIME
+from ..expr import kind_of_dtype, NUM, TIME
 
 STAT_CHOICES = [
     ("mean", "average"), ("median", "median"), ("min", "minimum"), ("max", "maximum"),
@@ -28,8 +28,8 @@ def number_param(params: dict[str, Any], key: str, default: float, what: str, *,
     return n
 
 
-STAT_HELP = ("Any of: " + ", ".join(v for v, _ in STAT_CHOICES) + ". One statistic keeps the column names; several add a "
-             "suffix (column by column choices always add one)")
+STAT_HELP = ("Any of: " + ", ".join(v for v, _ in STAT_CHOICES) + ". With one statistic the columns keep their names. "
+             "With several, or when choosing column by column, each name gets a suffix")
 
 
 def check_stats(stats: list[str] | tuple[str, ...]) -> None:
@@ -74,11 +74,11 @@ def stat_expr(col: str, stat: str, order_by: str | None = None) -> pl.Expr:
 
 def numeric_columns(schema: dict[str, pl.DataType], exclude: list[str] | None = None) -> list[str]:
     ex = set(exclude or [])
-    return [c for c, dt in schema.items() if _kind_of_dtype(dt) == NUM and c not in ex]
+    return [c for c, dt in schema.items() if kind_of_dtype(dt) == NUM and c not in ex]
 
 
 def temporal_columns(schema: dict[str, pl.DataType]) -> list[str]:
-    return [c for c, dt in schema.items() if _kind_of_dtype(dt) == TIME]
+    return [c for c, dt in schema.items() if kind_of_dtype(dt) == TIME]
 
 
 def build_aggregations(schema: dict[str, pl.DataType], aggregations: list[dict[str, Any]] | None,
@@ -106,7 +106,7 @@ def build_aggregations(schema: dict[str, pl.DataType], aggregations: list[dict[s
         for st in stats:
             name = (alias if len(stats) == 1 else f"{alias}_{st}") if alias else f"{col}_{st}"
             if name in names:
-                raise ValueError(f"Two of the chosen statistics would both be called {name!r}; remove one or give it another name")
+                raise ValueError(f"Two of the chosen statistics would both be called {name!r}. Remove one or give it another name")
             names.add(name)
             exprs.append(stat_expr(col, st, order_by).alias(name))
     return exprs
@@ -123,9 +123,9 @@ def require_column(schema: dict[str, pl.DataType], name: str | None, what: str, 
                 break
         else:
             raise ValueError(f"There is no column called {name!r} for the {what}. Columns: {list(schema)[:15]}")
-    if kind and _kind_of_dtype(schema[name]) != kind:
-        raise ValueError(f"The {what} ({name}) must be a {kind} column, but it is {_kind_of_dtype(schema[name])}. "
-                         f"Use a 'Change type' node first.")
+    if kind and kind_of_dtype(schema[name]) != kind:
+        raise ValueError(f"The {what} ({name}) must be a {kind} column, but it is {kind_of_dtype(schema[name])}. "
+                         f"Use a 'Fix numbers and dates' step first.")
     return name
 
 
@@ -136,7 +136,7 @@ def schema_of(lf: pl.LazyFrame) -> dict[str, pl.DataType]:
 def first_input(inputs: dict[str, list[pl.LazyFrame]], port: str = "in") -> pl.LazyFrame:
     frames = inputs.get(port) or []
     if not frames:
-        raise ValueError("Nothing is connected to this node's input")
+        raise ValueError("Nothing is connected to this step's input")
     return frames[0]
 
 

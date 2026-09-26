@@ -60,7 +60,7 @@ class ReportView(QWidget):
         rm = QPushButton("Remove"); rm.clicked.connect(self._remove_block)
         btns.addWidget(add_h); btns.addWidget(add_t); btns.addWidget(rm); btns.addStretch()
         r.addWidget(lab); r.addWidget(hint); r.addWidget(self.blocks, 1); r.addLayout(btns)
-        tip = QLabel("To add a chart or table: open it and press <b>Add to report</b>, or connect it to this step in the Map."); tip.setObjectName("muted"); tip.setWordWrap(True)
+        tip = QLabel("To add a chart or table, open it and press <b>Add to report</b>, or connect it to this step in the Map."); tip.setObjectName("muted"); tip.setWordWrap(True)
         r.addWidget(tip)
         split.addWidget(right); split.setSizes([420, 520])
         listen(self, doc.nodeChanged, lambda nid: self.refill() if nid == self.nid and not self._timer.isActive() else None)

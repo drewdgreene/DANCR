@@ -115,16 +115,15 @@ class Understanding:
         if not self._nodes():
             self.model = DataModel(); self.full = True
             self._notify(); self._serve(); return
-        snapshot = Pipeline.from_dict(self.doc.pipeline.to_dict(), self.doc.pipeline.path)
-        cache = self.doc.executor.cache_dir
+        quick_ex = self.doc.snapshot_executor()
+        full_ex = Executor(quick_ex.pipeline, quick_ex.cache_dir)     # one copy, read by both; an executor each
         nodes = self._nodes()
 
         def quick() -> DataModel:
-            return understand(snapshot, Executor(snapshot, cache), nodes)
+            return understand(quick_ex.pipeline, quick_ex, nodes)
 
         def full() -> DataModel:
-            ex = Executor(snapshot, cache)
-            return deepen(snapshot, ex, understand(snapshot, ex, nodes))
+            return deepen(full_ex.pipeline, full_ex, understand(full_ex.pipeline, full_ex, nodes))
 
         self._quick.submit(quick, lambda m, k=key: self._got(m, False, k), lambda msg: log.warning("Could not read the tables: %s", msg))
         self._deep.submit(full, lambda m, k=key: self._got(m, True, k), lambda msg: log.warning("Could not read every row: %s", msg))
@@ -330,7 +329,7 @@ class AskBar(QFrame):
         row = QHBoxLayout(); row.setSpacing(6)
         ic = QLabel(); ic.setPixmap(icon("sparkle", T.accent, 18).pixmap(18, 18))
         self.edit = QLineEdit(); self.edit.setClearButtonEnabled(True)
-        self.edit.setPlaceholderText("Ask about your data — e.g. “total sales by region”, “average pressure per hour”, “compare A and B”")
+        self.edit.setPlaceholderText("Ask about your data, like “total sales by region”, “average pressure per hour” or “compare A and B”")
         self.edit.returnPressed.connect(self._ask)
         self.edit.textEdited.connect(lambda _: self._set_message(""))
         self._completer_model = QStringListModel(self)
@@ -418,8 +417,8 @@ class AskBar(QFrame):
         m = self.u.model
         if m is None:
             return
-        snapshot = Pipeline.from_dict(self.doc.pipeline.to_dict(), self.doc.pipeline.path)
-        cache = self.doc.executor.cache_dir
+        ex = self.doc.snapshot_executor()
+        snapshot, cache = ex.pipeline, ex.cache_dir
         specs = [s.spec for s in self.suggestions]
         cards = list(self.cards)
 
@@ -461,7 +460,7 @@ class AskBar(QFrame):
             self._set_message("Type a question, or pick one of the answers below."); return
         m = self.u.model
         if m is None:
-            self._set_message("Still reading your tables — ask again in a moment."); return
+            self._set_message("Still reading your tables. Ask again in a moment."); return
         a = ask(m, text)
         if not a.ok:
             hints = " ".join(f'<a href="{h}">{h}</a>' for h in a.hints)
@@ -505,7 +504,7 @@ class AnswerPanel(QFrame):
         lay = QHBoxLayout(self); lay.setContentsMargins(12, 6, 10, 6); lay.setSpacing(6)
         star = QLabel(); star.setPixmap(icon("sparkle", T.accent, 16).pixmap(16, 16))
         self.title = QLineEdit(); self.title.setFrame(False); self.title.setStyleSheet("font-weight: 600; background: transparent;")
-        self.title.setToolTip("The answer's name — click to rename it"); self.title.setMinimumWidth(160)
+        self.title.setToolTip("The answer's name. Click to rename it"); self.title.setMinimumWidth(160)
         self.title.editingFinished.connect(self._renamed)
         self.chip_box = QHBoxLayout(); self.chip_box.setSpacing(4)
         self.assume_btn = QToolButton(); self.assume_btn.setObjectName("quiet"); self.assume_btn.setPopupMode(QToolButton.InstantPopup)

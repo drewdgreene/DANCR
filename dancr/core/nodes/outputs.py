@@ -46,7 +46,7 @@ def validate_chart(schema: dict[str, pl.DataType], params: dict[str, Any]) -> No
 
 registry.register(NodeType(
     key="chart", label="Chart", category="Share", icon="◢",
-    description="Draw the data. Big data is summarised per pixel so even 100 million points draw instantly.",
+    description="Draw the data as a chart. Large tables are summarised per pixel, so even 100 million points draw quickly.",
     apply=_chart,
     materialize=False,
     summary=lambda p: f"{p.get('kind', 'line')}: {', '.join(s.get('column', '') for s in (p.get('series') or []))}",
@@ -60,9 +60,9 @@ registry.register(NodeType(
         Param("value", "Value", "column", column_group="numeric", visible_when={"kind": "bar"}),
         Param("stat", "Statistic", "choice", default="mean", visible_when={"kind": "bar"},
               choices=[("mean", "average"), ("sum", "total"), ("count", "count"), ("min", "minimum"), ("max", "maximum"), ("median", "median")]),
-        Param("color_by", "Colour by", "column", visible_when={"kind": ["line", "scatter"]}, help="A category column; one colour per value"),
+        Param("color_by", "Colour by", "column", visible_when={"kind": ["line", "scatter"]}, help="A category column. Each value gets its own colour"),
         Param("split_by", "Split into panels by", "column", visible_when={"kind": ["line", "scatter", "histogram"]},
-              help="A category column; one panel per value, stacked with a shared X axis"),
+              help="A category column. Each value gets its own panel, stacked on a shared X axis"),
         Param("limits", "Limit lines", "limits", default=[], visible_when={"kind": ["line", "scatter", "histogram"]}),
         Param("fit", "Fitted curve", "choice", default="", visible_when={"kind": "scatter"},
               choices=[("", "none"), ("linear", "straight line"), ("saturating", "levels off"), ("exponential", "exponential"), ("power", "power law"), ("logarithmic", "logarithmic"), ("polynomial", "curve (polynomial)")]),
@@ -82,7 +82,7 @@ def _export(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, A
         raise ValueError("Choose where to save the file")
     out = ctx.resolve_output(path)
     if ctx.preview:
-        return NodeResult(lf, messages=[f"Will write {out.name} when the pipeline runs"])
+        return NodeResult(lf, messages=[f"Will write {out.name} when the project runs"])
     write_table(lf, out)
     return NodeResult(lf, messages=[f"Saved {out}"], report={"path": str(out)}, files=[out])
 
@@ -95,7 +95,7 @@ def excel_frame(lf: pl.LazyFrame, what: str = "This table") -> pl.DataFrame:
     from ..dtypes import strip_time_zones
     n = int(lf.select(pl.len()).collect(engine="streaming")[0, 0])
     if n > EXCEL_MAX_ROWS:
-        raise ValueError(f"{what} has {n:,} rows; Excel sheets hold at most {EXCEL_MAX_ROWS:,}. Save as CSV or Parquet, or use 'Average over time' first.")
+        raise ValueError(f"{what} has {n:,} rows, but an Excel sheet holds at most {EXCEL_MAX_ROWS:,}. Save as CSV or Parquet, or use 'Average over time' first.")
     return strip_time_zones(lf.collect(engine="streaming"))
 
 

@@ -119,7 +119,7 @@ class TableView(QWidget):
         elif st.status == "running":
             txt = status_dot(st.status, "running…")
         else:
-            txt = status_dot(st.status, "preview" + ("" if self.doc.auto_run else " — press Run to compute everything"))
+            txt = status_dot(st.status, "preview" + ("" if self.doc.auto_run else ". Press Run to compute everything"))
         self.status.setText(txt)
         self.run_btn.setVisible(st.status not in ("done", "running") and not self.doc.auto_run)
         self.run_btn.setEnabled(not self.doc.running)
@@ -170,7 +170,7 @@ class TableView(QWidget):
                 self.summary_overlay.setText(msg); self.summary_overlay.show()
         elif tab == 0:
             self.grid.set_overlay("Building a preview…")
-        nid, executor = self.nid, self.doc.executor         # captured here: the project may be replaced meanwhile
+        nid, executor = self.nid, self.doc.snapshot_executor()   # a copy: the project may change or be replaced meanwhile
 
         def work():
             try:
@@ -200,7 +200,7 @@ class TableView(QWidget):
                "head": f"the first {n:,} rows of the input", "all": "all rows"}.get(kind, "a sample")
         st = self.doc.state(nid)
         if st.status != "failed":
-            self.status.setText(status_dot("preview", f"preview: {len(df):,} rows from {how}" + ("" if self.doc.auto_run else " — press Run to compute everything")))
+            self.status.setText(status_dot("preview", f"preview: {len(df):,} rows from {how}" + ("" if self.doc.auto_run else ". Press Run to compute everything")))
 
     def _load_summary(self, open_frame: Callable[[], pl.LazyFrame], rows: int) -> None:
         """Describe every column on a worker; ``open_frame`` runs there too, so no file is touched here."""

@@ -16,7 +16,7 @@ from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel, QToolButton, QFileDialog, QStackedLayout, QMenu, QLineEdit, QInputDialog
 
-from ..core.expr import _kind_of_dtype, NUM, TIME, STR, BOOL
+from ..core.expr import kind_of_dtype, NUM, TIME, STR, BOOL
 from ..core.executor import Executor
 from ..core.fits import KINDS as FIT_KINDS
 from ..views import lod
@@ -291,7 +291,7 @@ class ChartView(QWidget):
         else:
             self._set_overlay("Waiting for the run to finish…" if self.doc.running else "Building a preview…")
 
-            executor = self.doc.executor            # captured here: the project may be replaced meanwhile
+            executor = self.doc.snapshot_executor()   # a copy: the project may change or be replaced meanwhile
 
             def work():
                 try:
@@ -306,7 +306,7 @@ class ChartView(QWidget):
                     return
                 df, err = r
                 if err is not None:
-                    self._set_overlay(f"Preview unavailable — {err}")
+                    self._set_overlay(f"Couldn't build a preview: {err}")
                     return
                 self._got_frame(df.lazy(), dict(df.schema), len(df), preview=True)
             self._serial.submit(work, done, self._set_overlay)
@@ -336,9 +336,9 @@ class ChartView(QWidget):
             a = m.addAction(label); a.setCheckable(True); a.setChecked(k == kind); a.triggered.connect(lambda _=False, k=k: self._set({"kind": k}))
         self.kind_chip.setMenu(m)
         schema = self.schema                         # filled by the worker; empty until the table has been read
-        nums = [c for c, dt in schema.items() if _kind_of_dtype(dt) == NUM]
-        axes = [c for c, dt in schema.items() if _kind_of_dtype(dt) in (NUM, TIME)]
-        cats = [c for c, dt in schema.items() if _kind_of_dtype(dt) in (STR, BOOL)] or list(schema)
+        nums = [c for c, dt in schema.items() if kind_of_dtype(dt) == NUM]
+        axes = [c for c, dt in schema.items() if kind_of_dtype(dt) in (NUM, TIME)]
+        cats = [c for c, dt in schema.items() if kind_of_dtype(dt) in (STR, BOOL)] or list(schema)
         title = self.doc.pipeline.column_title
         # X
         xcol = p.get("x") or p.get("category") or ""
@@ -555,7 +555,7 @@ class ChartView(QWidget):
                 # background so an all-density grouped scatter is not a blank panel.
                 if d.mode == "density" and any(gd.mode == "density" for _, gd in cd.groups):
                     if log_y:
-                        notes.append("the density view cannot be drawn on a log axis: zoom in to see the points")
+                        notes.append("the density view can't be drawn on a log axis, so zoom in to see the points")
                     else:
                         self._add_density(p, d)
                 for gi, (g, gd) in enumerate(cd.groups):
@@ -564,7 +564,7 @@ class ChartView(QWidget):
             elif d.mode == "raw":
                 self._add_points(p, d.x, d.y, 4, SERIES_COLORS[0], None, log_y, notes)
             elif log_y:
-                notes.append("the density view cannot be drawn on a log axis: zoom in to see the points")
+                notes.append("the density view can't be drawn on a log axis, so zoom in to see the points")
             else:
                 self._add_density(p, d)
             for gi, (f, cx, cy) in enumerate(cd.fits):
@@ -694,4 +694,4 @@ class ChartView(QWidget):
             return
         self._hide_hover()
         self._grab().export(copy=True)
-        self.doc.message.emit("Chart image copied — paste it into Word or an email")
+        self.doc.message.emit("Chart image copied. Paste it into Word or an email")

@@ -61,7 +61,7 @@ def datetime_literal(value: Any, dt: pl.DataType, what: str = "value") -> pl.Exp
             lit = lit.dt.replace_time_zone(None) + pl.duration(minutes=minutes)
     elif tz:
         if parsed.dt.replace_time_zone(tz, ambiguous="earliest", non_existent="null")[0] is None:
-            raise ValueError(f"{what}: {value!r} does not exist in {tz}: the clocks jumped forward over it")
+            raise ValueError(f"{what}: {value!r} doesn't exist in {tz} because the clocks went forward over it")
         lit = lit.dt.replace_time_zone(tz, ambiguous="earliest")
     return lit.cast(pl.Datetime(unit, tz))
 
@@ -140,6 +140,16 @@ _EU_THOUSANDS = r"^[+-]?\d{1,3}(\.\d{3})+,\d+$"
 _DECIMAL_COMMA = r"^[+-]?\d*,\d+$"
 
 
+# Whole numbers written with leading zeros (007, 00123) are codes and ids, not quantities: they stay text
+# wherever DANCR reads typed values (files, inputs), or the zeros would be lost.
+LEADING_ZERO = r"^0\d+$"
+
+
+def is_code_text(s: str) -> bool:
+    import re
+    return re.fullmatch(LEADING_ZERO, s.strip()) is not None
+
+
 def normalise_number_text(s: str) -> str:
     """Typed text rewritten so ``float()`` reads it as a person meant it (see the rules above)."""
     import re
@@ -187,10 +197,12 @@ def resolve_number(text: Any, inputs: dict[str, Any] | None, what: str) -> float
         return number_from_text(text, what)
     except ValueError:
         pass
-    s = str(text).strip().lower()
-    for k, v in (inputs or {}).items():
-        if k.lower() == s and isinstance(v, (int, float)) and not isinstance(v, bool):
-            return float(v)
+    from .params import find_input
+    found = find_input(inputs, str(text))
+    if found is not None and isinstance(found[1], (int, float)) and not isinstance(found[1], bool):
+        return float(found[1])
+    if found is not None:
+        raise ValueError(f"{what}: the input {found[0]!r} holds {found[1]!r}, which is not a number")
     raise ValueError(f"{what}: {text!r} is not a number or the name of an input")
 
 

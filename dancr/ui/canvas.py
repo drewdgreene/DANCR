@@ -226,7 +226,7 @@ class NodeItem(QGraphicsObject):
         elif self.status == "running":
             color, txt = T.accent, "running…"
         elif self.status == "stale":
-            color, txt = T.warn, "changed — run again"
+            color, txt = T.warn, "changed, run again"
         else:
             color, txt = T.faint, "not run yet"
         painter.setPen(Qt.NoPen); painter.setBrush(QColor(color))
@@ -438,7 +438,7 @@ class AnswerItem(QGraphicsObject):
         f = _font(10.5, True); painter.setFont(f); painter.setPen(QColor(T.text))
         painter.drawText(QRectF(40, 11, ANSWER_W - 50, 20), Qt.AlignLeft | Qt.AlignVCenter, _elide(a.title, f, ANSWER_W - 52))
         f2 = _font(8.5); painter.setFont(f2); painter.setPen(QColor(T.muted))
-        painter.drawText(QRectF(40, 32, ANSWER_W - 50, 15), Qt.AlignLeft | Qt.AlignVCenter, "Answer — click to see it and change it")
+        painter.drawText(QRectF(40, 32, ANSWER_W - 50, 15), Qt.AlignLeft | Qt.AlignVCenter, "Answer. Click to see or change it")
         p = self.canvas.doc.pipeline
         st = self.canvas.doc.state(a.terminal) if a.terminal in p.nodes else None
         status = st.status if st else "idle"
@@ -449,7 +449,7 @@ class AnswerItem(QGraphicsObject):
         elif status == "done" and st is not None and st.rows is not None:
             color, txt = T.ok, f"{st.rows:,} rows"
         elif status == "stale":
-            color, txt = T.warn, "changed — run again"
+            color, txt = T.warn, "changed, run again"
         else:
             color, txt = T.faint, "not run yet"
         painter.setPen(Qt.NoPen); painter.setBrush(QColor(color))
@@ -662,6 +662,8 @@ class CanvasScene(QGraphicsScene):
                 item.set_problem("connect " + (", ".join(s.label.lower() for s in missing) if len(nt.inputs) > 1 else "an input"))
             elif probs:
                 item.set_problem(probs[0])
+            elif nid in self.doc.held:
+                item.set_problem("changed elsewhere. Run to save its file")
             else:
                 item.set_problem(None)
 

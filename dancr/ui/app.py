@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -48,12 +49,22 @@ def _rebuild_for_theme(app: QApplication, win_ref: list) -> None:
     old.dispose_for_theme()
 
 
+def use_desktop_portal() -> None:
+    """On GNOME, have Qt ask the desktop portal for its settings and dialogs. Qt's default there, the GTK3
+    theme, misses dark mode when the app starts in it; the portal theme reads it at start and follows every
+    switch. A theme the person chose with QT_QPA_PLATFORMTHEME is left alone."""
+    if sys.platform.startswith("linux") and not os.environ.get("QT_QPA_PLATFORMTHEME") \
+            and "GNOME" in os.environ.get("XDG_CURRENT_DESKTOP", "").upper().split(":"):
+        os.environ["QT_QPA_PLATFORMTHEME"] = "xdgdesktopportal"
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv if argv is None else argv)
     from ..logsetup import configure
     configure(logging.INFO)
     QCoreApplication.setOrganizationName("DANCR")
     QCoreApplication.setApplicationName("DANCR")
+    use_desktop_portal()
     app = QApplication(argv)
     from .theme import apply_app_style, theme_manager
     apply_app_style(app)
@@ -72,7 +83,9 @@ def main(argv: list[str] | None = None) -> int:
         theme.changed.connect(lambda: _rebuild_for_theme(app, win_ref))
     install_signal_logging(lambda: QTimer.singleShot(0, win_ref[0].terminate) if win_ref else app.quit())
     # matplotlib's first import can build a font cache for many seconds; do it off the GUI thread now
-    threading.Thread(target=lambda: __import__("matplotlib.pyplot"), name="mpl-warmup", daemon=True).start()
+    # (the figure API only: pyplot keeps global state and picks a GUI backend)
+    threading.Thread(target=lambda: (__import__("matplotlib.font_manager"), __import__("matplotlib.figure")),
+                     name="mpl-warmup", daemon=True).start()
     from ..core.executor import sweep_untitled_caches
     threading.Thread(target=sweep_untitled_caches, name="cache-sweep", daemon=True).start()
     from .mainwindow import MainWindow

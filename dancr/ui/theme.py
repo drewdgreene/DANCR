@@ -185,7 +185,7 @@ class ThemeManager(QObject):
             pass
 
     def _on_system_changed(self, *_: object) -> None:
-        if preference() == "system":
+        if preference() == "system" and is_dark() != T.dark:        # restyle only when light/dark really changed
             self.apply()
 
     def apply(self) -> None:

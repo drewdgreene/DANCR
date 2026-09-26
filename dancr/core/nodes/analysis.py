@@ -35,7 +35,7 @@ def _outliers(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str,
     action = params.get("action") or "remove"
     flag_name = (params.get("flag_column") or "is_outlier").strip() or "is_outlier"
     if action == "flag" and flag_name in schema:
-        raise ValueError(f"There is already a column called {flag_name!r}; choose another flag column name")
+        raise ValueError(f"There is already a column called {flag_name!r}. Choose another name for the flag column")
     bad_col = {c: temp_name(f"bad_{c}", schema) for c in cols}
     flags = []
     msgs = []
@@ -43,7 +43,9 @@ def _outliers(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str,
         e = pl.col(c).cast(pl.Float64).fill_nan(None)      # NaN (0/0) is a blank: it neither moves the statistics nor is flagged
         if method == "zscore":
             k = number_param(params, "threshold", 3, "The threshold", above=0)
-            bad = ((e - e.mean()) / e.std()).abs() > k
+            # a spread of (almost) nothing, as in a constant column, flags nothing rather than dividing by zero
+            spread = pl.max_horizontal(e.std(), e.mean().abs() * 1e-12)
+            bad = (e - e.mean()).abs() > k * spread
             msgs.append(f"{c}: more than {k:g} standard deviations from the mean")
         elif method == "iqr":
             k = number_param(params, "iqr_factor", 1.5, "The range factor", at_least=0)
@@ -133,7 +135,7 @@ def _summarize(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str
     from ...views.stats import column_summary
     lf = first_input(inputs)
     return NodeResult(column_summary(lf, params.get("columns") or None).lazy(),
-                      messages=["Quartiles are exact: each number column is sorted once, which takes a while on very large tables"])
+                      messages=["Quartiles are exact. Each number column is sorted to get them, which takes a while on very large tables"])
 
 
 registry.register(NodeType(
@@ -158,16 +160,16 @@ def _group_summary(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict
     count_col = (params.get("count_column") or "").strip()
     if count_col:
         if count_col in by or count_col in {a.meta.output_name() for a in aggs}:
-            raise ValueError(f"The count column cannot be called {count_col!r}: that name is already used in the output")
+            raise ValueError(f"The count column can't be called {count_col!r} because that name is already used in the output")
         aggs.append(pl.len().alias(count_col))
     if not aggs:
-        raise ValueError("Nothing to summarise: add a statistic")
+        raise ValueError("Nothing to summarise. Add a statistic")
     return NodeResult(lf.group_by(by).agg(aggs).sort(by) if by else lf.select(aggs))
 
 
 registry.register(NodeType(
     key="group_summary", label="Totals by group", category="Analyse & model", icon="⊞",
-    description="Like a pivot table: one row per group with averages, totals, counts...",
+    description="Like a pivot table, with one row per group and its averages, totals or counts.",
     apply=_group_summary,
     summary=lambda p: f"by {', '.join(p.get('by') or [])}" if p.get("by") else "whole table",
     params=[

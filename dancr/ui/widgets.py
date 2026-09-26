@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (QWidget, QHBoxLayout, QVBoxLayout, QLineEdit, QSp
                                QGridLayout, QRadioButton, QSizePolicy, QColorDialog, QCompleter)
 
 from ..core.params import Param
-from ..core.expr import _kind_of_dtype, check_formula, function_docs, NUM, STR, TIME, BOOL
+from ..core.expr import kind_of_dtype, check_formula, function_docs, NUM, STR, TIME, BOOL
 from ..core.conditions import OPS, ops_for_kind
 from ..core.timeutil import parse_duration, parse_bucket
 from ..core.nodes._common import STAT_CHOICES
@@ -28,7 +28,7 @@ KIND_ICON = {NUM: "#", STR: "Aa", TIME: "◷", BOOL: "✓", "duration": "Δ", "a
 def kind_of(schema: Schema | None, col: str) -> str:
     if not schema or col not in schema:
         return "any"
-    return _kind_of_dtype(schema[col])
+    return kind_of_dtype(schema[col])
 
 
 def columns_for(schema: Schema | None, group: str) -> list[str]:
@@ -37,7 +37,7 @@ def columns_for(schema: Schema | None, group: str) -> list[str]:
     if group == "any":
         return list(schema)
     want = {"numeric": NUM, "temporal": TIME, "string": STR, "bool": BOOL}[group]
-    return [c for c, dt in schema.items() if _kind_of_dtype(dt) == want]
+    return [c for c, dt in schema.items() if kind_of_dtype(dt) == want]
 
 
 class ParamWidget(QWidget):

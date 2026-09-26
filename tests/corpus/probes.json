@@ -40,6 +40,7 @@
   "average pressure per minute": "Average pressure (bar) per minute",
   "temperature against pressure": "temperature against pressure (bar)",
   "gaps in logger_site_B": "Gaps in logger_site_B",
-  "spikes in pressure": "Unusual pressure (bar)"
+  "spikes in pressure": "Unusual pressure (bar)",
+  "hottest hour in logger_site_A": "Hottest hour (by average temperature) in logger_site_A"
  }
 }
