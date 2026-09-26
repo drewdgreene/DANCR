@@ -124,6 +124,13 @@ A question word DANCR does not know fails with `did you mean` hints instead of a
 Changing an answer keeps steps the person edited by hand (reported as `kept_by_hand`) and never touches
 steps another answer uses.
 
+Besides the named recipes (`trend`, `breakdown`, `top`, `compare`, `gaps`, `outliers`, `single`, `distribution`,
+`linked`, `stacked`, `rows`, `describe`), the answer engine can build the questions people ask most:
+`change` (`what changed`, `this month vs last`), `explain` (`what drives sales`, `why did it drop`),
+`drivers` (`what relates to price`), `quality` (`check the data`, `is the data clean`) and `forecast`
+(`where is pressure heading`, `when will we hit the limit`). Each emits a **finding** — one plain sentence
+attached to the step's `report["finding"]["statement"]`; a run reports the best one as `headline`.
+
 ## Recipe: two logs of the same quantity, one noisier than the other
 
 Both logs here have the columns `time` and `value` (after `combine`, B's
@@ -196,6 +203,11 @@ Here `log.csv` has the columns `time`, `value` and `temperature`.
 - `chart`: `kind` line|scatter|histogram|bar, `x`, `series` `[{"column","color","label"}]`, `color_by`, `split_by` (one panel per value), `limits` `[{"value","label"}]`, `fit`, `mean_line`, `column`, `bins`, `category`, `value`, `stat` mean|sum|count|min|max|median, `title`, `y_label`, `break_gaps`, `log_y`.
 - `export`: `path` (.csv | .tsv | .txt | .parquet | .xlsx). `workbook`: `path` (.xlsx); connect tables to `items`.
 - `report`: `title`, `path` (.html), `notes`, `company`, `author`, `blocks` (`[{"type":"heading"|"text","text"}, {"type":"item","index"}]`, optional), `pdf`, `max_rows`, `include_stats`; connect charts/tables to `items`.
+- `compare_periods` (this period vs the one before): `time_column`, `every` (the period, e.g. `1mo`), `measure` (blank = count rows), `stat`, `by` (optional groups). Output: `previous`, `current`, `change`, `change_percent` per group. Says what rose and fell.
+- `contribution` (what drives a total or a change): `by`, `measure`, `stat`, and optional `time_column` + `every` to explain the change since. Output: each group's value and `share_percent`/`cumulative_percent`, or `previous`/`current`/`change`/`contribution_percent`.
+- `associations` (what relates to what): `target` (blank = every pair), `columns`. Uses every row of the first 100,000: Pearson r for numbers, eta² for a number against a group, Cramér's V for two categories. Output ranked by strength.
+- `check_data` (is the data trustworthy): `columns` (blank = all). One pass: blanks, duplicates, numbers stored as text, columns with one value. Output one row per column with an `issue` and `severity`.
+- `forecast` (where it is heading): `time_column`, `column`, `horizon` (steps), `method` `linear`|`seasonal`, `cycle` (`weekday`|`hour`|`month`), `every` (step; blank = inferred), `threshold` (optional). Output: future times and the projected value with `_lower`/`_upper` (about 95%).
 
 ## Conventions that keep people happy
 

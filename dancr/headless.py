@@ -83,10 +83,15 @@ def node_record(p: Pipeline, st: NodeState) -> dict[str, Any]:
 
 
 def run_record(p: Pipeline, ex: Executor, res: dict[str, NodeState], elapsed: float) -> dict[str, Any]:
-    """How a run is reported by both front ends; `nodes` is keyed by step id."""
+    """How a run is reported by both front ends; `nodes` is keyed by step id. ``findings`` are what the steps
+    said (a sentence each), most interesting first, and ``headline`` is the best of them."""
+    from .core.findings import collect, record as finding_record, headline as finding_headline
     failed = [nid for nid, s in res.items() if s.status == "failed"]
+    found = collect(finding_record(p.nodes[nid].type, p.nodes[nid].title, s.report, s.status)
+                    for nid, s in res.items())
     return {"ok": not failed, "failed": failed, "nodes": {nid: node_record(p, s) for nid, s in res.items()},
-            "problems": p.problems(), "elapsed": elapsed, "cache_dir": str(ex.cache_dir)}
+            "problems": p.problems(), "elapsed": elapsed, "cache_dir": str(ex.cache_dir),
+            "findings": found, "headline": finding_headline(found)}
 
 
 def result_frame(p: Pipeline, ex: Executor, node_id: str, run: bool) -> pl.LazyFrame:

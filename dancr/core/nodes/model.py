@@ -8,9 +8,10 @@ import polars as pl
 from ..params import Param
 from ..registry import NodeType, InputSpec, Ctx, NodeResult, registry
 from ..fits import KINDS, fit_frame, predict_by_group, outside_range_by_group, Fit
-from ._common import first_input, schema_of, require_column, number_param
+from ._common import first_input, schema_of, require_column, number_param, column_title
 from ..expr import NUM
 from ..dtypes import resolve_number
+from ..findings import finding, fmt_number, fmt_pct
 
 
 # --------------------------------------------------------------- fit a curve
@@ -45,6 +46,17 @@ def _fit(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, Any]
     if not group:
         f = fits[0]
         report.update({"equation": f.equation, "r_squared": f.r2, "rmse": f.rmse, "points": f.n, "parameters": f.params})
+        how = f"R² {f.r2:.3f}" if f.r2 is not None else "fit quality unknown"
+        report["finding"] = finding("fit", f"{column_title(ctx, y)} tracks {column_title(ctx, x)}: {f.equation} "
+                                            f"({how}, typical error {fmt_number(f.rmse)}, {f.n:,} points)",
+                                    magnitude=f.r2, direction=("up" if f.params[0] >= 0 else "down"), exact=True)
+    else:
+        known = [f for f in fits if f.r2 is not None]
+        best = max(known, key=lambda f: f.r2) if known else fits[0]
+        report["finding"] = finding("fit", f"{column_title(ctx, y)} vs {column_title(ctx, x)}, fitted separately per "
+                                            f"{group}: strongest for {best.group} ({best.equation}"
+                                            + (f", R² {best.r2:.3f}" if best.r2 is not None else "") + ")",
+                                    magnitude=best.r2, direction="flat", exact=True)
     return NodeResult(out, report=report, messages=msgs)
 
 
@@ -170,6 +182,13 @@ def _limits(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, A
         out = lf.filter((~ok).fill_null(False))
     else:
         out = lf.with_columns(ok.alias(flag))
+    if checked == 0:
+        say = f"Nothing was checked: {column_title(ctx, col)} has no values to compare with {limit_txt}"
+    elif bad == 0:
+        say = f"All {checked:,} {column_title(ctx, col)} values are within {limit_txt}"
+    else:
+        say = f"{bad:,} of {checked:,} {column_title(ctx, col)} values ({fmt_pct(report['outside_percent'])}%) are outside {limit_txt}"
+    report["finding"] = finding("limit", say, magnitude=report["outside_percent"], direction="up", exact=True)
     return NodeResult(out, report=report, messages=msgs)
 
 

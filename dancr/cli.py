@@ -368,6 +368,9 @@ def cmd_run(a: argparse.Namespace) -> None:
         _print(a, hl.run_record(p, ex, res, time.perf_counter() - t0))
     else:
         print(f"{'Done' if not failed else f'{len(failed)} step(s) failed'} in {time.perf_counter() - t0:.1f}s. Cache: {ex.cache_dir}")
+        rec = hl.run_record(p, ex, res, 0.0)
+        if rec.get("headline"):
+            print(f"→ {rec['headline']}")
     if failed:
         sys.exit(EXIT_FAILED)
 
@@ -384,8 +387,13 @@ def cmd_status(a: argparse.Namespace) -> None:
         print(_fmt_state(s, p.nodes[n].title))
         for m in s.messages:
             print(f"      {m}")
+        fnd = (s.report or {}).get("finding", {}).get("statement")
+        if fnd:
+            print(f"→ {fnd}")
         if s.report:
             for k, v in s.report.items():
+                if k == "finding":
+                    continue
                 print(f"      {k}: {v}")
 
 

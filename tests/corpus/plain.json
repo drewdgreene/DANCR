@@ -14,9 +14,11 @@
  "relations": [],
  "suggestions": [
   "relationship: weight against length",
+  "drivers: How parts's columns move together",
   "distribution: Spread of length",
   "single: Average length",
-  "describe: What is in parts"
+  "describe: What is in parts",
+  "quality: Check parts"
  ],
  "questions": {
   "weight against length": "weight against length",

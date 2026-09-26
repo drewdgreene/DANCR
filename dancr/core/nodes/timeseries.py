@@ -9,9 +9,10 @@ import polars as pl
 from ..params import Param
 from ..registry import NodeType, InputSpec, Ctx, NodeResult, registry
 from ..timeutil import parse_duration, parse_bucket, format_seconds
-from ._common import first_input, schema_of, require_column, number_param, temporal_columns, build_aggregations, stat_expr, check_stats, STAT_HELP
+from ._common import first_input, schema_of, require_column, number_param, temporal_columns, build_aggregations, stat_expr, check_stats, STAT_HELP, column_title
 from ..expr import TIME, NUM
 from ..dtypes import is_date, align_time_column, temp_name
+from ..findings import finding, fmt_number
 
 
 def _time_col(schema: dict[str, pl.DataType], params: dict[str, Any], key: str = "time_column") -> str:
@@ -225,7 +226,16 @@ def _gaps(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, Any
                  (pl.col("__dt").cast(pl.Float64) / 1e6).alias("gap_seconds"),
                  pl.max_horizontal((pl.col("__dt").cast(pl.Float64) / 1e6 / exp_s).round(0) - 1, pl.lit(1)).cast(pl.Int64).alias("missing_readings")])
              .drop("__dt"))
-    return NodeResult(out, report={"expected_spacing_s": exp_s, "threshold_s": exp_s * factor},
+    stats = out.select([pl.len().alias("n"), pl.col("gap_seconds").max().alias("longest")]).collect(engine="streaming").row(0, named=True)
+    n = int(stats["n"] or 0)
+    longest = float(stats["longest"] or 0.0)
+    if n:
+        say = (f"{n} gap{'' if n == 1 else 's'} in {column_title(ctx, t)}; the longest is {format_seconds(longest)} "
+               f"(normal spacing {format_seconds(exp_s)})")
+    else:
+        say = f"No gaps in {column_title(ctx, t)}: every reading is within {format_seconds(exp_s * factor)} of the one before"
+    return NodeResult(out, report={"expected_spacing_s": exp_s, "threshold_s": exp_s * factor, "gaps": n,
+                                   "longest_gap_s": longest, "finding": finding("gaps", say, magnitude=longest, exact=True)},
                       messages=[f"Normal spacing is {format_seconds(exp_s)}. A gap is anything over {format_seconds(exp_s * factor)}"])
 
 

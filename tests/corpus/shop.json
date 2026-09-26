@@ -42,12 +42,12 @@
  "suggestions": [
   "trend: Total quantity per day",
   "breakdown: Total quantity by region",
+  "change: Total quantity: latest week vs the one before",
+  "explain: What drives quantity: region",
   "top: Top 10 customers by total quantity",
-  "linked: orders with customers, products",
-  "distribution: Spread of quantity",
-  "describe: What is in orders",
-  "describe: What is in customers",
-  "describe: What is in products"
+  "drivers: How orders's columns move together",
+  "drivers: How customers's columns move together",
+  "forecast: Where quantity is heading"
  ],
  "questions": {
   "total quantity by region": "Total quantity by region",

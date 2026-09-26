@@ -112,6 +112,16 @@ def build_aggregations(schema: dict[str, pl.DataType], aggregations: list[dict[s
     return exprs
 
 
+def column_title(ctx: Any, name: str | None) -> str:
+    """How a column is shown to a person: its display label, with the unit when it has one."""
+    if not name:
+        return ""
+    meta = (getattr(ctx, "columns", None) or {}).get(name) or {}
+    lab = meta.get("label") or name
+    unit = meta.get("unit") or ""
+    return f"{lab} ({unit})" if unit and unit not in lab else lab
+
+
 def require_column(schema: dict[str, pl.DataType], name: str | None, what: str, kind: str | None = None) -> str:
     if not name:
         raise ValueError(f"Choose the {what}")

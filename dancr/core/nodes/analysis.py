@@ -7,9 +7,10 @@ import polars as pl
 
 from ..params import Param
 from ..registry import NodeType, Ctx, NodeResult, registry
-from ._common import first_input, schema_of, require_column, build_aggregations, number_param, STAT_HELP
+from ._common import first_input, schema_of, require_column, build_aggregations, number_param, STAT_HELP, column_title
 from ..expr import NUM
 from ..dtypes import temp_name, resolve_number
+from ..findings import finding, fmt_number, fmt_pct
 
 
 # ---------------------------------------------------------- remove outliers
@@ -164,7 +165,24 @@ def _group_summary(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict
         aggs.append(pl.len().alias(count_col))
     if not aggs:
         raise ValueError("Nothing to summarise. Add a statistic")
-    return NodeResult(lf.group_by(by).agg(aggs).sort(by) if by else lf.select(aggs))
+    out = lf.group_by(by).agg(aggs).sort(by) if by else lf.select(aggs)
+    report: dict[str, Any] = {}
+    if by:
+        try:
+            name = aggs[0].meta.output_name()
+            rows = int(out.select(pl.len()).collect(engine="streaming")[0, 0])
+            if 0 < rows <= 500:
+                df = out.select([by[0], name]).collect(engine="streaming")
+                total = df[name].sum()
+                top = df.sort(name, descending=True).row(0, named=True)
+                share = (100.0 * float(top[name]) / float(total)) if total else None
+                said = f"{top[by[0]]} is the largest {column_title(ctx, by[0])} by {name}"
+                if share is not None:
+                    said += f" ({fmt_number(top[name])}, {fmt_pct(share)} of the total)"
+                report["finding"] = finding("share", said, magnitude=share, direction="flat", exact=True)
+        except Exception:  # noqa: BLE001 - a finding is a bonus; the totals themselves are the result
+            pass
+    return NodeResult(out, report=report)
 
 
 registry.register(NodeType(

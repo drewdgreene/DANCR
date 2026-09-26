@@ -37,9 +37,12 @@
  "suggestions": [
   "trend: Total sales per day",
   "breakdown: Total sales by store",
+  "change: Total sales: latest day vs the one before",
+  "explain: What drives sales: store",
+  "drivers: How sales_2024-01's columns move together",
   "stacked: 2024-01, 2024-02, 2024-03 in one table",
-  "distribution: Spread of sales",
-  "describe: What is in sales_2024-01"
+  "forecast: Where sales is heading",
+  "distribution: Spread of sales"
  ],
  "questions": {
   "total sales by store": "Total sales by store",

@@ -24,6 +24,9 @@
  ],
  "suggestions": [
   "breakdown: Rows by drug",
+  "explain: What drives rows: drug",
+  "drivers: How visits's columns move together",
+  "drivers: How prescriptions's columns move together",
   "distribution: Spread of visit_cost",
   "single: Total visit_cost",
   "describe: What is in visits",

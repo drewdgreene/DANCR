@@ -103,6 +103,12 @@ class FindingCard(QFrame):
         rep = st.report or {}
         msgs = list(st.messages or [])
         shown = False
+        special = node_type in ("fit_curve", "check_limits", "find_gaps", "predict")
+        fnd = (rep.get("finding") or {}).get("statement") if st.status == "done" else None
+        if fnd and not special:
+            self._heading("Found")
+            self._big(html.escape(str(fnd)))
+            shown = True
         if st.status == "done" and node_type == "fit_curve" and rep.get("fits"):
             self._heading("Result · " + {"linear": "straight line", "polynomial": "curve", "saturating": "levels off", "exponential": "exponential",
                                          "power": "power law", "logarithmic": "logarithmic"}.get(rep.get("kind", ""), rep.get("kind", "")))

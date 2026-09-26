@@ -34,6 +34,8 @@ The app is self-contained. You don't need to install anything else first.
   formulas, average over time, smooth, find gaps, fit a curve, predict, check
   against limits, chart, and put together a one-page report.
 - Records every step, so the same project reruns on a new file.
+- Tells you, in a sentence, what changed, what drives it, what relates to what, whether the data is
+  trustworthy, and where it is heading — with the chart underneath as evidence.
 - Saves results to CSV, Excel or Parquet, and exports reports as HTML or PDF.
 - Comes with a command line and an MCP server for scripts and AI agents. See
   `AGENTS.md`.

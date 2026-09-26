@@ -23,8 +23,9 @@ from typing import Any
 
 from .planner import Plan, PlanStep
 from .understand import (DataModel, Table, Column, Relation, ID, TEXT, SERIES, LOOKUP, bucket_for, norm, name_words)
+from .timeutil import parse_bucket
 
-RULES_VERSION = 3           # bump when a change to these rules would build a different plan from the same spec
+RULES_VERSION = 4           # bump when a change to these rules would build a different plan from the same spec
 
 STAT_WORDS = {"sum": "Total", "mean": "Average", "count": "Number of rows", "max": "Highest", "min": "Lowest",
               "median": "Median", "std": "Spread of"}
@@ -38,9 +39,10 @@ TOP_CHOICES = [5, 10, 20, 50]
 
 # the recipes, in the order that breaks ties
 RECIPES = ["compare", "trend", "breakdown", "top", "toprows", "relationship", "gaps", "outliers", "single", "distribution",
-           "linked", "stacked", "rows", "describe"]
+           "linked", "stacked", "rows", "describe", "change", "explain", "drivers", "forecast", "quality"]
 WEIGHT = {"compare": 100, "trend": 95, "breakdown": 90, "top": 75, "relationship": 60, "gaps": 65, "outliers": 55,
-          "single": 30, "distribution": 45, "linked": 50, "stacked": 60, "rows": 25, "toprows": 40, "describe": 20}
+          "single": 30, "distribution": 45, "linked": 50, "stacked": 60, "rows": 25, "toprows": 40, "describe": 20,
+          "change": 88, "explain": 86, "drivers": 68, "forecast": 58, "quality": 18}
 GROUP_MAX = 12              # a group with more values than this is a "top N" question rather than a breakdown
 MAX_SUGGESTIONS = 8
 
@@ -326,6 +328,19 @@ def _candidates(model: DataModel, t: Table) -> list[dict]:
         out.append({"recipe": "linked", "table": t.node})
     if st is not None:
         out.append({"recipe": "stacked", "table": t.node})
+    rows = t.rows or t.sampled or 0
+    if t.time and rows >= 4:
+        every = _compare_every(t)
+        if (t.span_seconds or 0) >= 2 * parse_bucket(every)[1]:
+            out.append({"recipe": "change", "table": t.node, "measure": m0, "stat": (stat if m0 else "count"),
+                        "every": every})
+    if small:
+        out.append({"recipe": "explain", "table": t.node, "by": small[0], "measure": m0, "stat": (stat if m0 else "count")})
+    if len(t.columns) >= 2 and rows >= 20:
+        out.append({"recipe": "drivers", "table": t.node})
+    if t.time and m0 and rows >= 6:
+        out.append({"recipe": "forecast", "table": t.node, "measure": m0})
+    out.append({"recipe": "quality", "table": t.node})
     out.append({"recipe": "describe", "table": t.node})
     return out
 
@@ -752,6 +767,13 @@ def group_label(model: DataModel, ref: list | None, base: str | None = None, spo
     return label(model, ref)
 
 
+def _compare_every(t: Table) -> str:
+    """A sensible period to compare two of: a couple of dozen across the span (a day for a week, a month for years)."""
+    tc = t.column(t.time) if t.time else None
+    every = bucket_for(t.span_seconds, tc.cadence if tc else None, target=24)
+    return "3mo" if every.endswith("q") else every
+
+
 def _plan_breakdown(b: _Builder, top: int | None = None):
     m, spec = b.m, b.spec
     t = m.table(spec["table"])
@@ -1083,10 +1105,130 @@ def _plan_describe(b: _Builder):
     return key, "table", title, "one row per column: count, blanks, average, range"
 
 
-PLANNERS = {"compare": _plan_compare, "trend": _plan_trend, "breakdown": _plan_breakdown, "top": _plan_top,
-            "toprows": _plan_toprows, "relationship": _plan_relationship, "gaps": _plan_gaps, "outliers": _plan_outliers,
+# -------------------------------------------------------------- the new questions
+def _plan_change(b: _Builder):
+    """This period compared with the one before: what rose, what fell, and by how much."""
+    m, spec = b.m, b.spec
+    t = m.table(spec["table"])
+    time = spec.get("time") or ([t.node, t.time] if t.time else None)
+    if not time:
+        raise PlanError(f"{t.title} has no date or time column, so nothing can be compared by period")
+    every = spec.get("every") or _compare_every(t)
+    measure = spec.get("measure")
+    stat = spec.get("stat") or (default_stat(m, t.node, measure) if measure else "count")
+    if not measure:
+        stat = "count"
+    b.base()
+    b.need(measure, spec.get("by"))
+    b.filters()
+    tname = b.name(time) if tuple(time) in b.names else time[1]
+    by = spec.get("by")
+    params: dict[str, Any] = {"time_column": tname, "every": every, "stat": stat}
+    if measure:
+        params["measure"] = b.name(measure)
+    if by:
+        params["by"] = [b.name(by)]
+    what = label(m, measure) if measure else "rows"
+    title = f"{stat_title(stat, what) if measure else 'Rows'}: latest {EVERY_WORDS.get(every, every)} vs the one before"
+    if by:
+        title += f", by {group_label(m, by, spec['table'], spec.get('by_words'))}"
+    key = b.add("change", "compare_periods", title, params, {"in": [b.current]})
+    if not spec.get("every"):
+        others = [e for e in ("1d", "1w", "1mo", "1y") if e != every][:3]
+        b.assume("every", f"Compared the latest {EVERY_WORDS.get(every, every)} with the one before it",
+                 [{"label": f"Per {EVERY_WORDS.get(e, e)}", "set": {"every": e}} for e in others])
+    return key, "table", title, f"{t.title} has {time[1]}"
+
+
+def _plan_explain(b: _Builder):
+    """What each group contributes to a total (or to a change): the biggest contributor and its share."""
+    m, spec = b.m, b.spec
+    t = m.table(spec["table"])
+    by = spec.get("by")
+    if by is None:
+        gs = groupables(m, t.node)
+        if not gs:
+            raise PlanError(f"{t.title} has nothing to group by, so there is nothing to break the number down into")
+        by = gs[0]
+    measure = spec.get("measure")
+    stat = spec.get("stat") or (default_stat(m, t.node, measure) if measure else "count")
+    if not measure:
+        stat = "count"
+    b.base()
+    b.need(measure, by)
+    b.filters()
+    params: dict[str, Any] = {"by": [b.name(by)], "stat": stat}
+    if measure:
+        params["measure"] = b.name(measure)
+    time = spec.get("time") or ([t.node, t.time] if t.time else None)
+    if time and spec.get("every"):
+        params["time_column"] = b.name(time) if tuple(time) in b.names else time[1]
+        params["every"] = spec["every"]
+    gl = group_label(m, by, spec["table"], spec.get("by_words"))
+    what = label(m, measure) if measure else "rows"
+    title = f"What drove the change in {what.lower()}: {gl}" if spec.get("every") else f"What drives {what.lower()}: {gl}"
+    key = b.add("explain", "contribution", title, params, {"in": [b.current]})
+    if not spec.get("stat") and measure:
+        b.assume("stat", ("Averaged the values" if stat == "mean" else "Added the amounts up") + f" for each {gl}",
+                 [{"label": "Add them up" if stat == "mean" else "Average them", "set": {"stat": "sum" if stat == "mean" else "mean"}}])
+    return key, "table", title, f"{gl} splits {t.title} into parts"
+
+
+def _plan_drivers(b: _Builder):
+    """How strongly each column relates to the others (or to one chosen column)."""
+    m, spec = b.m, b.spec
+    t = m.table(spec["table"])
+    b.base(together=False)
+    target = spec.get("target")
+    params: dict[str, Any] = {}
+    if target:
+        params["target"] = b.name(target)
+    title = f"What relates to {label(m, target)}" if target else f"How {t.title}'s columns move together"
+    key = b.add("drivers", "associations", title, params, {"in": [b.current]})
+    return key, "table", title, "how the columns move together"
+
+
+def _plan_forecast(b: _Builder):
+    """Where a value is heading, from its trend (and its usual day/week/month pattern)."""
+    m, spec = b.m, b.spec
+    t = m.table(spec["table"])
+    time = spec.get("time") or ([t.node, t.time] if t.time else None)
+    if not time:
+        raise PlanError(f"{t.title} has no date or time column, so nothing can be projected forward")
+    measure = spec.get("measure") or ([t.node, ordered_measures(t)[0].name] if ordered_measures(t) else None)
+    if not measure:
+        raise PlanError(f"{t.title} has no number to project")
+    b.base()
+    b.need(measure)
+    b.filters()
+    tname = b.name(time) if tuple(time) in b.names else time[1]
+    params: dict[str, Any] = {"time_column": tname, "column": b.name(measure), "method": spec.get("method") or "linear",
+                              "horizon": int(spec.get("horizon") or 10)}
+    if spec.get("every"):
+        params["every"] = spec["every"]
+    if spec.get("cycle"):
+        params["cycle"] = spec["cycle"]
+    if spec.get("threshold") not in (None, ""):
+        params["threshold"] = spec["threshold"]
+    title = f"Where {label(m, measure)} is heading"
+    key = b.add("forecast", "forecast", title, params, {"in": [b.current]})
+    return key, "table", title, "a projection from the trend, with a band that says how sure it is"
+
+
+def _plan_quality(b: _Builder):
+    """A check of the table itself: blanks, duplicates, values that are really numbers stored as text."""
+    t = b.m.table(b.spec["table"])
+    b.base(together=False)
+    title = f"Check {t.title}"
+    key = b.add("quality", "check_data", title, {}, {"in": [b.current]})
+    return key, "table", title, "blanks, duplicates and misread values"
+
+
+PLANNERS = {"compare": _plan_compare, "trend": _plan_trend, "breakdown": _plan_breakdown, "top": _plan_top, "toprows": _plan_toprows,
+            "relationship": _plan_relationship, "gaps": _plan_gaps, "outliers": _plan_outliers,
             "single": _plan_single, "distribution": _plan_distribution, "linked": _plan_linked, "stacked": _plan_stacked,
-            "rows": _plan_rows, "describe": _plan_describe}
+            "rows": _plan_rows, "describe": _plan_describe, "change": _plan_change, "explain": _plan_explain,
+            "drivers": _plan_drivers, "forecast": _plan_forecast, "quality": _plan_quality}
 
 
 # =================================================================== chips
@@ -1142,6 +1284,33 @@ def chips(model: DataModel, spec: dict) -> list[dict[str, Any]]:
         if rel is not None:
             out.append({"key": "measure", "text": label(model, spec.get("measure")), "value": spec.get("measure"),
                         "choices": [{"label": label(model, [t.node, c]), "value": [t.node, c]} for c in rel.shared]})
+    if r in ("change", "explain"):
+        measure = spec.get("measure")
+        out.append({"key": "measure", "text": label(model, measure) if measure else "rows", "value": measure,
+                    "choices": [{"label": "rows", "value": None}] + cols(measures)})
+        stat = spec.get("stat") or (default_stat(model, t.node, measure) if measure else "count")
+        out.append({"key": "stat", "text": STAT_WORDS.get(stat, stat), "value": stat,
+                    "choices": [{"label": STAT_WORDS[s], "value": s} for s in STAT_CHOICES]})
+    if r == "change":
+        every = spec.get("every") or _compare_every(t)
+        out.append({"key": "every", "text": f"per {EVERY_WORDS.get(every, every)}", "value": every,
+                    "choices": [{"label": f"per {EVERY_WORDS.get(e, e)}", "value": e} for e in EVERY_CHOICES if not e.endswith("q")]})
+    if r == "explain":
+        by = spec.get("by")
+        out.append({"key": "by", "text": f"by {_group_ref_label(model, by, t.node)}" if by else "by …", "value": by,
+                    "choices": [{"label": f"by {_group_ref_label(model, g, t.node)}", "value": g} for g in groupables(model, t.node)]})
+    if r == "drivers":
+        out.append({"key": "target", "text": f"related to {label(model, spec.get('target'))}" if spec.get("target") else "every pair",
+                    "value": spec.get("target"), "choices": [{"label": "every pair", "value": None}] + cols(measures)})
+    if r == "forecast":
+        measure = spec.get("measure")
+        out.append({"key": "measure", "text": label(model, measure) if measure else "?", "value": measure, "choices": cols(measures)})
+        horizon = int(spec.get("horizon") or 10)
+        out.append({"key": "horizon", "text": f"{horizon} ahead", "value": horizon,
+                    "choices": [{"label": f"{k} ahead", "value": k} for k in (3, 5, 10, 20, 50)]})
+        method = spec.get("method") or "linear"
+        out.append({"key": "method", "text": ("Seasonal pattern" if method == "seasonal" else "Straight trend"), "value": method,
+                    "choices": [{"label": "Straight trend", "value": "linear"}, {"label": "Seasonal pattern", "value": "seasonal"}]})
     for i, f in enumerate(spec.get("filters") or []):
         out.append({"key": f"filters.{i}", "text": filter_text(model, [f]), "value": f, "choices": [{"label": "Remove this filter", "value": None}]})
     return out

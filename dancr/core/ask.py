@@ -54,7 +54,24 @@ RECIPE_WORDS = {"over time": "trend", "trend": "trend", "trends": "trend", "time
                 "compare": "compare", "comparison": "compare", "versus": "compare", "vs": "compare",
                 "against": "compare", "difference between": "compare",
                 "together": "stacked", "stacked": "stacked", "stack": "stacked", "combined": "stacked",
-                "linked": "linked", "details": "linked", "joined": "linked"}
+                "linked": "linked", "details": "linked", "joined": "linked",
+                # what changed / why / what relates / is the data good / where it is heading
+                "what changed": "change", "changed": "change", "up or down": "change", "increase": "change",
+                "increased": "change", "increases": "change", "decrease": "change", "decreased": "change",
+                "decreases": "change", "rose": "change", "rise": "change", "risen": "change", "fell": "change",
+                "fall": "change", "fallen": "change", "drop": "change", "dropped": "change", "drops": "change",
+                "grew": "change", "grow": "change", "grown": "change", "declined": "change", "decline": "change",
+                "gained": "change", "gain": "change",
+                "why": "explain", "explain": "explain", "drives": "explain", "driving": "explain", "drive": "explain",
+                "caused": "explain", "cause": "explain", "what caused": "explain", "contribute": "explain",
+                "contributes": "explain", "contribution": "explain", "reason": "explain", "because": "explain",
+                "relates to": "drivers", "relate to": "drivers", "related to": "drivers", "related": "drivers",
+                "relates": "drivers", "association": "drivers", "associations": "drivers", "affects": "drivers",
+                "affect": "drivers", "influences": "drivers", "influence": "drivers",
+                "data quality": "quality", "quality": "quality", "check the data": "quality", "check data": "quality",
+                "problems": "quality", "issues": "quality", "clean": "quality", "missing values": "quality",
+                "forecast": "forecast", "projected": "forecast", "projection": "forecast", "future": "forecast",
+                "heading": "forecast", "when will": "forecast"}
 BY_WORDS = {"by", "per", "for each", "each", "grouped by", "split by", "broken down by", "across", "by each"}
 OPS = {"above": "gt", "over": "gt", "more than": "gt", "greater than": "gt", ">": "gt", "exceeds": "gt",
        "exceeding": "gt", "higher than": "gt", "below": "lt", "under": "lt", "less than": "lt", "<": "lt",
@@ -1007,6 +1024,24 @@ def _choose_recipe(model, spec, recipe, numbers, by_ref, stat, every, top, botto
     if recipe in ("gaps", "describe", "stacked", "linked"):
         spec["recipe"] = recipe
         return _tidy(spec)
+    if recipe == "quality":
+        spec["recipe"] = "quality"
+        return _tidy(spec)
+    if recipe == "change":
+        spec.update({"recipe": "change", "measure": numbers[0] if numbers else None,
+                     "stat": stat, "every": every, "by": by_ref})
+        return _tidy(spec)
+    if recipe == "explain":
+        spec.update({"recipe": "explain", "measure": numbers[0] if numbers else None,
+                     "stat": stat, "every": every, "by": by_ref})
+        return _tidy(spec)
+    if recipe == "drivers":
+        spec.update({"recipe": "drivers", "target": numbers[0] if numbers else None})
+        return _tidy(spec)
+    if recipe == "forecast":
+        spec.update({"recipe": "forecast", "measure": numbers[0] if numbers else _first_measure_ref(model, base),
+                     "every": every, "method": None, "horizon": None})
+        return _tidy(spec)
     if recipe in ("outliers", "distribution"):
         if not numbers:
             raise PlanError(f"Name the number to look at, for example “{recipe} in {_first_measure(model, base)}”")
@@ -1077,7 +1112,7 @@ def _time_bits(spec, every, stat, time_ref) -> None:
 
 def _refs_in(spec: dict) -> set[tuple]:
     out = set()
-    for k in ("measure", "by", "x", "y", "time"):
+    for k in ("measure", "by", "x", "y", "time", "target"):
         if spec.get(k):
             out.add(tuple(spec[k]))
     for r in spec.get("measures") or []:
