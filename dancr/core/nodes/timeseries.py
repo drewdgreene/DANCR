@@ -70,7 +70,17 @@ def _time_buckets(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[
         aggs.append(pl.len().alias(count_col))
     bucket = pl.col(t).dt.truncate(every).alias(t)
     out = lf.group_by([bucket, *by]).agg(aggs).sort([t, *by], nulls_last=True)
-    return NodeResult(out, messages=[f"Grouped rows into {every} buckets by {t}" + (f" and {', '.join(by)}" if by else "")])
+    report: dict[str, Any] = {}
+    try:
+        stats = out.select([pl.len().alias("n"), pl.col(t).min().alias("lo"), pl.col(t).max().alias("hi")]) \
+                   .collect(engine="streaming").row(0, named=True)
+        n = int(stats["n"] or 0)
+        span = f" from {stats['lo']} to {stats['hi']}" if n and stats["lo"] is not None else ""
+        report = {"buckets": n, "every": every,
+                  "finding": finding("summary", f"{n:,} {every} bucket{'' if n == 1 else 's'}{span}", magnitude=n, exact=True)}
+    except Exception:  # noqa: BLE001 - a finding is a bonus; the buckets are the result
+        pass
+    return NodeResult(out, report=report, messages=[f"Grouped rows into {every} buckets by {t}" + (f" and {', '.join(by)}" if by else "")])
 
 
 registry.register(NodeType(

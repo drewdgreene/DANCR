@@ -9,6 +9,7 @@ import polars as pl
 from ..params import Param
 from ..registry import NodeType, Ctx, NodeResult, registry
 from ._common import private_temp, first_input, schema_of, require_column
+from ..findings import finding
 
 CHART_KINDS = [("line", "Line over time / x"), ("scatter", "Scatter (x vs y)"), ("histogram", "Histogram"), ("bar", "Bar (category totals)")]
 
@@ -17,7 +18,21 @@ def _chart(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, An
     """Validation only: every column the chart names must exist (the drawing happens in the views)."""
     lf = first_input(inputs)
     validate_chart(schema_of(lf), params)
-    return NodeResult(lf)
+    kind = params.get("kind", "line")
+    bits: list[str] = []
+    if kind in ("line", "scatter"):
+        if params.get("x"):
+            bits.append(f"over {params['x']}")
+        names = [s.get("column") for s in (params.get("series") or []) if s.get("column")]
+        if names:
+            bits.append(", ".join(names))
+    elif kind == "histogram" and params.get("column"):
+        bits.append(str(params["column"]))
+    elif kind == "bar" and params.get("category"):
+        bits.append(f"{params.get('stat') or 'mean'} of {params.get('value') or 'rows'} by {params['category']}")
+    what = " ".join(b for b in bits if b)
+    said = f"{kind.capitalize()} chart" + (f": {what}" if what else "")
+    return NodeResult(lf, report={"kind": kind, "finding": finding("summary", said, exact=True)})
 
 
 def validate_chart(schema: dict[str, pl.DataType], params: dict[str, Any]) -> None:

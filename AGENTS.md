@@ -131,6 +131,13 @@ Besides the named recipes (`trend`, `breakdown`, `top`, `compare`, `gaps`, `outl
 (`where is pressure heading`, `when will we hit the limit`). Each emits a **finding** — one plain sentence
 attached to the step's `report["finding"]["statement"]`; a run reports the best one as `headline`.
 
+A question the grammar cannot read is repaired and re-read before it is ever refused: a mistyped word is
+matched to the project's own words (`core/lexicon.py`), and if that fails the question is matched against a
+bank of every answer the project can build (`core/bank.py`, threshold-gated, so a loose question finds its
+answer and a gibberish one still fails). A project remembers the words it has learned and the questions
+recently asked (`core/memory.py`, kept in the project's `meta`; the format is unchanged). `dancr --json ask`
+reports `source` (`grammar`|`matched`), `matched`, and any `corrected` spellings.
+
 ## Recipe: two logs of the same quantity, one noisier than the other
 
 Both logs here have the columns `time` and `value` (after `combine`, B's

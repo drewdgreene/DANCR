@@ -46,6 +46,26 @@ class Stat(QWidget):
         lay.addWidget(v); lay.addWidget(l)
 
 
+def _trust_bits(st, node_type: str) -> list[str]:
+    """Small honest facts about how much a result knows: how many rows, whether it is exact or sampled, and
+    how many keys actually matched. Shown quietly under the finding, never as a claim stronger than the truth."""
+    rep = st.report or {}
+    f = rep.get("finding") or {}
+    bits: list[str] = []
+    if st.rows is not None:
+        bits.append(f"{st.rows:,} rows")
+    if isinstance(f, dict) and f:
+        bits.append("exact" if f.get("exact", True) else "from a sample")
+    mp = rep.get("match_percent")
+    if isinstance(mp, (int, float)):
+        bits.append(f"{mp:.0f}% of keys matched")
+    if isinstance(f, dict) and f.get("kind") == "quality":
+        dup = f.get("detail", {}).get("duplicate_rows") if isinstance(f.get("detail"), dict) else None
+        if dup:
+            bits.append(f"{int(dup):,} duplicate rows")
+    return bits
+
+
 class FindingCard(QFrame):
     """Shows the finding of a step (fit equation and quality, pass/fail verdict, gaps, saved files, notes)."""
 
@@ -160,4 +180,8 @@ class FindingCard(QFrame):
                 shown = True
             if shown:
                 self.lay.insertWidget(0, QLabel(""))
+        bits = _trust_bits(st, node_type)
+        if bits and st.status == "done":
+            self._text(" · ".join(bits), muted=True)
+            shown = True
         self.setVisible(shown)

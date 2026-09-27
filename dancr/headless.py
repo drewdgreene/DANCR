@@ -373,11 +373,16 @@ def build_answer(p: Pipeline, spec: dict[str, Any], answer_id: str | None = None
 
 def ask_question(p: Pipeline, text: str, build: bool = True) -> dict[str, Any]:
     """Read a question; with ``build`` add its answer to the project. ``ok`` is False (with a message and any
-    "did you mean" hints) when the question could not be read."""
+    "did you mean" hints) when the question could not be read. Words the project has learned to read
+    (``core.memory``) are applied, and a spelling repair is remembered for next time."""
+    from .core import memory
     from .core.ask import ask
     from .core.answers import model_for
     m = model_for(p, Executor(p))
-    asked = ask(m, text)
+    asked = ask(m, text, aliases=memory.aliases(p))
+    if asked.corrected:
+        memory.remember_corrections(p, asked.corrected)
+    memory.remember_question(p, text)
     out: dict[str, Any] = {"question": asked.to_dict()}
     if asked.ok and build:
         out["answer"] = build_answer(p, asked.spec)

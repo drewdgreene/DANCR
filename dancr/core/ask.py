@@ -24,11 +24,14 @@ import difflib
 from datetime import datetime, timedelta
 import re
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .recipes import PlanError, plan, groupables, reachable, ordered_measures, default_stat, EVERY_WORDS, PART_WORDS
 from .understand import (DataModel, MEASURE, CATEGORY, TIME_ROLE, ID, TEXT, FLAG, BLANK, CONSTANT, STR, norm, name_words,
                          LOOKUP)
+
+if TYPE_CHECKING:
+    from .bank import Bank
 
 STATS = {"total": "sum", "totals": "sum", "sum": "sum", "sums": "sum", "add up": "sum", "added up": "sum",
          "average": "mean", "averages": "mean", "avg": "mean", "mean": "mean", "typical": "mean",
@@ -133,7 +136,10 @@ class Asked:
     unknown: list[str] = field(default_factory=list)
     hints: list[str] = field(default_factory=list)          # "did you mean" phrases
     ambiguous: list[dict[str, Any]] = field(default_factory=list)   # {"text", "chose", "choices": [{label, set}]}
+    corrected: list[dict[str, Any]] = field(default_factory=list)   # {"from", "to"}: spellings repaired from the typed words
     chips: list[dict[str, Any]] = field(default_factory=list)
+    source: str = "grammar"                                 # "grammar" | "matched" (the question bank fallback)
+    matched: str = ""                                       # the canonical phrasing a matched question fitted
 
     @property
     def ok(self) -> bool:
@@ -141,7 +147,8 @@ class Asked:
 
     def to_dict(self) -> dict[str, Any]:
         return {"text": self.text, "ok": self.ok, "spec": self.spec, "title": self.title, "message": self.message,
-                "unknown": self.unknown, "hints": self.hints, "ambiguous": self.ambiguous, "chips": self.chips}
+                "unknown": self.unknown, "hints": self.hints, "ambiguous": self.ambiguous, "chips": self.chips,
+                "corrected": self.corrected, "source": self.source, "matched": self.matched}
 
 
 # =================================================================== vocabulary
@@ -319,8 +326,13 @@ def _column_phrases(name: str, label: str) -> list[tuple[str, bool]]:
 
 
 # =================================================================== reading
-def ask(model: DataModel, text: str) -> Asked:
-    """Read ``text`` as a question about the tables in ``model``."""
+def ask(model: DataModel, text: str, bank: "Bank | None" = None, aliases: dict[str, str] | None = None) -> Asked:
+    """Read ``text`` as a question about the tables in ``model``.
+
+    The grammar is tried first and is authoritative: a question it can read is returned exactly as before.
+    Only when it cannot read the question is the question bank tried as a fallback (``bank``, or one built
+    from the model), and only when a match clears its confidence threshold; otherwise the same message and
+    "did you mean" hints as before are returned."""
     out = Asked(text=text)
     toks = _tokens(text)
     if not toks:
@@ -329,19 +341,48 @@ def ask(model: DataModel, text: str) -> Asked:
     voc = vocabulary(model)
     items = _read(toks, voc, out)
     if out.unknown:
+        # one repair attempt before refusing: a misspelled word matched to the project's own words
+        from .lexicon import correct as _correct
+        fixed, fixes = _correct(toks, voc, aliases)
+        if fixes:
+            trial = Asked(text=text)
+            trial_items = _read(fixed, voc, trial)
+            if not trial.unknown:
+                out.corrected = [{"from": a, "to": b} for a, b in fixes]
+                out.unknown, out.hints, out.message = [], [], ""
+                items = trial_items
+    if out.unknown:
         phrases = [" ".join(k) for k in voc]
         out.hints = sorted({h for u in out.unknown for h in difflib.get_close_matches(u, phrases, n=3, cutoff=0.6)})
         out.message = ("I don't know " + ", ".join(f"“{u}”" for u in out.unknown)
                        + (". Did you mean " + ", ".join(f"“{h}”" for h in out.hints) + "?" if out.hints else
                           ". Use the names of your columns, tables or their values."))
-        return out
+        return _matched(model, out, bank)
     try:
         out.spec = _assemble(model, _clauses(model, items), out)
         p = plan(model, out.spec)
     except PlanError as e:
         out.spec, out.message = None, str(e)
-        return out
+        return _matched(model, out, bank)
     out.title, out.chips = p.title, p.chips
+    return out
+
+
+def _matched(model: DataModel, out: Asked, bank: "Bank | None") -> Asked:
+    """The question bank as a fallback: if the best match clears its threshold and still plans, answer from
+    it; otherwise leave ``out`` exactly as the grammar left it (a refusal with hints), so nothing is guessed."""
+    try:
+        from .bank import Bank, MATCH_THRESHOLD
+        b = bank if bank is not None else Bank.from_model(model)
+        top = b.match(out.text, limit=1)
+        if not top or top[0].score < MATCH_THRESHOLD:
+            return out
+        p = plan(model, top[0].question.spec)
+    except Exception:  # noqa: BLE001 - a fallback must never break a question the grammar already refused
+        return out
+    out.spec, out.title, out.chips = p.config, p.title, p.chips
+    out.source, out.matched = "matched", top[0].question.canonical
+    out.unknown, out.hints, out.message, out.ambiguous = [], [], "", []
     return out
 
 

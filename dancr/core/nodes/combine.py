@@ -11,6 +11,7 @@ from ..timeutil import parse_duration
 from ._common import schema_of, require_column, temporal_columns
 from ..expr import TIME, NUM, STR, kind_of_dtype
 from ..dtypes import align_time_column, temp_name, is_date
+from ..findings import finding, fmt_pct
 
 
 def _combine(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, Any]) -> NodeResult:
@@ -119,13 +120,31 @@ def _combine(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, 
         out = out.drop([c for _, k, orig in folded for c in (k, orig)])
     if restore:
         out = out.with_columns([pl.col(c).cast(dt) for c, dt in restore.items()])
+    report: dict[str, Any] = {}
     if not ctx.preview:
         # like VLOOKUP people expect one match per row; say so when a key repeats in the second table
         dup = int(right.select(pl.struct(rkeys).is_duplicated().sum()).collect(engine="streaming")[0, 0])
         if dup:
             msgs.append(f"{dup:,} rows of the second table share their key with another row, so the rows of the first "
                         "table with those keys appear once per match. Use 'Remove duplicates' on the second table to keep one.")
-    return NodeResult(out, messages=msgs)
+        # how many of the first table's keys were actually found in the second, so a silent join is never believed blindly
+        try:
+            lk = left.select(pl.struct(lkeys).hash().alias("__k")).drop_nulls().unique()
+            rk = right.select(pl.struct(rkeys).hash().alias("__k")).drop_nulls().unique().with_columns(pl.lit(1).alias("hit"))
+            row = lk.join(rk, on="__k", how="left").select([pl.len().alias("n"), pl.col("hit").sum().alias("found")]) \
+                    .collect(engine="streaming").row(0, named=True)
+            total, found = int(row["n"] or 0), int(row["found"] or 0)
+            pct = (100.0 * found / total) if total else 0.0
+            if total:
+                said = (f"{fmt_pct(pct)} of the first table's keys were found in the second ({found:,} of {total:,})")
+                if found < total:
+                    said += f"; {total - found:,} rows matched nothing"
+                report = {"matched_keys": found, "left_keys": total, "match_percent": pct,
+                          "finding": finding("summary", said, magnitude=100.0 - pct, exact=True)}
+                msgs.append(said)
+        except Exception:  # noqa: BLE001 - the join itself is the result; the match rate is a bonus
+            report = {}
+    return NodeResult(out, report=report, messages=msgs)
 
 
 def _common_key_type(a: pl.DataType, b: pl.DataType) -> pl.DataType:

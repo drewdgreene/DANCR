@@ -135,7 +135,24 @@ registry.register(NodeType(
 def _summarize(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, Any]) -> NodeResult:
     from ...views.stats import column_summary
     lf = first_input(inputs)
-    return NodeResult(column_summary(lf, params.get("columns") or None).lazy(),
+    df = column_summary(lf, params.get("columns") or None)
+    report: dict[str, Any] = {}
+    try:
+        rows = int(df["rows"][0]) if df.height else 0
+        gaps = [(r["column"], int(r["missing"] or 0)) for r in df.iter_rows(named=True) if int(r["missing"] or 0) > 0]
+        report.update({"columns": df.height, "rows": rows, "columns_with_missing": len(gaps)})
+        if gaps:
+            worst = max(gaps, key=lambda x: x[1])
+            pct = (100.0 * worst[1] / rows) if rows else 0.0
+            report.update({"worst_column": worst[0], "worst_missing": worst[1]})
+            said = (f"{len(gaps)} of {df.height} columns have blanks; {column_title(ctx, worst[0])} is missing "
+                    f"{fmt_pct(pct)} of its values")
+            report["finding"] = finding("summary", said, magnitude=pct, exact=True)
+        else:
+            report["finding"] = finding("summary", f"{df.height} columns over {rows:,} rows, with no blanks", exact=True)
+    except Exception:  # noqa: BLE001 - a finding is a bonus; the summary table is the result
+        pass
+    return NodeResult(df.lazy(), report=report,
                       messages=["Quartiles are exact. Each number column is sorted to get them, which takes a while on very large tables"])
 
 
