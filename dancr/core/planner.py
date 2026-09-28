@@ -240,6 +240,8 @@ def apply_plan(pipe, plan: Plan, edits: Edits, previous: dict[str, dict] | None 
         existing = sigs.get(sig)
         if existing and existing in pipe.nodes and existing not in left:
             resolved[step.key] = existing               # used, not owned: whoever made it keeps it
+            if prev and prev.get("node") == existing:
+                record[step.key] = prev                 # ... unless it is this answer's own (shared since): still its own
             continue
         x, y = place_near(pipe, [n for srcs in ins.values() for n in srcs])
         new = edits.create(step, ins, x, y)

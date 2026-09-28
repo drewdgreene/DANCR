@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import functools
 import json
+import os
 import logging
 import time
 from contextlib import contextmanager
@@ -121,7 +122,7 @@ def _unsafe_steps(p: Pipeline, targets: list[str] | None) -> dict[str, str]:
     """Steps among those a run would do that would save outside the pipeline's folder or over a file it reads,
     with why. Checked before running, since the file may have been changed by something other than these tools."""
     folder = _folder(p)
-    return {nid: f"{p.nodes[nid].title}: {bad[0]}" for nid in p.topological_order(targets)
+    return {nid: f"{p.nodes[nid].title}: {bad[0]}" for nid in p.topological_order(targets or None)
             if (bad := hl.unsafe_outputs(p, nid, folder))}
 
 
@@ -147,11 +148,12 @@ def _inside_project(p: Pipeline, out: str) -> Path:
 
 
 def _dump(data: Any) -> str:
-    return json.dumps(data, indent=1, default=str)
+    from .core.dtypes import json_safe
+    return json.dumps(json_safe(data), indent=1, default=str, allow_nan=False)
 
 
-def _record(p: Pipeline, ex: Executor, nid: str) -> dict[str, Any]:
-    return hl.node_record(p, ex.state(hl.require_node(p, nid)))
+def _record(p: Pipeline, ex: Executor, nid: str, memo: dict[str, str] | None = None) -> dict[str, Any]:
+    return hl.node_record(p, ex.state(hl.require_node(p, nid), memo))
 
 
 # ----------------------------------------------------------------- reference
@@ -229,9 +231,10 @@ def describe_pipeline(path: str) -> str:
     """Nodes, connections, settings, statuses and configuration problems of a pipeline."""
     p = _load(path)
     ex = Executor(p)
+    memo: dict[str, str] = {}                           # each step's hash once, not again for every step below it
     return _dump({
         "name": p.name, "path": str(p.path),
-        "nodes": [{**n.to_dict(), "inputs": p.inputs_of(n.id), "state": _record(p, ex, n.id)} for n in p.nodes.values()],
+        "nodes": [{**n.to_dict(), "inputs": p.inputs_of(n.id), "state": _record(p, ex, n.id, memo)} for n in p.nodes.values()],
         "edges": [e.to_dict() for e in p.edges],
         "inputs": [{"name": i.name, "value": i.value, "unit": i.unit, "note": i.note} for i in p.inputs],
         "columns": p.columns,
@@ -421,13 +424,14 @@ def run_pipeline(path: str, node_ids: list[str] | None = None, force: bool = Fal
     Returns per-node status, row counts, messages, reports and errors."""
     from .core.executor import NodeState
     p = _load(path)
-    for nid in node_ids or []:
+    targets = list(node_ids) if node_ids else None      # an empty list is every step, for the check as for the run
+    for nid in targets or []:
         hl.require_node(p, nid)
     ex = _executor(p)
     t0 = time.perf_counter()
-    unsafe = _unsafe_steps(p, node_ids)
+    unsafe = _unsafe_steps(p, targets)
     # those steps, and what needs them, are not run: they fail with the reason
-    wanted = [n for n in (node_ids or list(p.nodes))
+    wanted = [n for n in (targets or list(p.nodes))
               if n not in unsafe and not set(unsafe) & p.upstream_closure(n)]
     res = ex.run(targets=wanted, force=force) if wanted else {}
     for nid, why in unsafe.items():
@@ -500,11 +504,22 @@ def render_chart(path: str, node_id: str, out_png: str | None = None, kind: str 
     default line), x and y. Big data is downsampled per pixel.
     out_png (optional) must be inside the pipeline file's folder; otherwise the PNG goes to the cache."""
     from .views.render import render_chart as _render
+    import tempfile
     with _frame(path, node_id, run) as (p, lf):
         params = hl.chart_params(p.nodes[node_id], kind, x, y, column, title)
-        out = _inside_project(p, out_png) if out_png else (Executor(p).cache_dir / ".charts" / f"{node_id}.png")
-        _render(lf, params, out, width=width, height=height, columns=p.columns, inputs=p.input_values())
-    return Image(path=str(out))
+        if out_png:
+            out = _inside_project(p, out_png)
+            _render(lf, params, out, width=width, height=height, columns=p.columns, inputs=p.input_values())
+            return Image(data=out.read_bytes(), format="png")
+        # a file of its own, read back before returning: calls run side by side, and a shared file could be
+        # overwritten by another call (or read half-written) before the image reached the client
+        fd, tmp = tempfile.mkstemp(suffix=".png", prefix="dancr-chart-")
+        os.close(fd)
+        try:
+            _render(lf, params, Path(tmp), width=width, height=height, columns=p.columns, inputs=p.input_values())
+            return Image(data=Path(tmp).read_bytes(), format="png")
+        finally:
+            Path(tmp).unlink(missing_ok=True)
 
 
 @mcp.tool()
@@ -539,7 +554,7 @@ def inspect_file(file_path: str, rows: int = 5) -> str:
     from .core.nodes.load import scan_file
     fp = _from_root(file_path)
     ctx = Ctx(fp.parent, "inspect", "inspect", preview=True)
-    lf, messages = scan_file(ctx, {"path": str(fp), "has_header": True, "parse_dates": True})
+    lf, messages, _ = scan_file(ctx, {"path": str(fp), "has_header": True, "parse_dates": True})
     schema = lf.collect_schema()
     head = lf.head(max(1, min(int(rows), 100))).collect(engine="streaming")
     return json.dumps({"columns": [{"name": k, "dtype": str(v)} for k, v in schema.items()], "messages": messages,

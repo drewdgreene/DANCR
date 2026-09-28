@@ -95,6 +95,7 @@ class NodeType:
     summary: Callable[[dict[str, Any]], str] | None = None   # short subtitle for the canvas
     icon: str = ""                 # single glyph/emoji for palette
     materialize: bool = True       # write output to the cache; False for pure pass-through nodes
+    uses_labels: bool = False      # its result says columns by their labels and units: they are part of its cache hash
     route: Callable[[str, dict[str, list[str]]], str | None] | None = None   # (source node type, taken ports) -> port to use when none is given
     help_md: str = ""
 

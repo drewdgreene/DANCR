@@ -40,8 +40,21 @@ def ops_for_kind(kind: str) -> list[tuple[str, str]]:
     return [(k, v[0]) for k, v in OPS.items() if kind in v[3] or kind == "any"]
 
 
+def _whole(value: Any) -> int | None:
+    """A typed-in whole number exactly (1234567890123456789, "1,000"), or None: compared as a float it would
+    also match its neighbours above 2^53."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    text = str(value).strip().replace(",", "").replace(" ", "")
+    return int(text) if text.lstrip("+-").isdigit() else None
+
+
 def _literal(value: Any, kind: str, what: str, dtype: pl.DataType | None = None) -> pl.Expr:
     if kind == NUM:
+        if dtype is not None and dtype.is_integer() and _whole(value) is not None:
+            return pl.lit(_whole(value), dtype=pl.Int64 if abs(_whole(value)) < 2**63 else pl.Int128)
         return pl.lit(number_from_text(value, what))
     if kind == TIME:
         return datetime_literal(value, dtype if dtype is not None else pl.Datetime("us"), what)
@@ -132,6 +145,8 @@ def rule_mask(schema: dict[str, pl.DataType], rule: dict[str, Any], inputs: dict
         if not items:
             raise ValueError(f"{what}: enter a value")
         if kind == NUM:
+            if dtype.is_integer() and all(_whole(x) is not None for x in items):
+                return c.is_in([_whole(x) for x in items])
             nums = [number_from_text(x, what) for x in items]
             return c.cast(pl.Float64).is_in(nums)
         s = c.cast(pl.Utf8)
@@ -140,12 +155,14 @@ def rule_mask(schema: dict[str, pl.DataType], rule: dict[str, Any], inputs: dict
             s = s.str.to_lowercase()
             wanted = [x.lower() for x in wanted]
         return s.is_in(wanted)
-    if kind == NUM:
+    exact = kind == NUM and dtype.is_integer() and _whole(v) is not None and (op != "between" or _whole(v2) is not None)
+    if kind == NUM and not exact:
         c = c.cast(pl.Float64)
-    lit = _literal(v, kind, what, dtype)
+    ltype = None if kind == NUM and not exact else dtype      # a date keeps its column's zone; a number its exactness
+    lit = _literal(v, kind, what, ltype)
     case = bool(rule.get("case_sensitive", False))
     if op == "between":
-        return excel_compare(">=", c, lit, kind) & excel_compare("<=", c, _literal(v2, kind, what, dtype), kind)
+        return excel_compare(">=", c, lit, kind) & excel_compare("<=", c, _literal(v2, kind, what, ltype), kind)
     sym = {"eq": "=", "ne": "!=", "gt": ">", "lt": "<", "ge": ">=", "le": "<="}.get(op)
     if sym is None:
         raise ValueError(f"Filter: unknown condition {op!r}")

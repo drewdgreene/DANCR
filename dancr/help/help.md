@@ -99,6 +99,9 @@ your columns, tables and values:
 | `fastest vehicle` · `cheapest order` | the one row with the highest or lowest value |
 | `share of sales by region` · `what share agree` | each group's part of the whole, in per cent |
 | `tips by hour of day` · `busiest day of the week` · `sales by month of the year` | totals by a part of the time, across every day, week or year |
+| `compare sun and shade` · `is mass higher in sun leaves` · `t test leaf area` | the groups compared: each one's average, spread and standard error, a test, how big the difference is, in a sentence |
+| `compare before and after` · `compare control and treated` | numbers kept in a column per group, compared (a paired test when each row is one thing measured twice) |
+| `standard deviation of weight` · `unusual leaves` | one statistic; the rows with a value far from the rest of their group |
 
 ### How DANCR decides
 
@@ -123,9 +126,24 @@ work: *revenue* or *sales* for an Amount column, *pays* for salary, *started*
 for a start date.
 
 It also tidies up things spreadsheets often get wrong, and lists each fix in the
-answer's assumptions, where one click undoes it. A TOTAL row at the bottom is
-left out, empty rows are left out, and North, north and "North " count as one
-region.
+answer's assumptions, where one click undoes it. Empty rows are left out, and
+North, north and "North " count as one region.
+
+A small table of measurements in groups, with no dates (sun and shade leaves,
+treated and control plots), is read as a study. Its first suggestion compares
+the groups: each group's count, average, standard deviation, standard error and
+median, the difference, a test of whether it is more than chance, and how big
+it is. DANCR picks the test and says why (Welch's t-test when the groups vary
+differently), checks it with a rank test when a small sample is not
+bell-shaped, points at values unusual for their group, and, when a number grows
+with the size of what was measured and the groups differ in size, compares it
+relative to size too and says when that turns the result round. Every choice is
+a chip: the test, the numbers, the groups.
+
+A column worked out from others (D = polygon area − leaf area, price × quantity)
+is noticed. A row where the rule does not hold is almost always a typing slip:
+*Check the data* names it, and answers offer to use the calculated value
+instead of the typed one.
 
 ### Messy files
 
@@ -134,13 +152,33 @@ item and month. If the file name gives the year, as in *budget_2024.xlsx*, you
 get dates too. So *total per month*, *per month by department* and *compare
 budget and actual* all work.
 
-A title line or notes above the column names are skipped, and so are rows the
-file uses for nothing. When a file is opened:
+DANCR reads a sheet the way a person does, and says in the step's notes what
+it did (set **Layout** to *read the rows as they are* to turn this off):
+
+- a title line or notes above the column names are skipped
+- tables side by side under banners (SUN LEAVES over five columns, SHADE LEAVES
+  over the same five) become one table with a *group* column (Sun, Shade)
+- the same column names again further down, each block under its own title line
+  (Site A, Site B), become one table with a *group* column
+- a line on its own inside the data (*Fruit*, then its rows, *Veg*, then its
+  rows) becomes a *group* column
+- a label written only on the first row of each run is filled down
+- names written in two rows (Pressure over *min* and *max*) become *Pressure min*, *Pressure max*
+- AVERAGE, STANDARD DEV, MEDIAN and Total rows under the data are left out, and
+  checked against the data, so an average typed before the last row was added
+  is pointed out
+- a numbered row with nothing else in it (a leftover template row) is left out
+- a sheet with several tables on it (side by side, or one below another) gives
+  one table each; dropping the workbook brings in every one
+
+When a file is opened:
 
 - text that is really numbers (`1,373.10`, `£1,200`, `31.5%`, `(120)`) is read as numbers
 - codes with leading zeros (`00042`) stay as typed
 - a Date column and a Time column are also combined into one date/time
-- every sheet of a workbook becomes a table.
+- every sheet of a workbook becomes a table
+- a header like `Leaf area (LA) cm2` is read as a name, a short name and a unit,
+  so *leaf area*, *LA* and *area* all find it; a column in grams answers to *mass*.
 
 ### Changing an answer
 

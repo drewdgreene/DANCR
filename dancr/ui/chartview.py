@@ -54,6 +54,7 @@ class Panel:
     series: list = field(default_factory=list)      # (label, xs, ys) for hover readouts
     date_axis: bool = False
     tz: str | None = None                           # the column's zone: every label and readout uses its offset then
+    offset: int = 0                                 # the zone's offset (seconds) at the data the axis was made for
 
 
 def _log10(v: np.ndarray) -> np.ndarray:
@@ -75,8 +76,10 @@ class ZonedDateAxis(pg.DateAxisItem):
     range across a daylight-saving change is labelled right on both sides (pyqtgraph's own axis uses one
     fixed offset)."""
 
-    def __init__(self, tz: str | None, **kw: Any) -> None:
-        super().__init__(orientation="bottom", utcOffset=-_zone_offset(tz, None) if tz else 0, **kw)
+    def __init__(self, tz: str | None, at: float | None = None, **kw: Any) -> None:
+        # ticks fall on the zone's midnights at the data shown (``at``), not at today's offset: January data seen in
+        # summer would otherwise have every day tick an hour off, labelled with the day before
+        super().__init__(orientation="bottom", utcOffset=-_zone_offset(tz, at) if tz else 0, **kw)
         self.tz = tz
 
     def tickStrings(self, values, scale, spacing):  # noqa: N802 - pyqtgraph's name
@@ -200,9 +203,10 @@ class ChartView(QWidget):
     def _set_date_axis(self, p: Panel, on: bool, tz: str | None = None, at: float | None = None) -> None:
         """A date axis in the column's own time zone (naive columns are shown as they are)."""
         tz = tz if on else None
-        if on != p.date_axis or tz != p.tz:
-            p.date_axis, p.tz = on, tz
-            axis = (ZonedDateAxis(tz) if tz else pg.DateAxisItem(orientation="bottom", utcOffset=0)) if on else pg.AxisItem(orientation="bottom")
+        offset = _zone_offset(tz, at) if tz else 0
+        if on != p.date_axis or tz != p.tz or offset != p.offset:
+            p.date_axis, p.tz, p.offset = on, tz, offset
+            axis = (ZonedDateAxis(tz, at) if tz else pg.DateAxisItem(orientation="bottom", utcOffset=0)) if on else pg.AxisItem(orientation="bottom")
             axis.setTextPen(QColor(T.muted)); axis.setPen(QColor(T.border))
             p.plot.setAxisItems({"bottom": axis})
 
@@ -593,6 +597,11 @@ class ChartView(QWidget):
             self._set_date_axis(p, False)
             xs = np.arange(len(b.labels))
             self._add_bars(p, xs - 0.4, np.full(len(xs), 0.8), b.values, log_y, notes)
+            if b.errors is not None and log_y:
+                notes.append("error bars are not drawn on a log axis")
+            if b.errors is not None and not log_y:
+                self._add(p, pg.ErrorBarItem(x=xs.astype(float), y=np.asarray(b.values, dtype=float), top=b.errors, bottom=b.errors,
+                                             beam=0.25, pen=pg.mkPen(T.text, width=1.4)))
             plot.getAxis("bottom").setTicks([[(i, lab[:18]) for i, lab in enumerate(b.labels)]])
             plot.setLabel("left", f"{b.stat} of {title(cd.ys[0]) if cd.ys else 'rows'}"); plot.setLabel("bottom", title(cd.x))
             plot.autoRange()

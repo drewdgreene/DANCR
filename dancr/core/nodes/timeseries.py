@@ -249,7 +249,7 @@ def _gaps(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, Any
 
 
 registry.register(NodeType(
-    key="find_gaps", label="Find gaps", category="Time", icon="⌷",
+    key="find_gaps", uses_labels=True, label="Find gaps", category="Time", icon="⌷",
     description="List the places where the data stops and restarts. Output is one row per gap.",
     apply=_counts_blank_times()(_gaps),
     summary=lambda p: f"gaps > {p.get('factor', 1.5)}× normal spacing" if not p.get("expected") else f"spacing {p['expected']}",

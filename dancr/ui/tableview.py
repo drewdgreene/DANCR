@@ -83,7 +83,7 @@ class TableView(QWidget):
             open_external(p)
 
     def _copy(self) -> None:
-        if self.grid.table.selectionModel() and self.grid.table.selectionModel().selectedIndexes():
+        if self.grid.has_selection():
             self.grid.copy_selection()
         else:
             self.grid.copy_all_visible()
@@ -160,6 +160,7 @@ class TableView(QWidget):
                     self.doc.refresh_states()
                 self._preview_serial.submit(open_result, ready, failed)
             else:
+                self._preview_serial.cancel()           # a preview asked for before the run must not replace this
                 self._load_summary(lambda: pl.scan_parquet(output), rows or 0)
             return
         if st.status == "running":
@@ -185,8 +186,8 @@ class TableView(QWidget):
 
     def _preview_ready(self, r) -> None:
         nid, df, kind, err = r
-        if nid != self.nid:
-            return
+        if nid != self.nid or self.doc.state(nid).status == "done":
+            return                                      # the step has run since: its result is shown instead
         self.grid.set_overlay("")
         if err is not None:
             self.grid.set_content(None, None, True, None, None)

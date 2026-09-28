@@ -45,8 +45,8 @@
   "change: Total quantity: latest week vs the one before",
   "explain: What drives quantity: region",
   "top: Top 10 customers by total quantity",
-  "drivers: How orders's columns move together",
-  "drivers: How customers's columns move together",
+  "drivers: How the columns of orders move together",
+  "drivers: How the columns of customers move together",
   "forecast: Where quantity is heading"
  ],
  "questions": {

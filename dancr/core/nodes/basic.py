@@ -262,7 +262,8 @@ def _change_type(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[s
             else:
                 e = rounded
         elif to == "text":
-            e = e.cast(pl.Utf8)
+            from ..expr import number_text                 # 12.0 is "12" and 0.1 + 0.2 is "0.3", as Excel writes them
+            e = number_text(e, dt.is_integer()) if dt.is_numeric() else e.cast(pl.Utf8)
         elif to == "datetime":
             fmt = (params.get("date_format") or "").strip() or None
             if dt in (pl.Utf8, pl.String):

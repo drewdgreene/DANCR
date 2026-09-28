@@ -59,7 +59,9 @@ def test_numbers_codes_and_totals_are_read_as_people_mean_them(shop):
     p, m = project(d, "orders.csv")
     t = m.tables["orders"]
     assert t.column("Amount (£)").role == "measure" and t.column("Customer ID").kind == "text"   # C0001 keeps its zeros
-    assert t.total_row is not None
+    assert t.rows == 80 and t.total_row is None                    # the loader leaves the TOTAL row out, and says so
+    st = Executor(p); st.run(["orders"])
+    assert st.state("orders").report["layout"]["summary_rows"][0]["label"] == "TOTAL"
     df = result(p, ask(m, "total amount by region").spec)
     assert df["Amount (£)"].sum() == pytest.approx(total)                                        # the total row is not counted twice
     assert set(df["Region"].to_list()) == {"North", "South", "East", "West"}                      # one spelling each

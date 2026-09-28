@@ -333,12 +333,23 @@ def _require_positive_x(lf: pl.LazyFrame, kind: str) -> None:
             raise ValueError(f"A {shape} fit needs all x values above zero ({k:,} rows are 0 or below). Filter them out first.")
 
 
+GROUP_IN_MEMORY = 20_000_000     # up to this many rows, a per-group fit reads x, y and the group once, into memory
+
+
 def fit_frame(lf: pl.LazyFrame, x: str, y: str, kind: str = "linear", degree: int = 2, group: str | None = None) -> list[Fit]:
     """Fit on every row; one Fit per group (or one overall). Group values are handled as text."""
     base = _prepared(lf, x, y, group)
     if group:
-        keys = base.select(pl.col(group).drop_nulls().unique().sort()).collect(engine=STREAM)[group].to_list()
-        parts = [(k, base.filter(pl.col(group) == k)) for k in keys]
+        rows = int(base.select(pl.len()).collect(engine=STREAM).item())
+        if rows <= GROUP_IN_MEMORY:
+            # read the three columns once and split them: filtering the whole table once per group, on every pass of
+            # the fit, costs groups × passes full scans
+            split = base.select(X, Y, group).filter(pl.col(group).is_not_null()).collect(engine=STREAM) \
+                .partition_by(group, as_dict=True, maintain_order=False)
+            parts = sorted(((k[0], df.lazy()) for k, df in split.items()), key=lambda kv: str(kv[0]))
+        else:
+            keys = base.select(pl.col(group).drop_nulls().unique().sort()).collect(engine=STREAM)[group].to_list()
+            parts = [(k, base.filter(pl.col(group) == k)) for k in keys]
     else:
         parts = [(None, base)]
     fits: list[Fit] = []

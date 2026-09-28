@@ -29,6 +29,7 @@ import polars as pl
 
 from .expr import kind_of_dtype, NUM, TIME, STR, BOOL
 from .registry import registry
+from .units import header_parts, quantity_of, unit_from_name
 
 SAMPLE_ROWS = 100_000          # rows read per table for column facts
 CADENCE_ROWS = 20_000          # consecutive rows read to measure how often rows arrive
@@ -73,6 +74,9 @@ class Column:
     cadence: float | None = None    # time: the typical seconds between one row and the next
     regular: bool = False           # time: most steps are that typical step
     spellings: dict[str, str] = field(default_factory=dict)   # category: a variant -> the spelling most rows use
+    abbrev: str = ""                # the short name its header gives it: 'LA' in 'Leaf area (LA) cm2'
+    quantity: str = ""              # what its unit measures: mass, area, mass per area …
+    derived: dict[str, Any] | None = None   # worked out from other columns: {formula, words, operands, holds, rows, breaks}
     _keys: set[str] = field(default_factory=set, repr=False)       # capped distinct values, for link overlap
     _key_cut: int | None = field(default=None, repr=False)
 
@@ -222,16 +226,73 @@ def _read_table(pipe, executor, nid: str) -> Table:
         t.rows, t.rows_exact = sample.height, True
     t.total_row = _total_row(sample.tail(3), sample) if t.complete else None
     t.blank_rows = int(sample.select(pl.all_horizontal(pl.all().is_null()).sum()).item()) if sample.width else 0
+    rows_kept = None if kind == "spread" else _kept_rows(sample, t)     # row numbers of the step's output, in order
     sample = _without_extra_rows(sample, t)
     t.columns = [_describe_column(sample[c], pipe) for c in sample.columns]
     if t.complete:
         for c in t.columns:
             c.unique_exact = True
+    _numbering(t, sample)
+    _derived(t, sample, rows_kept)
     _settle_time(t, sample, run)
     _as_long(t, node)
     t.shape = _shape_of(t)
-    t.pairs = _pairs(sample, t.measures)
+    t.pairs = _pairs(sample, t.measures, _definitions(t))
     return t
+
+
+NUMBERING_WORDS = {"n", "no", "nr", "num", "number", "rep", "replicate", "trial", "sample", "plot", "quadrat", "subject",
+                   "run", "specimen", "individual", "plant", "leaf", "tree", "site", "station", "animal", "patient"}
+
+
+def _numbering(t: Table, sample: pl.DataFrame) -> None:
+    """A column that numbers the rows within each group (1 … 15 for the sun leaves, 1 … 15 again for the shade
+    leaves) names the rows; it is not a quantity. Whole numbers 1 … k, each the same number of times, in the first
+    column or under a name like 'N', 'Rep' or 'Plot'."""
+    for i, c in enumerate(t.columns):
+        if c.role != MEASURE or not sample[c.name].dtype.is_integer() or c.distinct < 3:
+            continue
+        if i != 0 and not set(name_words(c.name)) & NUMBERING_WORDS:
+            continue
+        vc = sample[c.name].drop_nulls().value_counts()
+        vals = sorted(vc[c.name].to_list())
+        counts = set(vc["count"].to_list())
+        if vals[0] in (0, 1) and vals == list(range(vals[0], vals[0] + len(vals))) and len(counts) == 1 and counts != {1}:
+            c.role = ID
+
+
+def _derived(t: Table, sample: pl.DataFrame, rows: list[int] | None) -> None:
+    """Columns worked out from other columns (core.derived), noted on the column. Each row that breaks the rule
+    is noted with its row number in the step's output (when the sample holds the rows in order) and the values
+    that name it (its group, its number)."""
+    from .derived import find
+    names = [c.name for c in t.columns if c.role == MEASURE]
+    if len(names) < 2:
+        return
+    try:
+        found = find(sample, names)
+    except Exception:  # noqa: BLE001 - a search that fails finds nothing
+        return
+    naming = [c.name for c in t.columns if c.role in (CATEGORY, ID) and c.kind in (STR, NUM)][:2]
+    for d in found:
+        col = t.column(d.target)
+        if col is None:
+            continue
+        info = d.to_dict()
+        for b in info["breaks"]:
+            pos = b["row"]
+            b["row"] = rows[pos] if rows is not None and pos < len(rows) else None
+            b["where"] = {n: _clean(sample[n][pos]) for n in naming}
+        col.derived = info
+
+
+def _definitions(t: Table) -> set[frozenset]:
+    """Pairs of columns related by definition: a calculated column and each column it is made from."""
+    out = set()
+    for c in t.columns:
+        for o in (c.derived or {}).get("operands", []):
+            out.add(frozenset((c.name, o)))
+    return out
 
 
 TOTAL_WORDS = {"total", "totals", "grand total", "sum", "all", "overall", "subtotal", "total:", "totals:"}
@@ -272,16 +333,29 @@ def _total_row(tail: pl.DataFrame, whole: pl.DataFrame | None = None) -> dict[st
     return None
 
 
-def _without_extra_rows(df: pl.DataFrame, t: Table) -> pl.DataFrame:
+def _kept_rows(df: pl.DataFrame, t: Table) -> list[int]:
+    """The positions in ``df`` of the rows ``_without_extra_rows`` keeps."""
+    idx = df.with_columns(pl.Series("__pos", range(df.height)))
+    kept = _without_extra_rows(idx.drop("__pos"), t, positions=idx["__pos"])
+    return kept
+
+
+def _without_extra_rows(df: pl.DataFrame, t: Table, positions: pl.Series | None = None):
     if t.total_row is not None:
         c, v = t.total_row["column"], t.total_row["value"]
         if t.total_row.get("blank"):
-            df = df.filter(~(pl.col(t.total_row["blank"]).is_null() & (pl.col(c) == v)))
+            keep = ~(pl.col(t.total_row["blank"]).is_null() & (pl.col(c) == v))
         else:
-            df = df.filter(pl.col(c).is_null() | (pl.col(c).cast(pl.Utf8) != v))
+            keep = pl.col(c).is_null() | (pl.col(c).cast(pl.Utf8) != v)
+        if positions is not None:                     # the positions follow every filter the rows go through
+            positions = positions.filter(df.select(keep.fill_null(False)).to_series())
+        df = df.filter(keep)
     if t.blank_rows and df.width:
-        df = df.filter(~pl.all_horizontal(pl.all().is_null()))
-    return df
+        keep = ~pl.all_horizontal(pl.all().is_null())
+        if positions is not None:
+            positions = positions.filter(df.select(keep).to_series())
+        df = df.filter(keep)
+    return positions.to_list() if positions is not None else df
 
 
 def _as_long(t: Table, node) -> None:
@@ -311,13 +385,17 @@ def _as_long(t: Table, node) -> None:
     t.pairs = []
 
 
-def _pairs(sample: pl.DataFrame, measures: list[Column], limit: int = 8) -> list[dict[str, Any]]:
+def _pairs(sample: pl.DataFrame, measures: list[Column], skip: set[frozenset] | None = None,
+           limit: int = 8) -> list[dict[str, Any]]:
     """How strongly each pair of measures moves together in the sample (Pearson r), strongest first. Only used
-    to rank suggestions: an answer built from it computes its fit on every row."""
+    to rank suggestions: an answer built from it computes its fit on every row. Pairs related by definition (a
+    calculated column and what it is made from) are left out: that they move together is not news."""
     names = [m.name for m in measures[:limit]]
     out = []
     for i, a in enumerate(names):
         for b in names[i + 1:]:
+            if skip and frozenset((a, b)) in skip:
+                continue
             try:
                 d = sample.select(pl.col(a).cast(pl.Float64), pl.col(b).cast(pl.Float64)).drop_nulls().drop_nans()
                 if d.height < 10:
@@ -344,6 +422,8 @@ def _describe_column(s: pl.Series, pipe) -> Column:
     c = Column(name=s.name, dtype=str(s.dtype), kind=kind, role=TEXT, label=label or s.name, unit=unit,
                null_pct=(nulls / n) if n else 0.0, distinct=distinct,
                unique=bool(filled.len()) and distinct == filled.len())
+    c.abbrev = header_parts(s.name)[1]
+    c.quantity = quantity_of(unit) if kind == NUM else ""
     c.minimum, c.maximum = _extreme(filled, "min"), _extreme(filled, "max")
     c.role = _role_of(c, filled, n)
     if c.role == CATEGORY or (kind == STR and c.role in (ID, TEXT) and 1 < c.distinct <= 200 and _short_text(filled)):
@@ -864,15 +944,6 @@ def name_similarity(a: str, b: str) -> float:
     if sa in sb or sb in sa:
         return 0.85
     return difflib.SequenceMatcher(None, na, nb).ratio()
-
-
-_UNIT_RE = re.compile(r"[\(\[]\s*([^\)\]]{1,12})\s*[\)\]]\s*$")
-
-
-def unit_from_name(name: str) -> str:
-    """'Pressure (bar)' -> 'bar'; 'Flow [m3/h]' -> 'm3/h'."""
-    m = _UNIT_RE.search(str(name))
-    return m.group(1).strip() if m else ""
 
 
 def distinct_labels(names: list[str], fallback: list[str]) -> list[str]:

@@ -24,6 +24,8 @@ from dancr.core.planner import instantiate
 from dancr.core.recipes import suggest, plan
 from dancr.core.understand import understand, deepen
 
+from sheets import lab_sheet
+
 HERE = Path(__file__).parent / "corpus"
 UPDATE = os.environ.get("DANCR_UPDATE_CORPUS") == "1"
 
@@ -97,7 +99,17 @@ def plain(d: Path) -> list[str]:
     return ["parts.csv"]
 
 
+def study(d: Path) -> list[str]:
+    """A lab data sheet: sun and shade leaves side by side under banners, summary rows, a template row, one slip."""
+    lab_sheet(d / "Leaves & Light Data Sheet.xlsx")
+    return ["Leaves & Light Data Sheet.xlsx"]
+
+
 CASES = {
+    "study": (study, ["compare sun and shade leaves", "is there a difference between sun and shade",
+                      "is leaf mass per area higher in sun leaves", "t test leaf area", "average leaf area",
+                      "standard deviation of mass", "average D", "which leaf is biggest", "check the data",
+                      "relationship between mass and leaf area", "unusual leaves"]),
     "shop": (shop, ["total quantity by region", "top 5 customers by quantity", "average price per month",
                     "quantity by category for North", "orders where price above 30", "how many orders by segment",
                     "orders before March", "orders since March", "average price from 2024-02-01 to 2024-03-01",

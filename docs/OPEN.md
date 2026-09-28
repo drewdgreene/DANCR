@@ -8,6 +8,12 @@
 - `contribution` in change mode with an average (`stat` mean) adds up each group's change in its average, which
   is not a share of the change in the overall average; a change in an average does not split by group.
 - The seasonal forecast's band uses the straight-line fit's error, so it is a rough band.
+- Comparing groups: with three or more groups there is no test of which pairs differ (no post-hoc test); a paired
+  comparison is of two groups only (no repeated-measures ANOVA); a two-way design (light × species) is compared one
+  factor at a time. Merged cells are inferred from where banner text sits (the cell grid has no merge ranges), and
+  a sheet's formulas are not read, so a summary row is found by its label (AVERAGE, Total) rather than by its
+  formula. A table laid out sideways (one variable per row) is not turned round. On a sheet over 20,000 rows only
+  its top 300 and bottom 60 rows are used to work out the layout.
 - Answers cannot yet: group by two things at once (a cross-tab; refused), link keys written differently
   (`#10234` against `10234`), treat survey answers as ordered, say which month was over budget, join two
   different conditions with "or", keep two separate periods (`in March and April`), exclude a month

@@ -192,7 +192,9 @@ class Parser:
     def parse_atom(self) -> Any:
         t = self.take()
         if t.kind == "number":
-            return Num(float(t.text))
+            text = t.text
+            # a whole number stays whole, however long: 1234567890123456789 as a float is its neighbour too
+            return Num(int(text) if text.isdigit() else float(text))
         if t.kind == "string":
             # as in Excel: a backslash is just a character ("C:\\new"), a quote inside text is doubled ("say ""hi""")
             q = t.text[0]
@@ -284,7 +286,7 @@ class Compiler:
         return m(node)
 
     def c_Num(self, n: Num) -> Typed:
-        v = int(n.value) if n.value.is_integer() and abs(n.value) < 2**53 else n.value
+        v = n.value if isinstance(n.value, int) else (int(n.value) if n.value.is_integer() and abs(n.value) < 2**53 else n.value)
         return Typed(pl.lit(v), NUM, v)
 
     def c_Str(self, n: Str) -> Typed:
@@ -366,7 +368,11 @@ class Compiler:
                 else:
                     b = Typed(text_to_number_expr(b.expr), NUM)
             kind = STR if STR in (a.kind, b.kind) else (NUM if NUM in (a.kind, b.kind) else a.kind)
-            return Typed(excel_compare(op, a.expr, b.expr, kind), BOOL)
+            ea, eb = a.expr, b.expr
+            if kind == NUM:                            # [flag] = 1: TRUE is 1, as in Excel's arithmetic
+                ea = ea.cast(pl.Int8) if a.kind == BOOL else ea
+                eb = eb.cast(pl.Int8) if b.kind == BOOL else eb
+            return Typed(excel_compare(op, ea, eb, kind), BOOL)
         if op == "&":
             return Typed(pl.concat_str([_as_text(a), _as_text(b)]), STR)
         if op == "+":
@@ -393,7 +399,7 @@ class Compiler:
             return _mod(a, b)
         if op == "^":
             self._numkind(a, b)
-            return Typed(a.expr.cast(pl.Float64).pow(b.expr.cast(pl.Float64)), NUM)
+            return Typed(_finite(a.expr.cast(pl.Float64).pow(b.expr.cast(pl.Float64))), NUM)
         raise FormulaError(f"Unknown operator {op}")
 
     def _numkind(self, a: Typed, b: Typed) -> str:
@@ -489,6 +495,18 @@ def _wide(t: Typed) -> pl.Expr:
     return t.expr
 
 
+def _nn(e: pl.Expr) -> pl.Expr:
+    """NaN as a blank, whatever the number type (a whole-number column has none): the rule everywhere in DANCR,
+    so one 0/0 upstream does not turn a column's total or average into NaN."""
+    return pl.when(e.cast(pl.Float64).is_nan()).then(None).otherwise(e)
+
+
+def _finite(e: pl.Expr) -> pl.Expr:
+    """A result with no answer (SQRT(-1), LN(0), 0^-1) is a blank, as Excel's #NUM! is not a number either."""
+    x = e.cast(pl.Float64)
+    return pl.when(x.is_finite()).then(x)
+
+
 def _num(t: Typed) -> pl.Expr:
     if t.kind in (STR, TIME):
         raise FormulaError(f"Expected a number but got a {t.kind} value")
@@ -516,15 +534,15 @@ def _horizontal_or_column(hfn: Callable, cfn: Callable) -> Callable[[Compiler, l
     """With one argument: aggregate down the column (broadcast). With several: row-wise."""
     def f(c: Compiler, args: list[Typed]) -> Typed:
         if len(args) == 1:
-            return Typed(cfn(_num(args[0])), NUM)
-        return Typed(hfn([_num(a) for a in args]), NUM)
+            return Typed(cfn(_nn(_num(args[0]))), NUM)
+        return Typed(hfn([_nn(_num(a)) for a in args]), NUM)
     return f
 
 
 def _simple(fn: Callable[[pl.Expr], pl.Expr], kind: str = NUM, cast: bool = True) -> Callable:
     def f(c: Compiler, args: list[Typed]) -> Typed:
         a = args[0]
-        return Typed(fn((_wide(a) if a.kind == NUM else _num(a)) if cast else a.expr), kind)   # ABS(Int8 -128) = 128
+        return Typed(fn(_nn(_wide(a) if a.kind == NUM else _num(a)) if cast else a.expr), kind)   # ABS(Int8 -128) = 128
     return f
 
 
@@ -533,8 +551,8 @@ def _f_log(c: Compiler, args: list[Typed]) -> Typed:
         base = args[1].literal
         if base is None:
             raise FormulaError("LOG base must be a plain number")
-        return Typed(_num(args[0]).log(float(base)), NUM)
-    return Typed(_num(args[0]).log10(), NUM)
+        return Typed(_finite(_num(args[0]).log(float(base))), NUM)
+    return Typed(_finite(_num(args[0]).log10()), NUM)
 
 
 def excel_round(e: pl.Expr, digits: int = 0) -> pl.Expr:
@@ -588,14 +606,14 @@ def _count_lit(t: Typed, what: str) -> int:
 
 
 def _f_left(c: Compiler, args: list[Typed]) -> Typed:
-    return Typed(args[0].expr.cast(pl.Utf8).str.slice(0, _count_lit(args[1], "LEFT length")), STR)
+    return Typed(_to_text(args[0]).str.slice(0, _count_lit(args[1], "LEFT length")), STR)
 
 
 def _f_right(c: Compiler, args: list[Typed]) -> Typed:
     n = _count_lit(args[1], "RIGHT length")
     if n == 0:
         return Typed(pl.when(args[0].expr.is_null()).then(None).otherwise(pl.lit("")), STR)
-    return Typed(args[0].expr.cast(pl.Utf8).str.slice(-n, n), STR)
+    return Typed(_to_text(args[0]).str.slice(-n, n), STR)
 
 
 def _f_mid(c: Compiler, args: list[Typed]) -> Typed:
@@ -603,12 +621,12 @@ def _f_mid(c: Compiler, args: list[Typed]) -> Typed:
     if start < 0:
         raise FormulaError("MID start must be 1 or more")
     n = _count_lit(args[2], "MID length")
-    return Typed(args[0].expr.cast(pl.Utf8).str.slice(start, n), STR)
+    return Typed(_to_text(args[0]).str.slice(start, n), STR)
 
 
 def _str_fn(method: str, kind: str = STR) -> Callable:
     def f(c: Compiler, args: list[Typed]) -> Typed:
-        e = args[0].expr.cast(pl.Utf8)
+        e = _to_text(args[0])
         rest = [a.expr for a in args[1:]]
         return Typed(getattr(e.str, method)(*rest), kind)
     return f
@@ -623,7 +641,7 @@ def _f_replace(c: Compiler, args: list[Typed]) -> Typed:
         raise FormulaError("REPLACE start must be 1 or more")
     if args[2].literal is not None:
         _count_lit(args[2], "REPLACE number of characters")
-    s = args[0].expr.cast(pl.Utf8)
+    s = _to_text(args[0])
     start = args[1].expr.cast(pl.Float64).floor().cast(pl.Int64)
     count = args[2].expr.cast(pl.Float64).floor().cast(pl.Int64)
     # from a column, a start below 1 or a negative count is Excel's #VALUE!: a blank cell here, never a
@@ -637,7 +655,7 @@ def _f_replace(c: Compiler, args: list[Typed]) -> Typed:
 
 def _f_substitute(c: Compiler, args: list[Typed]) -> Typed:
     """Excel's SUBSTITUTE(text, old, new[, instance]): every old becomes new, or only the instance-th one."""
-    s, old, new = args[0].expr.cast(pl.Utf8), _as_text(args[1]), _as_text(args[2])
+    s, old, new = _to_text(args[0]), _as_text(args[1]), _as_text(args[2])
     if len(args) == 3:
         out = s.str.replace_all(old, new, literal=True)
     else:
@@ -691,7 +709,10 @@ def _f_date(c: Compiler, args: list[Typed]) -> Typed:
             fmts.append(DAY_FIRST[f])
         if f not in fmts:
             fmts.append(f)
-    return Typed(pl.coalesce([text.str.to_datetime(f, strict=False, time_unit="us") for f in fmts]), TIME)
+    def plausible(f: str) -> pl.Expr:                # "01/02/24" read with %Y is the year 24: not a date anyone meant
+        d = text.str.to_datetime(f, strict=False, time_unit="us")
+        return pl.when(d.dt.year().is_between(1000, 9999)).then(d)
+    return Typed(pl.coalesce([plausible(f) for f in fmts]), TIME)
 
 
 def _dt_part(attr: str) -> Callable:
@@ -767,13 +788,13 @@ def _rolling(method: str) -> Callable:
             if not isinstance(args[2].literal, bool):
                 raise FormulaError("The third argument says whether to centre the window: TRUE or FALSE")
             center = args[2].literal
-        e = _wide(args[0]) if args[0].kind == NUM else _num(args[0])
+        e = _nn(_wide(args[0]) if args[0].kind == NUM else _num(args[0]))
         return Typed(getattr(e, f"rolling_{method}")(window_size=n, min_samples=1, center=center), NUM)
     return f
 
 
 def _f_zscore(c: Compiler, args: list[Typed]) -> Typed:
-    e = _num(args[0])
+    e = _nn(_num(args[0]))
     sd = e.std()
     return Typed(pl.when(sd == 0).then(None).otherwise((e - e.mean()) / sd), NUM)
 
@@ -796,7 +817,7 @@ def _f_clip(c: Compiler, args: list[Typed]) -> Typed:
 
 def _f_pct_change(c: Compiler, args: list[Typed]) -> Typed:
     n = _int_lit(args[1], "lag") if len(args) == 2 else 1
-    return Typed(_num(args[0]).pct_change(n) * 100.0, NUM)
+    return Typed(_finite(_nn(_num(args[0])).pct_change(n) * 100.0), NUM)
 
 
 def _f_and(c: Compiler, args: list[Typed]) -> Typed:
@@ -824,7 +845,8 @@ def _f_interpolate(c: Compiler, args: list[Typed]) -> Typed:
 def _f_rank(c: Compiler, args: list[Typed]) -> Typed:
     """As Excel's RANK: the largest value is 1, unless the order is 1 (then the smallest is 1). Ties share a rank."""
     order = _int_lit(args[1], "RANK order") if len(args) > 1 else 0
-    return Typed(args[0].expr.rank(method="min", descending=order == 0), NUM)
+    e = _nn(args[0].expr) if args[0].kind == NUM else args[0].expr     # NaN is a blank: unranked, not the largest
+    return Typed(e.rank(method="min", descending=order == 0), NUM)
 
 
 def _f_count(c: Compiler, args: list[Typed]) -> Typed:
@@ -839,9 +861,9 @@ def _f_pi(c: Compiler, args: list[Typed]) -> Typed:
 FUNCTIONS: dict[str, tuple[int, int | None, Callable[[Compiler, list[Typed]], Typed], str]] = {
     # math
     "ABS": (1, 1, _simple(lambda e: e.abs()), "Absolute value"),
-    "SQRT": (1, 1, _simple(lambda e: e.sqrt()), "Square root"),
-    "EXP": (1, 1, _simple(lambda e: e.exp()), "e to the power x"),
-    "LN": (1, 1, _simple(lambda e: e.log()), "Natural log"),
+    "SQRT": (1, 1, _simple(lambda e: _finite(e.sqrt())), "Square root"),
+    "EXP": (1, 1, _simple(lambda e: _finite(e.exp())), "e to the power x"),
+    "LN": (1, 1, _simple(lambda e: _finite(e.log())), "Natural log"),
     "LOG": (1, 2, _f_log, "LOG(x) base 10, or LOG(x, base)"),
     "LOG2": (1, 1, _simple(lambda e: e.log(2)), "Log base 2"),
     "POW": (2, 2, lambda c, a: Typed(_num(a[0]).pow(_num(a[1])), NUM), "POW(x, y) = x^y"),
@@ -908,7 +930,7 @@ FUNCTIONS: dict[str, tuple[int, int | None, Callable[[Compiler, list[Typed]], Ty
     "LEFT": (2, 2, _f_left, "LEFT(text, n)"),
     "RIGHT": (2, 2, _f_right, "RIGHT(text, n)"),
     "MID": (3, 3, _f_mid, "MID(text, start, n)"),
-    "CONTAINS": (2, 2, lambda c, a: Typed(a[0].expr.cast(pl.Utf8).str.contains(a[1].expr, literal=True), BOOL), "CONTAINS(text, part)"),
+    "CONTAINS": (2, 2, lambda c, a: Typed(_to_text(a[0]).str.contains(_to_text(a[1]), literal=True), BOOL), "CONTAINS(text, part)"),
     "STARTSWITH": (2, 2, _str_fn("starts_with", BOOL), "STARTSWITH(text, prefix)"),
     "ENDSWITH": (2, 2, _str_fn("ends_with", BOOL), "ENDSWITH(text, suffix)"),
     "REPLACE": (4, 4, _f_replace, "REPLACE(text, start, n, new) puts new in place of n characters from position start"),

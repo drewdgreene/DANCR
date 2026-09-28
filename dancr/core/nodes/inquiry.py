@@ -140,6 +140,19 @@ def _compare_periods(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: di
     cur, prev = _latest_two(lf, _truncate(t, every), every)
     sub = lf.with_columns(_truncate(t, every).alias("__period"), pl.lit(1).alias("__one")) \
             .filter(pl.col("__period").is_in([prev, cur]))
+    # the latest period may have only begun (data to a Wednesday, weekly): then it is compared with the same stretch
+    # of the period before, not with the whole of it
+    partial = None
+    last = lf.select(pl.col(t).max()).collect(engine="streaming").item()
+    end = pl.select(pl.lit(cur).dt.offset_by(every)).item()
+    try:
+        covered = (last - cur) / (end - cur)
+    except (TypeError, ZeroDivisionError):
+        covered = 1.0
+    if covered < 0.9:
+        prev_end = prev + (last - cur)
+        sub = sub.filter((pl.col("__period") == cur) | (pl.col(t) <= prev_end))
+        partial = (last, prev_end)
     val = lambda cond: _value_expr(measure or None, stat, cond)  # noqa: E731
     aggs = [val(pl.col("__period") == prev).alias("previous"),
             val(pl.col("__period") == cur).alias("current")]
@@ -166,7 +179,11 @@ def _compare_periods(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: di
         rows = df.to_dicts()
         top = max(rows, key=lambda r: abs(float(r["change"] or 0.0)))
         leader = f", led by {top.get(by[0])} ({_signed(top.get('change'))})"
-    statement = (f"{what.capitalize()} {_verb(delta)} {fmt_pct(abs(pct)) if pct is not None else ''} "
+    if partial is not None:                            # say which stretch of each period was compared
+        upto = lambda v: f"{v:%Y-%m-%d}" if hasattr(v, "year") else str(v)   # noqa: E731
+        cur_label = f"{cur_label} so far (to {upto(partial[0])})"
+        prev_label = f"the same part of {prev_label} (to {upto(partial[1])})"
+    statement = (f"{what[:1].upper()}{what[1:]} {_verb(delta)} {fmt_pct(abs(pct)) if pct is not None else ''} "
                  f"in {cur_label} vs {prev_label} ({fmt_number(prev_tot)} → {fmt_number(cur_tot)}){leader}").replace("  ", " ")
     report = {"current": cur_label, "previous": prev_label, "current_total": cur_tot, "previous_total": prev_tot,
               "change": delta, "change_percent": pct, "groups": df.height,
@@ -178,7 +195,7 @@ def _compare_periods(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: di
 
 
 registry.register(NodeType(
-    key="compare_periods", label="Compare two periods", category="Analyse & model", icon="⇄",
+    key="compare_periods", uses_labels=True, label="Compare two periods", category="Analyse & model", icon="⇄",
     description="Compare this period with the one before it, for the whole table or for each group: what rose, "
                 "what fell, and by how much.",
     apply=_compare_periods,
@@ -227,7 +244,7 @@ def _contribution(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[
         if df.height:
             top = df.row(0, named=True)
             direction = _direction(net)
-            statement = (f"{what.capitalize()} {_verb(net)} by {fmt_number(abs(net))} in {_period_label(cur, every)} "
+            statement = (f"{what[:1].upper()}{what[1:]} {_verb(net)} by {fmt_number(abs(net))} in {_period_label(cur, every)} "
                          f"vs {_period_label(prev, every)}; {fmt_pct(abs(float(top['contribution_percent'] or 0)))} of the "
                          f"move came from {top.get(by[0])} ({_signed(top.get('change'))})")
         else:
@@ -251,6 +268,13 @@ def _contribution(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[
         raise ValueError("That table has no rows to break down")
     top = df.row(0, named=True)
     top3 = float(df["share_percent"].head(3).sum() or 0.0)
+    if stat not in ("sum", "count"):
+        # averages (medians, extremes) are not parts of a whole: say which group is highest, not a share
+        statement = f"{top.get(by[0])} has the highest {what.lower()} ({fmt_number(top.get('value'))})"
+        report = {"groups": df.height, "top": top.get(by[0]),
+                  "finding": finding("share", statement, magnitude=None, direction="flat", exact=True)}
+        return NodeResult(df.drop("share_percent", "cumulative_percent").lazy(), report=report,
+                          messages=[f"{df.height} {by[0]} groups; the highest is {top.get(by[0])}"])
     statement = f"{top.get(by[0])} is {fmt_pct(top.get('share_percent'))} of {what.lower()} ({fmt_number(top.get('value'))})"
     if df.height > 3:
         statement += f"; the top three are {fmt_pct(top3)}"
@@ -264,7 +288,7 @@ def _contribution(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[
 
 
 registry.register(NodeType(
-    key="contribution", label="What drives it", category="Analyse & model", icon="◐",
+    key="contribution", uses_labels=True, label="What drives it", category="Analyse & model", icon="◐",
     description="Break a total (or a change) down into what each group contributes: the biggest contributor, "
                 "its share, and how concentrated the whole is.",
     apply=_contribution,
@@ -354,7 +378,9 @@ def _associations(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[
             value, kind, label = _pearson(df, a, b), "straight line", "r"
         elif ka == NUM or kb == NUM:
             cat, num = (b, a) if ka == NUM else (a, b)
-            value, kind, label = _eta_squared(df, cat, num), "group difference", "eta²"
+            e2 = _eta_squared(df, cat, num)
+            # eta (the root of eta²) is on the same scale as r, so the two rank fairly against each other
+            value, kind, label = (math.sqrt(e2) if e2 is not None else None), "group difference", "eta"
         else:
             value, kind, label = _cramers_v(df, a, b), "association", "V"
         if value is None:
@@ -382,7 +408,7 @@ def _associations(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[
 
 
 registry.register(NodeType(
-    key="associations", label="What relates to what", category="Analyse & model", icon="∞",
+    key="associations", uses_labels=True, label="What relates to what", category="Analyse & model", icon="∞",
     description="Rank how strongly the columns move together: straight-line relationships between numbers, "
                 "differences between groups, and associations between categories.",
     apply=_associations,
@@ -418,7 +444,7 @@ def _check_data(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[st
     for i, c in enumerate(cols):
         dt = schema[c]
         miss = int(row[f"miss{i}"] or 0)
-        distinct = int(row[f"u{i}"] or 0)
+        distinct = min(int(row[f"u{i}"] or 0), rows - int(row[f"miss{i}"] or 0))    # an estimate: never above the values
         pct = (100.0 * miss / rows) if rows else 0.0
         issues: list[tuple[int, str]] = []
         if rows and miss == rows:
@@ -446,6 +472,32 @@ def _check_data(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[st
         if dt.is_numeric():
             entry["minimum"], entry["maximum"] = row.get(f"lo{i}"), row.get(f"hi{i}")
         out_rows.append(entry)
+    # a calculated column that one or two rows break: almost always a typing slip, and worth more than any blank
+    broken: list[str] = []
+    try:
+        from ..derived import find
+        num = [c for c in cols if schema[c].is_numeric()]
+        derived = find(lf.select(num).head(5_000).collect(engine="streaming"), num) if len(num) >= 2 else []
+    except Exception:  # noqa: BLE001 - a bonus check never fails the step
+        derived = []
+    naming = [c for c in cols if (kind_of_dtype(schema[c]) == STR or schema[c].is_integer())][:2]
+    for d in derived:
+        if not d.breaks:
+            continue
+        b = d.breaks[0]
+        names = [c for c in naming if c not in d.operands and c != d.target]
+        said = ""
+        if names:
+            vals = lf.select(names).slice(b["row"], 1).collect(engine="streaming").row(0, named=True)
+            said = " (" + ", ".join(f"{_label(ctx, c)} {v}" for c, v in vals.items() if v is not None) + ")"
+        where = f"row {b['row'] + 1}{said}" + (f" and {len(d.breaks) - 1} more" if len(d.breaks) > 1 else "")
+        text = (f"{d.target} is {d.words} on {d.holds} of {d.rows} rows; {where} says {fmt_number(b['value'], 6)}, where the rule "
+                f"gives {fmt_number(b['expected'], 6)}")
+        broken.append(f"{_label(ctx, d.target)}: {where} says {fmt_number(b['value'], 6)} where {d.words} gives "
+                      f"{fmt_number(b['expected'], 6)}")
+        for e in out_rows:
+            if e["column"] == d.target:
+                e["issue"], e["severity"] = text, 3
     out = pl.DataFrame(out_rows).sort(["severity", "missing_percent"], descending=[True, True])
     dup = None
     if rows and len(cols) <= 30 and rows <= 5_000_000:
@@ -454,7 +506,10 @@ def _check_data(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[st
             dup = rows - distinct
         except Exception:  # noqa: BLE001 - duplicate detection is a bonus, never a failure
             dup = None
-    if problems:
+    if broken:
+        statement = "A calculated value looks mistyped. " + "; ".join(broken[:2]) + (
+            f". Also {len(problems)} column{'s' if len(problems) != 1 else ''} with blanks or misread values" if problems else "")
+    elif problems:
         statement = (f"{len(problems)} of {len(cols)} columns need a look: " + "; ".join(problems[:3])
                      + (f" and {len(problems) - 3} more" if len(problems) > 3 else ""))
     elif dup:
@@ -462,16 +517,18 @@ def _check_data(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[st
     else:
         statement = f"The data looks clean: no blanks, duplicates or misread numbers ({len(cols)} columns, {rows:,} rows)"
     report = {"rows": rows, "columns": len(cols), "problems": len(problems), "duplicate_rows": dup,
-              "finding": finding("quality", statement, magnitude=len(problems), direction="flat", exact=True,
-                                 duplicate_rows=dup)}
+              "calculated": [d.to_dict() for d in derived],
+              "finding": finding("quality", statement, magnitude=len(problems) + 3 * len(broken), direction="flat",
+                                 exact=True, duplicate_rows=dup)}
     return NodeResult(out.lazy(), report=report,
                       messages=[f"{rows:,} rows, {len(cols)} columns; {len(problems)} need a look"])
 
 
 registry.register(NodeType(
-    key="check_data", label="Check the data", category="Clean up", icon="⚑",
+    key="check_data", uses_labels=True, label="Check the data", category="Clean up", icon="⚑",
     description="One pass over every column: blanks, duplicates, values that are really numbers stored as text, "
-                "columns with a single value. Says what is worth a look.",
+                "columns with a single value, and calculated columns (D = PA − LA) with a row that breaks the rule. "
+                "Says what is worth a look.",
     apply=_check_data,
     summary=lambda p: f"{len(p['columns'])} columns" if p.get("columns") else "every column",
     params=[Param("columns", "Columns", "columns", default=[], help="Empty = all")],
@@ -545,6 +602,8 @@ def _forecast(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str,
     else:
         span = max((head["hi"] - head["lo"]).total_seconds(), 0.0)
         step = _nice_step(span / max(n - 1, 1))
+        if isinstance(schema[t], pl.Date) and parse_bucket(step)[1] < 86400:
+            step = "1d"                                # dates hold no time of day: 6 hours on from a date is the same date
     from ..fits import fit_frame
     fit = fit_frame(prep, "__t", "__y", "linear")[0]
     a, b = float(fit.params[0]), float(fit.params[1])
@@ -566,8 +625,8 @@ def _forecast(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str,
     z = 1.96
     lower = [p - z * rmse for p in preds]
     upper = [p + z * rmse for p in preds]
-    lower_name = temp_name(f"{col}_lower", schema)
-    upper_name = temp_name(f"{col}_upper", schema)
+    lower_name = f"{col}_lower" if f"{col}_lower" not in (t, col) else temp_name(f"{col}_lower", schema)
+    upper_name = f"{col}_upper" if f"{col}_upper" not in (t, col) else temp_name(f"{col}_upper", schema)
     future = pl.DataFrame({t: vals, col: preds, lower_name: lower, upper_name: upper})
     step_secs = parse_bucket(step)[1]
     per_step = a * step_secs
@@ -591,7 +650,7 @@ def _forecast(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str,
 
 
 registry.register(NodeType(
-    key="forecast", label="Project forward", category="Time", icon="↗",
+    key="forecast", uses_labels=True, label="Project forward", category="Time", icon="↗",
     description="Continue a value forward in time from its trend (and its usual day/week/month pattern), with a "
                 "band that says how sure the projection is. Says when a threshold would be crossed.",
     apply=_forecast,

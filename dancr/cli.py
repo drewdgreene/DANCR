@@ -97,9 +97,12 @@ def _params_from_args(a: argparse.Namespace) -> dict[str, Any]:
     params = _parse_kv(getattr(a, "set", []) or [])
     if getattr(a, "params", None):
         try:
-            params.update(json.loads(a.params))
+            given = json.loads(a.params)
         except json.JSONDecodeError as e:
             raise CliError(f"--params is not valid JSON: {e}") from e
+        if not isinstance(given, dict):
+            raise CliError('--params must be a JSON object of settings, like \'{"path": "data.csv"}\'')
+        params.update(given)
     return params
 
 
@@ -379,7 +382,8 @@ def cmd_status(a: argparse.Namespace) -> None:
     p = _load(a.pipeline)
     ex = Executor(p)
     nodes = [_check_node(p, a.node)] if a.node else list(p.nodes)
-    states = {n: ex.state(n) for n in nodes}
+    memo: dict[str, str] = {}                   # each step's hash once, not again for every step below it
+    states = {n: ex.state(n, memo) for n in nodes}
     if a.json:                                  # one step: its record (as MCP node_status); all: keyed by id
         _print(a, hl.node_record(p, states[a.node]) if a.node else {n: hl.node_record(p, s) for n, s in states.items()})
         return
@@ -456,6 +460,7 @@ def cmd_chart(a: argparse.Namespace) -> None:
     from .views.render import render_chart
     p = _load(a.pipeline)
     ex = Executor(p)
+    _check_node(p, a.node)
     params = hl.chart_params(p.nodes[a.node], a.kind, a.x, a.y.split(",") if a.y else None, a.column, a.title)
     with _frame(a, p, ex, a.node) as lf:
         out = render_chart(lf, params, a.out, width=a.width, height=a.height, columns=p.columns, inputs=p.input_values())

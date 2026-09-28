@@ -130,7 +130,7 @@ def line_data(lf: pl.LazyFrame, x: str | None, ys: list[str], x_range: tuple[flo
             raise ValueError(f"There is no column called {y!r}")
         if kind_of_dtype(schema[y]) != NUM:
             raise ValueError(f"{y} is not a number column")
-    base = lf if x is not None else lf.with_row_index("__row")
+    base = lf if x is not None or "__row" in lf.collect_schema() else lf.with_row_index("__row")
     xe, xkind = _x_expr(schema, x)
     lo, hi, total = bounds if bounds is not None else x_bounds(lf, x)
     axis = Axis(x, xkind, lo, hi)
@@ -264,18 +264,45 @@ class BarData:
     labels: list[str]
     values: np.ndarray
     stat: str
+    errors: np.ndarray | None = None      # half the length of each error bar
+    error: str = ""                       # what the error bars show: se | sd | ci95
+    total: int = 0                        # categories in all (more than the bars when some are left out)
 
 
-def bar_data(lf: pl.LazyFrame, category: str, value: str | None, stat: str = "mean", top: int = 60) -> BarData:
+ERROR_WORDS = {"se": "± standard error", "sd": "± standard deviation", "ci95": "95% confidence interval"}
+
+
+def bar_data(lf: pl.LazyFrame, category: str, value: str | None, stat: str = "mean", top: int = 60,
+             error: str = "") -> BarData:
+    """One bar per category. With ``error`` (averages only) each bar also gets an error bar, and the bars keep the
+    order the groups first appear in, as a comparison of groups is read."""
     from ..core.nodes._common import stat_expr
     from .table import format_value
     if value and stat != "count":
-        agg = stat_expr(value, stat).alias("__v")
+        agg = [stat_expr(value, stat).alias("__v")]
     else:
-        agg = pl.len().alias("__v")
+        agg = [pl.len().alias("__v")]
         stat = "count"
-    df = _collect(lf.group_by(category).agg(agg).sort("__v", descending=True).head(top))
-    return BarData([format_value(v) for v in df[category].to_list()], df["__v"].cast(pl.Float64).to_numpy(), stat)
+    error = error if (error in ERROR_WORDS and stat == "mean" and value) else ""
+    if error:
+        x = pl.col(value).cast(pl.Float64).fill_nan(None)
+        agg += [x.std().alias("__sd"), x.count().alias("__n")]
+    q = lf.with_row_index("__order").group_by(category).agg(agg + [pl.col("__order").min().alias("__first")]) \
+        .with_columns(pl.len().alias("__cats"))
+    df = _collect((q.sort("__first") if error else q.sort("__v", descending=True, nulls_last=True)).head(top))
+    errors = None
+    if error:
+        sd, n = df["__sd"].fill_null(0.0).to_numpy(), df["__n"].to_numpy().astype(float)
+        se = np.where(n > 0, sd / np.sqrt(np.maximum(n, 1)), 0.0)
+        if error == "sd":
+            errors = sd
+        elif error == "se":
+            errors = se
+        else:
+            from scipy import stats
+            errors = se * np.array([stats.t.ppf(0.975, k - 1) if k > 1 else 0.0 for k in n])
+    return BarData([format_value(v) for v in df[category].to_list()], df["__v"].cast(pl.Float64).to_numpy(), stat,
+                   errors, error, int(df["__cats"][0]) if df.height else 0)
 
 
 def group_values(lf: pl.LazyFrame, column: str, limit: int = 12) -> list[Any]:
@@ -288,13 +315,13 @@ def group_values_info(lf: pl.LazyFrame, column: str, limit: int = 12) -> tuple[l
     Ties in frequency are broken by the value, so the same data always shows the same groups.
     Only the shown groups (with the totals over all groups) leave the query: a column with a hundred million
     distinct values never becomes a hundred-million-row frame here."""
-    df = _collect(lf.group_by(column).agg(pl.len().alias("n"))
+    df = _collect(lf.group_by(column).agg(pl.len().alias("__n"))
                   .with_columns(pl.col(column).cast(pl.Utf8).alias("__k"),
-                                pl.len().alias("__groups"), pl.col("n").sum().alias("__rows"))
-                  .sort(["n", "__k"], descending=[True, False], nulls_last=True)
+                                pl.len().alias("__groups"), pl.col("__n").sum().alias("__rows"))
+                  .sort(["__n", "__k"], descending=[True, False], nulls_last=True)
                   .head(max(1, limit)))
     if df.height == 0:
         return [], 0, 0
     shown = df.head(limit)
     return (shown[column].to_list(), int(df["__groups"][0]) - shown.height,
-            int(df["__rows"][0]) - int(shown["n"].sum() or 0))
+            int(df["__rows"][0]) - int(shown["__n"].sum() or 0))

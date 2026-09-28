@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import uuid
@@ -119,7 +120,7 @@ def _coerce_input(v: Any) -> Any:
 def _num(v: Any, default: float = 0.0) -> float:
     try:
         f = float(v)
-        return f if f == f else default
+        return f if math.isfinite(f) else default
     except (TypeError, ValueError):
         return default
 
@@ -230,7 +231,8 @@ class Pipeline:
     def new_id(self, type_key: str) -> str:
         base = type_key
         n = 1
-        while f"{base}_{n}" in self.nodes:
+        taken = {k.lower() for k in self.nodes}
+        while f"{base}_{n}".lower() in taken:
             n += 1
         return f"{base}_{n}"
 
@@ -243,6 +245,9 @@ class Pipeline:
             raise PipelineError(f"Invalid node id {node_id!r}")
         if node_id in self.nodes:
             raise PipelineError(f"Step id {node_id!r} already exists")
+        same = next((k for k in self.nodes if k.lower() == node_id.lower()), None)
+        if same is not None:                  # a Mac or Windows disk keeps both results in one folder
+            raise PipelineError(f"Step id {node_id!r} differs from {same!r} only in capitals. Choose another id")
         node = Node(id=node_id, type=type_key, title=title or nt.label, x=x, y=y,
                     params=nt.normalize_params(params or {}, strict=strict))
         self.nodes[node_id] = node
@@ -526,7 +531,8 @@ class Pipeline:
                 node.params = rebase_params(node.type, node.params, old_dir, new_dir)
 
     def dumps(self) -> str:
-        return json.dumps(self.to_dict(), indent=2, ensure_ascii=False) + "\n"
+        from .dtypes import json_safe                 # a NaN or infinity typed into a setting is not JSON: blank it
+        return json.dumps(json_safe(self.to_dict()), indent=2, ensure_ascii=False, allow_nan=False) + "\n"
 
     def save(self, path: Path | str | None = None, auto: bool = False) -> Path:
         """Write the project atomically, keeping the file it replaces as an earlier version. ``auto`` marks
@@ -575,7 +581,7 @@ class Pipeline:
 
     @staticmethod
     def versions_dir(path: Path) -> Path:
-        return path.parent / ".dancr" / "versions" / path.stem
+        return path.parent / ".dancr" / "versions" / path.name      # p.json and p.txt keep histories of their own
 
     @classmethod
     def _keep_version(cls, target: Path) -> None:

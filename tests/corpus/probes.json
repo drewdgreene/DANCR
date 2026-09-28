@@ -30,7 +30,7 @@
   "trend: Average pressure (bar) per 30 seconds",
   "change: Average pressure (bar): latest 5 minutes vs the one before",
   "relationship: temperature against pressure (bar)",
-  "drivers: How logger_site_A's columns move together",
+  "drivers: How the columns of logger_site_A move together",
   "gaps: Gaps in logger_site_A",
   "stacked: A, B in one table",
   "forecast: Where pressure (bar) is heading"

@@ -35,7 +35,9 @@ log = logging.getLogger("dancr.ui")
 RECIPE_ICONS = {"compare": "arrows-merge", "trend": "trend-up", "breakdown": "sigma", "top": "sort-ascending",
                 "relationship": "chart-scatter", "gaps": "circle-dashed", "outliers": "warning-circle",
                 "single": "function", "distribution": "wave-sine", "linked": "columns", "stacked": "rows",
-                "rows": "funnel", "describe": "list-bullets"}
+                "rows": "funnel", "describe": "list-bullets", "groups": "columns", "quality": "warning-circle",
+                "toprows": "sort-ascending", "change": "clock-counter-clockwise", "explain": "sigma", "drivers": "chart-scatter",
+                "forecast": "trend-up"}
 PREVIEW_ROWS = 20_000
 
 
@@ -461,7 +463,8 @@ class AskBar(QFrame):
         m = self.u.model
         if m is None:
             self._set_message("Still reading your tables. Ask again in a moment."); return
-        a = ask(m, text)
+        from ..core import memory
+        a = ask(m, text, aliases=memory.aliases(self.u.doc.pipeline))      # the words this project has learned
         if not a.ok:
             hints = " ".join(f'<a href="{h}">{h}</a>' for h in a.hints)
             self._set_message(a.message.split(" Did you mean")[0] + (f" Did you mean: {hints}" if hints else ""), error=True)
@@ -571,7 +574,10 @@ class AnswerPanel(QFrame):
         n = len(a.assumptions)
         self.assume_btn.setText(f"{n} assumption{'s' if n != 1 else ''}" if n else "")
         self.assume_btn.setVisible(bool(n))
-        menu = QMenu(self.assume_btn)
+        menu = getattr(self, "_assume_menu", None)
+        if menu is None:                               # one menu, refilled: a new one per refresh was never freed
+            menu = self._assume_menu = QMenu(self.assume_btn)
+        menu.clear()
         for x in a.assumptions:
             head = menu.addAction(x["text"]); head.setEnabled(False)
             for ch in x.get("choices") or []:

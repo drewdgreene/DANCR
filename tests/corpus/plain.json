@@ -14,7 +14,7 @@
  "relations": [],
  "suggestions": [
   "relationship: weight against length",
-  "drivers: How parts's columns move together",
+  "drivers: How the columns of parts move together",
   "distribution: Spread of length",
   "single: Average length",
   "describe: What is in parts",

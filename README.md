@@ -23,9 +23,18 @@ The app is self-contained. You don't need to install anything else first.
 
 - Opens large CSV, text, Excel or Parquet files as a table you can sort,
   filter and search, with statistics for each column.
+- Reads spreadsheets laid out for people, not machines: title lines, tables side
+  by side under banners, blocks under their own titles, labels written once per
+  run, AVERAGE and Total rows under the data (checked against the data, then left
+  out), and several tables on one sheet.
 - Works out how a pile of spreadsheets fits together when you drop them on the
   window: which files link on a key, which are one table split up, and which
   logs record the same thing. It then offers answers it can build right away.
+- Knows a small study when it sees one (sun and shade leaves, treated and control
+  plots, before and after) and compares the groups: averages, spreads, standard
+  errors, the right test and why, how big the difference is, values unusual for
+  their group, and when a difference is only down to size. A calculated column
+  with a mistyped value is pointed out, and fixed with one click.
 - Answers questions typed in your own words, like "total sales by region" or
   "average pressure per hour". It builds the steps, tells you what it assumed,
   and lets you change any choice. The same files and the same question always

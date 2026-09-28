@@ -344,7 +344,7 @@ class Grid(QWidget):
         if not self.can_fix_values():
             f.setEnabled(False)
             f.setText("Fix this value… (run this step first, since the preview only shows a sample)")
-        sel_cols = sorted({i.column() for i in self.table.selectionModel().selectedIndexes()})
+        sel_cols = self.selected_span()[1]
         nums = [self.model.pager.columns[i] for i in sel_cols if self.model.pager.kinds.get(self.model.pager.columns[i]) == NUM]
         if len(nums) >= 1:
             m.addSeparator()
@@ -356,13 +356,35 @@ class Grid(QWidget):
         m.exec(self.table.viewport().mapToGlobal(pos))
 
     # ---- clipboard
+    def selected_span(self) -> tuple[list[int] | range, list[int]]:
+        """The selected rows and columns, read from the selection's ranges: a whole column of 50 million rows is
+        one range, not 50 million indexes. Rows are one range when they are contiguous."""
+        sm = self.table.selectionModel()
+        ranges = list(sm.selection()) if sm is not None else []
+        if not ranges:
+            return [], []
+        cols = sorted({c for r in ranges for c in range(r.left(), r.right() + 1)})
+        spans = sorted((r.top(), r.bottom()) for r in ranges)
+        if len(spans) == 1 or all(b[0] <= a[1] + 1 for a, b in zip(spans, spans[1:])):
+            return range(spans[0][0], max(b for _, b in spans) + 1), cols
+        rows: set[int] = set()
+        for top, bottom in spans:
+            rows.update(range(top, min(bottom + 1, top + COPY_MAX_ROWS + 1)))
+            if len(rows) > COPY_MAX_ROWS:
+                break
+        return sorted(rows), cols
+
+    def has_selection(self) -> bool:
+        sm = self.table.selectionModel()
+        return sm is not None and sm.hasSelection()
+
     def copy_selection(self) -> None:
         if not self.model.pager:
             return
-        sel = self.table.selectionModel().selectedIndexes()
-        if not sel:
+        rows, cols = self.selected_span()
+        if not cols:
             return
-        self._copy_rows(sorted({i.row() for i in sel}), sorted({i.column() for i in sel}))
+        self._copy_rows(rows, cols)
 
     def copy_all_visible(self) -> None:
         """Copy the table (up to COPY_MAX_ROWS rows) without selecting every row: selecting 50 million rows

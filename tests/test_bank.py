@@ -80,9 +80,9 @@ def test_complete_lists_canonical_phrasings_starting_with_the_prefix(model):
 
 
 def test_ask_falls_back_to_the_bank_when_the_grammar_cannot_read(model):
-    a = ask(model, "How orders's columns move together")
+    a = ask(model, "How the columns of orders move together")
     assert a.ok and a.source == "matched"
-    assert a.matched == "How orders's columns move together"
+    assert a.matched == "How the columns of orders move together"
     assert a.spec == {"table": "orders", "recipe": "drivers"}
     plan(model, a.spec)
 

@@ -1016,21 +1016,48 @@ class MainWindow(QMainWindow):
         self._add_files(files)
 
     def _add_files(self, files: list[str]) -> None:
-        """Load each file (as one undo step), show the first, and let the tray offer answers about them all."""
+        """Load each file (as one undo step), show the first, and let the tray offer answers about them all. A big
+        workbook is looked through for its tables on a worker, so the window stays responsive meanwhile."""
         if not files:
             return
-        from ..core.nodes.load import tables_in
-        with self.doc.macro("Open data" if len(files) == 1 else f"Open {len(files)} files"):
-            ids = [self._add_load_node(f, None, run=False, show=False, sheet=extra.get("sheet"), title=title)
-                   for f in files for title, extra in tables_in(f)]
+        from ..core.nodes.load import tables_in, EXCEL_EXT
+
+        def listed() -> list[tuple[str, str, dict]]:
+            return [(f, title, extra) for f in files for title, extra in tables_in(f)]
+
+        def big(f: str) -> bool:
+            try:
+                return Path(f).suffix.lower() in EXCEL_EXT and Path(f).stat().st_size > 2_000_000
+            except OSError:
+                return False
+        if not any(big(f) for f in files):
+            self._add_listed(listed())
+            return
+        from .workers import Task
+        self.status.showMessage(f"Looking through {Path(next(f for f in files if big(f))).name}…")
+        t = Task(listed)
+        t.waits_for_run = False                        # reads only the files dropped, never a result being written
+        pending = getattr(self, "_listing", None)
+        if pending is None:
+            pending = self._listing = set()
+        pending.add(t)                                 # kept until it reports, so every drop is added, in order
+        t.signals.done.connect(lambda r, t=t: (pending.discard(t), self._add_listed(r)))
+        t.signals.failed.connect(lambda m, t=t: (pending.discard(t), self.status.showMessage(f"Could not open the files: {m}", 8000)))
+        view_pool().start(t)
+
+    def _add_listed(self, tables: list[tuple[str, str, dict]]) -> None:
+        if not tables:
+            return
+        with self.doc.macro("Open data" if len(tables) == 1 else f"Open {len(tables)} tables"):
+            ids = [self._add_load_node(f, None, run=False, show=False, extra=extra, title=title) for f, title, extra in tables]
         if not self.doc.auto_run and not self.doc.running:
             self.run(ids)
         self.show_node(ids[0])
         if len(ids) > 1:
-            self.status.showMessage(f"Opened {len(ids)} files. The answers above cover all of them", 8000)
+            self.status.showMessage(f"Opened {len(ids)} tables. The answers above cover all of them", 8000)
 
     def _add_load_node(self, path: str, pos: QPointF | None, run: bool = True, show: bool = True,
-                       sheet: str | None = None, title: str | None = None) -> str:
+                       extra: dict | None = None, title: str | None = None) -> str:
         p = Path(path)
         rel = p
         if self.doc.path:
@@ -1041,7 +1068,7 @@ class MainWindow(QMainWindow):
         self.scene.clearSelection()
         if pos is None:
             pos = self._source_position()
-        params = {"path": str(rel), **({"sheet": sheet} if sheet else {})}
+        params = {"path": str(rel), **{k: v for k, v in (extra or {}).items() if v not in (None, "")}}
         nid = self.add_node("load_file", pos, params=params, title=title or p.stem, connect_from=None, show=show)
         if run and not self.doc.auto_run and not self.doc.running:
             self.run([nid])

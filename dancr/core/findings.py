@@ -64,7 +64,7 @@ def interest(f: dict[str, Any]) -> float:
     return base * bonus * max(conf, 0.05)
 
 
-_KIND_WEIGHT = {"limit": 3.0, "quality": 2.5, "gaps": 2.0, "outliers": 2.0, "change": 1.5, "forecast": 1.3,
+_KIND_WEIGHT = {"limit": 3.0, "quality": 2.5, "gaps": 2.0, "outliers": 2.0, "groups": 2.0, "change": 1.5, "forecast": 1.3,
                 "association": 1.0, "share": 1.0, "fit": 0.9, "summary": 0.5, "rhythm": 0.8}
 
 

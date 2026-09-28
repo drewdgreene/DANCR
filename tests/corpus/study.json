@@ -1,0 +1,42 @@
+{
+ "tables": {
+  "Leaves & Light Data Sheet": {
+   "shape": "events",
+   "rows": 30,
+   "time": null,
+   "columns": {
+    "N - Leaf": "id",
+    "group": "category",
+    "Leaf area (LA) cm2": "measure",
+    "polygon area (PA) cm2": "measure",
+    "D": "measure",
+    "m (g)": "measure",
+    "m/LA x 10000 (g/m2)": "measure"
+   }
+  }
+ },
+ "relations": [],
+ "suggestions": [
+  "groups: Shade and Sun compared",
+  "quality: Check Leaves & Light Data Sheet",
+  "relationship: polygon area (PA) cm2 against Leaf area (LA) cm2",
+  "drivers: How the columns of Leaves & Light Data Sheet move together",
+  "breakdown: Average Leaf area (LA) cm2 by group",
+  "explain: What drives leaf area (la) cm2: group",
+  "distribution: Spread of Leaf area (LA) cm2",
+  "describe: What is in Leaves & Light Data Sheet"
+ ],
+ "questions": {
+  "compare sun and shade leaves": "Shade and Sun compared",
+  "is there a difference between sun and shade": "Shade and Sun compared",
+  "is leaf mass per area higher in sun leaves": "Shade and Sun compared on m/LA x 10000 (g/m2)",
+  "t test leaf area": "Shade and Sun compared on Leaf area (LA) cm2",
+  "average leaf area": "Average Leaf area (LA) cm2",
+  "standard deviation of mass": "Standard deviation of m (g)",
+  "average D": "Average D",
+  "which leaf is biggest": "Biggest leaf (by Leaf area (LA) cm2)",
+  "check the data": "Check Leaves & Light Data Sheet",
+  "relationship between mass and leaf area": "m (g) against Leaf area (LA) cm2",
+  "unusual leaves": "Unusual leaves"
+ }
+}

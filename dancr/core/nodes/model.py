@@ -49,7 +49,7 @@ def _fit(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, Any]
         how = f"R² {f.r2:.3f}" if f.r2 is not None else "fit quality unknown"
         report["finding"] = finding("fit", f"{column_title(ctx, y)} tracks {column_title(ctx, x)}: {f.equation} "
                                             f"({how}, typical error {fmt_number(f.rmse)}, {f.n:,} points)",
-                                    magnitude=f.r2, direction=("up" if f.params[0] >= 0 else "down"), exact=True)
+                                    magnitude=f.r2, direction=_direction_of(f), exact=True)
     else:
         known = [f for f in fits if f.r2 is not None]
         best = max(known, key=lambda f: f.r2) if known else fits[0]
@@ -60,8 +60,19 @@ def _fit(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, Any]
     return NodeResult(out, report=report, messages=msgs)
 
 
+def _direction_of(f) -> str:
+    """Up or down across the data's x range, from the fitted curve itself (a polynomial's first parameter is where
+    it is centred, not its slope)."""
+    from ..fits import curve_points
+    try:
+        _cx, cy = curve_points(f)
+        return "up" if cy[-1] >= cy[0] else "down"
+    except Exception:  # noqa: BLE001 - a curve that cannot be drawn has no direction to tell
+        return "flat"
+
+
 registry.register(NodeType(
-    key="fit_curve", label="Fit a curve", category="Analyse & model", icon="≈",
+    key="fit_curve", uses_labels=True, label="Fit a curve", category="Analyse & model", icon="≈",
     description="Find the relationship between two columns (straight line, levelling-off curve, exponential…). "
                 "Adds fitted and residual columns and reports the equation and how well it fits.",
     apply=_fit,
@@ -187,13 +198,13 @@ def _limits(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, A
     elif bad == 0:
         say = f"All {checked:,} {column_title(ctx, col)} values are within {limit_txt}"
     else:
-        say = f"{bad:,} of {checked:,} {column_title(ctx, col)} values ({fmt_pct(report['outside_percent'])}%) are outside {limit_txt}"
+        say = f"{bad:,} of {checked:,} {column_title(ctx, col)} values ({fmt_pct(report['outside_percent'])}) are outside {limit_txt}"
     report["finding"] = finding("limit", say, magnitude=report["outside_percent"], direction="up", exact=True)
     return NodeResult(out, report=report, messages=msgs)
 
 
 registry.register(NodeType(
-    key="check_limits", label="Check against limits", category="Analyse & model", icon="✓",
+    key="check_limits", uses_labels=True, label="Check against limits", category="Analyse & model", icon="✓",
     description="Mark each row as within or outside a limit and report how many fail. Limits can be numbers or the names of inputs.",
     apply=_limits,
     summary=lambda p: f"{p.get('column') or '?'} " + " and ".join(t for t in [f"≥ {p['min']}" if p.get("min") not in (None, "") else "", f"≤ {p['max']}" if p.get("max") not in (None, "") else ""] if t),

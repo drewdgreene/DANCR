@@ -48,6 +48,12 @@ def correct(tokens: list[str], vocab: dict[tuple[str, ...], Any],
     never touched."""
     words = known_words(vocab)
     wordset = set(words)
+    # a near miss is only ever one of the project's own names (a column, a table, a value): "season" must not become
+    # the grammar word "reason" and change what is asked. A swapped pair of letters is a typo of any word
+    own = [w for w in words if any(getattr(m, "kind", "") in ("col", "table", "value") for m in vocab.get((w,), []))]
+    # a word that is part of one of the project's own names ('area' in 'leaf area') is a real word here: it is
+    # never "corrected" into something else ('are'); the refusal names the phrases it belongs to instead
+    inside = {w for k in vocab if len(k) > 1 for w in k}
     learned = {str(k).strip().lower(): str(v).strip() for k, v in (aliases or {}).items() if k and v}
     out: list[str] = []
     fixes: list[tuple[str, str]] = []
@@ -59,11 +65,11 @@ def correct(tokens: list[str], vocab: dict[tuple[str, ...], Any],
             out.append(learned[t])
             fixes.append((t, learned[t]))
             continue
-        if len(t) < MIN_LEN:
-            out.append(t)
+        if len(t) < MIN_LEN or t in inside or any(ch.isdigit() for ch in t):
+            out.append(t)                            # a word with digits in it (q3, top5) is never "corrected"
             continue
         swap = _transposition(t, wordset)
-        close = [swap] if swap else difflib.get_close_matches(t, words, n=1, cutoff=CUTOFF)
+        close = [swap] if swap else difflib.get_close_matches(t, own, n=1, cutoff=CUTOFF)
         if close and close[0] != t:
             out.append(close[0])
             fixes.append((t, close[0]))

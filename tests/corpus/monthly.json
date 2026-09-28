@@ -39,10 +39,10 @@
   "breakdown: Total sales by store",
   "change: Total sales: latest day vs the one before",
   "explain: What drives sales: store",
-  "drivers: How sales_2024-01's columns move together",
+  "drivers: How the columns of sales_2024-01 move together",
+  "groups: Hull, Leeds and York compared on sales",
   "stacked: 2024-01, 2024-02, 2024-03 in one table",
-  "forecast: Where sales is heading",
-  "distribution: Spread of sales"
+  "forecast: Where sales is heading"
  ],
  "questions": {
   "total sales by store": "Total sales by store",

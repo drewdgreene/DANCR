@@ -95,13 +95,22 @@ def run_record(p: Pipeline, ex: Executor, res: dict[str, NodeState], elapsed: fl
             "findings": found, "headline": finding_headline(found)}
 
 
+def registry_get(p: Pipeline, node_id: str):
+    from .core.registry import registry
+    return registry.get(p.nodes[node_id].type)
+
+
 @contextmanager
 def result_frame(p: Pipeline, ex: Executor, node_id: str, run: bool) -> Iterator[pl.LazyFrame]:
     """A step's output, running it first when `run` is set and it is not computed yet. The frame reads the stored
     result lazily, so the result is held (see ``Executor.hold``) until the block ends: another process's cache
     sweep must not delete it while it is being read."""
     require_node(p, node_id)
-    ex.hold({node_id: ex.safe_hash(node_id)})           # before looking for the result, as Executor.gc expects
+    # a step that stores nothing (a chart, a Save to file) is read from the result of a step above it: hold every
+    # step it depends on, so a cache sweep elsewhere cannot delete that result while it is read
+    held = {node_id} | (p.upstream_closure(node_id) if not registry_get(p, node_id).materialize else set())
+    memo: dict[str, str] = {}
+    ex.hold({n: ex.safe_hash(n, memo) for n in held})           # before looking for the result, as Executor.gc expects
     try:
         st = ex.state(node_id)
         if st.status != "done":

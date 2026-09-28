@@ -129,6 +129,9 @@ class FindingCard(QFrame):
             self._heading("Found")
             self._big(html.escape(str(fnd)))
             shown = True
+            if node_type == "compare_groups":        # every number's result, and what else it noticed
+                for m in msgs:
+                    self._text(m, muted=False)
         if st.status == "done" and node_type == "fit_curve" and rep.get("fits"):
             self._heading("Result · " + {"linear": "straight line", "polynomial": "curve", "saturating": "levels off", "exponential": "exponential",
                                          "power": "power law", "logarithmic": "logarithmic"}.get(rep.get("kind", ""), rep.get("kind", "")))

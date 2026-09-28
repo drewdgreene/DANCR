@@ -102,7 +102,7 @@ def _code_fingerprint() -> str:
     import numpy
     top = Path(__file__).resolve().parent.parent.parent
     h = hashlib.sha1(IMPL_VERSION.encode())
-    for lib in (pl.__version__, numpy.__version__, _version_of("fastexcel")):
+    for lib in (pl.__version__, numpy.__version__, *(_version_of(m) for m in ("fastexcel", "scipy", "matplotlib", "xlsxwriter"))):
         h.update(lib.encode())
     for f in engine_files():
         try:
@@ -242,6 +242,12 @@ def _content_sample(path: Path, size: int) -> str:
     """A cheap check of a source file's content, so a same-size replacement that kept the old modification
     time (``cp -p``, a restored backup) is noticed: a small file is hashed whole, a big one at its start,
     middle and end."""
+    import stat as _stat
+    try:
+        if not _stat.S_ISREG(path.stat().st_mode):
+            return "not a file"                  # a pipe or a device: reading it would wait, or take what it holds
+    except OSError:
+        return ""
     block = 64 * 1024
     h = hashlib.sha1()
     with open(path, "rb") as f:
@@ -340,6 +346,7 @@ class Executor:
             "src": self._source_fingerprint(nt, node.params),
             "values": self.inputs_used(node_id),
             "sink": self._sink_fingerprint(node_id, nt, node.params),
+            "labels": self.pipeline.columns if nt.uses_labels and nt.kind != "sink" else None,
         }
         h = hashlib.sha1(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()[:16]
         memo[node_id] = h

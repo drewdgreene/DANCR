@@ -52,6 +52,14 @@ def build(pipe, model: DataModel, spec: dict[str, Any], edits: Edits | None = No
     existing = pipe.answer(answer_id) if answer_id else None
     previous = existing.steps if existing is not None else None
     applied = apply_plan(pipe, plan, edits, previous, protected_nodes(pipe, answer_id))
+    if existing is not None:
+        # a step this answer built and no longer needs, kept because another answer uses it, becomes that answer's
+        # own, so it is removed with that answer rather than left behind with no answer to it
+        kept = {r.get("node") for r in applied.record.values()}
+        dropped = {k: r for k, r in (previous or {}).items() if r.get("node") in pipe.nodes and r.get("node") not in kept}
+        if dropped:
+            from types import SimpleNamespace
+            _hand_over(pipe, SimpleNamespace(id=existing.id, steps=dropped), set())
     fields = answer_fields(pipe, plan, applied.resolved, applied.record)
     if existing is None:
         a = pipe.add_answer(fields["title"], fields["terminal"], fields["x"], fields["y"], fields["view"], fields["spec"],

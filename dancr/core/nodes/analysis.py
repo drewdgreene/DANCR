@@ -38,6 +38,11 @@ def _outliers(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str,
     if action == "flag" and flag_name in schema:
         raise ValueError(f"There is already a column called {flag_name!r}. Choose another name for the flag column")
     bad_col = {c: temp_name(f"bad_{c}", schema) for c in cols}
+    by = [require_column(schema, c, "group column") for c in (params.get("by") or [])]
+    if by and method not in ("zscore", "iqr"):
+        raise ValueError("'Within each group' works with the z-score and interquartile-range methods")
+    within = (lambda x: x.over(by)) if by else (lambda x: x)          # noqa: E731 - each group against its own values
+    where = f" within each {', '.join(by)}" if by else ""
     flags = []
     msgs = []
     for c in cols:
@@ -45,15 +50,16 @@ def _outliers(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str,
         if method == "zscore":
             k = number_param(params, "threshold", 3, "The threshold", above=0)
             # a spread of (almost) nothing, as in a constant column, flags nothing rather than dividing by zero
-            spread = pl.max_horizontal(e.std(), e.mean().abs() * 1e-12)
-            bad = (e - e.mean()).abs() > k * spread
-            msgs.append(f"{c}: more than {k:g} standard deviations from the mean")
+            spread = pl.max_horizontal(within(e.std()), within(e.mean()).abs() * 1e-12)
+            bad = (e - within(e.mean())).abs() > k * spread
+            msgs.append(f"{c}: more than {k:g} standard deviations from the mean{where}")
         elif method == "iqr":
             k = number_param(params, "iqr_factor", 1.5, "The range factor", at_least=0)
-            q1, q3 = e.quantile(0.25, interpolation="linear"), e.quantile(0.75, interpolation="linear")   # QUARTILE.INC
+            q1 = within(e.quantile(0.25, interpolation="linear"))       # QUARTILE.INC
+            q3 = within(e.quantile(0.75, interpolation="linear"))
             iqr = q3 - q1
             bad = (e < q1 - k * iqr) | (e > q3 + k * iqr)
-            msgs.append(f"{c}: outside {k:g}× the interquartile range")
+            msgs.append(f"{c}: outside {k:g}× the interquartile range{where}")
         elif method == "rolling":
             n = int(number_param(params, "window", 51, "The rolling window", whole=True))
             if n < 3:
@@ -127,6 +133,8 @@ registry.register(NodeType(
         Param("action", "What to do with them", "choice", default="remove", choices=[
             ("remove", "Remove the rows"), ("blank", "Blank out the value"), ("flag", "Add a true/false column"), ("clip", "Clip to the range")]),
         Param("flag_column", "Flag column name", "text", default="is_outlier", visible_when={"action": "flag"}),
+        Param("by", "Within each", "columns", default=[], advanced=True, visible_when={"method": ["zscore", "iqr"]},
+              help="Judge each value against its own group (sun leaves against sun leaves), not the whole table"),
     ],
 ))
 
@@ -157,7 +165,7 @@ def _summarize(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str
 
 
 registry.register(NodeType(
-    key="summarize", label="Describe the columns", category="Analyse & model", icon="Σ",
+    key="summarize", uses_labels=True, label="Describe the columns", category="Analyse & model", icon="Σ",
     description="One row per column: count, missing, average, spread, minimum, quartiles, maximum.",
     apply=_summarize,
     summary=lambda p: f"{len(p['columns'])} columns" if p.get("columns") else "all columns",
@@ -189,10 +197,13 @@ def _group_summary(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict
             name = aggs[0].meta.output_name()
             rows = int(out.select(pl.len()).collect(engine="streaming")[0, 0])
             if 0 < rows <= 500:
-                df = out.select([by[0], name]).collect(engine="streaming")
+                df = out.select([by[0], name]).collect(engine="streaming").drop_nulls(name)
+                first = (params.get("aggregations") or [{}])[0].get("stats") or params.get("default_stats") or ["mean"]
+                stat = "rows" if count_col and name == count_col else (first[0] if first else "mean")
                 total = df[name].sum()
-                top = df.sort(name, descending=True).row(0, named=True)
-                share = (100.0 * float(top[name]) / float(total)) if total else None
+                top = df.sort(name, descending=True, nulls_last=True).row(0, named=True)
+                # a share of the whole only means something for what adds up: not for an average or a minimum
+                share = (100.0 * float(top[name]) / float(total)) if total and stat in ("sum", "count", "rows") else None
                 said = f"{top[by[0]]} is the largest {column_title(ctx, by[0])} by {name}"
                 if share is not None:
                     said += f" ({fmt_number(top[name])}, {fmt_pct(share)} of the total)"
@@ -203,7 +214,7 @@ def _group_summary(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict
 
 
 registry.register(NodeType(
-    key="group_summary", label="Totals by group", category="Analyse & model", icon="⊞",
+    key="group_summary", uses_labels=True, label="Totals by group", category="Analyse & model", icon="⊞",
     description="Like a pivot table, with one row per group and its averages, totals or counts.",
     apply=_group_summary,
     summary=lambda p: f"by {', '.join(p.get('by') or [])}" if p.get("by") else "whole table",

@@ -93,14 +93,14 @@ def _draw_panel(ax, cd: ChartData, params: dict[str, Any], columns, inputs, mdat
             # Groups too big to plot raw fall back to a density grid; draw the combined cloud as a
             # background so an all-density grouped scatter is not a blank panel.
             if d.mode == "density" and any(gd.mode == "density" for _, gd in cd.groups):
-                _draw_density(ax, d)
+                _draw_density(ax, d, tz)
             for gi, (g, gd) in enumerate(cd.groups):
                 if gd.mode == "raw":
                     ax.scatter(_to_dates(gd.x) if gd.x_kind == "time" else gd.x, gd.y, s=5, alpha=0.6, color=PALETTE[gi % len(PALETTE)], label=g)
         elif d.mode == "raw":
             ax.scatter(_to_dates(d.x) if d.x_kind == "time" else d.x, d.y, s=4, alpha=0.6, color=PALETTE[0])
         else:
-            _draw_density(ax, d)
+            _draw_density(ax, d, tz)
         for gi, (f, cx, cy) in enumerate(cd.fits):
             if cx is None:
                 ax.text(0.01, 0.99, f"fit: {f}", transform=ax.transAxes, va="top", fontsize=8, color="#b00")
@@ -114,14 +114,20 @@ def _draw_panel(ax, cd: ChartData, params: dict[str, Any], columns, inputs, mdat
         h = cd.hist
         ax.bar(h.edges[:-1], h.counts, width=np.diff(h.edges), align="edge", color=PALETTE[0], edgecolor="white", linewidth=0.3)
         ax.set_xlabel(_title(cd.ys[0], columns)); ax.set_ylabel("count")
+        from matplotlib.ticker import MaxNLocator
+        ax.yaxis.set_major_locator(MaxNLocator(integer=True))       # counts are whole numbers
         for lv, lab in limit_values(params, inputs):
             ax.axvline(lv, color="#dc2626", lw=1.1, ls=":", label=lab)
     else:
         b = cd.bar
-        ax.bar(range(len(b.labels)), b.values, color=PALETTE[0])
+        ax.bar(range(len(b.labels)), b.values, color=PALETTE[0], yerr=b.errors, capsize=5 if b.errors is not None else 0,
+               error_kw={"elinewidth": 1.2, "ecolor": "#333"})
         ax.set_xticks(range(len(b.labels)))
-        ax.set_xticklabels(b.labels, rotation=45, ha="right", fontsize=8)
+        ax.set_xticklabels(b.labels, rotation=45 if len(b.labels) > 4 else 0, ha="right" if len(b.labels) > 4 else "center", fontsize=8)
         ax.set_ylabel(f"{b.stat} of {cd.ys[0] if cd.ys else 'rows'}")
+        if b.error:
+            from .lod import ERROR_WORDS
+            ax.text(0.99, 0.99, f"error bars: {ERROR_WORDS[b.error]}", transform=ax.transAxes, ha="right", va="top", fontsize=8, color="#555")
     if cd.kind in ("line", "scatter"):
         for lv, lab in limit_values(params, inputs):
             ax.axhline(lv, color="#dc2626", lw=1.1, ls=":", label=lab)
@@ -139,9 +145,14 @@ def lod_break(x: np.ndarray, y: np.ndarray, breaks: bool) -> tuple[np.ndarray, n
     return lod.break_gaps(x, y) if breaks else (x, y)
 
 
-def _draw_density(ax, d) -> None:
-    """Draw a per-pixel density grid as a log-coloured image."""
+def _draw_density(ax, d, tz: str | None = None) -> None:
+    """Draw a per-pixel density grid as a log-coloured image; a time x in the same date units the raw points use."""
     x0, x1, y0, y1 = d.extent
+    if getattr(d, "x_kind", None) == "time":
+        import matplotlib.dates as mdates
+        x0, x1 = (float(v) for v in mdates.date2num(_wall_times(np.array([x0, x1]), tz)))
+        ax.xaxis_date()
+        ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(ax.xaxis.get_major_locator()))
     ax.imshow(np.log1p(d.density.T), origin="lower", aspect="auto", extent=(x0, x1, y0, y1), cmap="viridis")
 
 

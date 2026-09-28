@@ -22,8 +22,8 @@
  },
  "relations": [],
  "suggestions": [
-  "drivers: How stores's columns move together",
-  "drivers: How inventory's columns move together",
+  "drivers: How the columns of stores move together",
+  "drivers: How the columns of inventory move together",
   "distribution: Spread of units",
   "single: Total units",
   "describe: What is in stores",
