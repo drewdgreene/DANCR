@@ -93,6 +93,7 @@ class TableModel(QAbstractTableModel):
                 self.dataChanged.emit(self.index(top, 0), self.index(bottom, max(0, self.columnCount() - 1)))
         t = Task(pager.fetch_page, p)
         t.waits_for_run = False
+        t.quick = True
         t.signals.done.connect(done)
         t.signals.failed.connect(lambda m: self._pending.discard(p) if alive(self) else None)
         self._keep.add(t)

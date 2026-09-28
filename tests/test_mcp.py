@@ -157,6 +157,34 @@ def test_export_steps_cannot_point_at_a_source_file(project, tmp_path):
     assert "export_1" not in Pipeline.load(project).nodes
 
 
+def test_mcp_never_writes_into_the_dancr_folder(project, tmp_path):
+    srv.run_pipeline(str(project))
+    cached = next((tmp_path / ".dancr" / "cache").rglob("*.parquet"))
+    before = cached.read_bytes()
+    for bad in (str(cached.relative_to(tmp_path)), ".DANCR/cache/x.csv", "sub/.dancr/x.csv"):
+        with pytest.raises(ToolError, match=".dancr folder"):
+            srv.export_node(str(project), "src", bad)
+    with pytest.raises(ToolError, match=".dancr folder"):
+        srv.render_chart(str(project), "src", out_png=".dancr/x.png", x="a", y=["a"])
+    with pytest.raises(ToolError, match=".dancr folder"):
+        srv.add_node(str(project), "export", {"path": ".dancr/out.csv"}, after="src")
+    with pytest.raises(ToolError, match=".dancr folder"):
+        srv.create_pipeline(str(tmp_path / ".dancr" / "versions" / "p" / "x.json"))
+    assert cached.read_bytes() == before
+
+
+def test_steps_run_from_mcp_cannot_write_into_the_dancr_folder(tmp_path):
+    from dancr.core.executor import Executor
+    p = Pipeline()
+    p.add_node("enter_data", id="d", params={"columns": [{"name": "a", "type": "number"}], "rows": [[1]]})
+    p.add_node("export", id="ex", params={"path": ".dancr/out.csv"})
+    p.connect("d", "ex")
+    p.save(tmp_path / "p.json")
+    st = Executor(p, output_root=tmp_path).run()["ex"]
+    assert st.status == "failed" and ".dancr folder" in st.error
+    assert not (tmp_path / ".dancr" / "out.csv").exists()
+
+
 def test_a_step_changed_elsewhere_is_refused_before_it_runs(project, tmp_path):
     p = Pipeline.load(project)                          # e.g. edited by hand or by the command line
     p.add_node("export", params={"path": "data/source.csv"}, id="x"); p.connect("src", "x")
@@ -202,7 +230,8 @@ def test_main_refuses_home_and_drive_roots_only_without_root(tmp_path, monkeypat
     ran = []
     monkeypatch.setattr(srv.mcp, "run", lambda transport: ran.append(transport))
     monkeypatch.setattr(srv, "ROOT_REFUSED", False)
-    for start, refused in ((Path.home(), True), (Path(Path.home().anchor), True), (tmp_path, False)):
+    for start, refused in ((Path.home(), True), (Path.home().parent, True), (Path(Path.home().anchor), True),
+                           (tmp_path, False)):
         monkeypatch.setattr(srv, "ROOT", start.resolve())
         srv.main()
         assert srv.ROOT_REFUSED is refused, start

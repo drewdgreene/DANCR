@@ -397,7 +397,8 @@ def cmd_status(a: argparse.Namespace) -> None:
                 print(f"      {k}: {v}")
 
 
-def _frame(a: argparse.Namespace, p: Pipeline, ex: Executor, node: str) -> pl.LazyFrame:
+def _frame(a: argparse.Namespace, p: Pipeline, ex: Executor, node: str):
+    """A step's output, held while the block reads it (``headless.result_frame``)."""
     _check_node(p, node)
     if ex.state(node).status != "done" and not getattr(a, "run", False):
         raise CliError(f"{node} hasn't been run yet (it's {ex.state(node).status}). Run dancr run {p.path} {node}, or add --run")
@@ -427,8 +428,8 @@ def cmd_sample(a: argparse.Namespace) -> None:
         raise CliError("--rows must be at least 1 and --offset at least 0")
     p = _load(a.pipeline)
     ex = Executor(p)
-    lf = _frame(a, p, ex, a.node)
-    df = lf.slice(a.offset, a.rows).collect(engine="streaming")
+    with _frame(a, p, ex, a.node) as lf:
+        df = lf.slice(a.offset, a.rows).collect(engine="streaming")
     if a.json:
         print(df.write_json())
     elif a.csv:
@@ -442,8 +443,8 @@ def cmd_stats(a: argparse.Namespace) -> None:
     from .views.stats import column_summary
     p = _load(a.pipeline)
     ex = Executor(p)
-    lf = _frame(a, p, ex, a.node)
-    df = column_summary(lf, a.columns.split(",") if a.columns else None)
+    with _frame(a, p, ex, a.node) as lf:
+        df = column_summary(lf, a.columns.split(",") if a.columns else None)
     if a.json:
         print(df.write_json())
     else:
@@ -455,27 +456,28 @@ def cmd_chart(a: argparse.Namespace) -> None:
     from .views.render import render_chart
     p = _load(a.pipeline)
     ex = Executor(p)
-    lf = _frame(a, p, ex, a.node)
     params = hl.chart_params(p.nodes[a.node], a.kind, a.x, a.y.split(",") if a.y else None, a.column, a.title)
-    out = render_chart(lf, params, a.out, width=a.width, height=a.height, columns=p.columns, inputs=p.input_values())
+    with _frame(a, p, ex, a.node) as lf:
+        out = render_chart(lf, params, a.out, width=a.width, height=a.height, columns=p.columns, inputs=p.input_values())
     _print(a, {"path": str(out), "params": params}, f"Wrote {out}")
 
 
 def cmd_export(a: argparse.Namespace) -> None:
     p = _load(a.pipeline)
     ex = Executor(p)
-    lf = _frame(a, p, ex, a.node)
     from .core.nodes.outputs import write_table
     out = Path(a.out)
-    write_table(lf, out)
+    with _frame(a, p, ex, a.node) as lf:
+        write_table(lf, out)
     _print(a, {"path": str(out)}, f"Wrote {out}")
 
 
 def cmd_clear_cache(a: argparse.Namespace) -> None:
     p = _load(a.pipeline)
     ex = Executor(p)
-    size = ex.cache_size()
+    before = ex.cache_size()
     ex.clear_cache()
+    size = before - ex.cache_size()         # results another DANCR program is using right now are kept
     _print(a, {"cleared_bytes": size}, f"Cleared {size / 1e6:.1f} MB")
 
 

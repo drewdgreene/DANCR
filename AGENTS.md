@@ -11,7 +11,7 @@ Two interfaces, same engine:
 - **MCP server** (preferred): `dancr mcp` (stdio). Register it once in your MCP
   client (for example: `claude mcp add dancr -- dancr mcp`); `--root DIR` sets the
   folder pipelines may be created in (default: the folder it starts in; started in
-  the home folder or at the top of a drive it creates and changes no pipelines
+  or above the home folder, or at the top of a drive, it creates and changes no pipelines
   until `--root` names a folder). Tools: `ask`,
   `suggest_answers`, `change_answer`, `remove_answer`, `understand_data`, `list_node_types`,
   `formula_reference`, `inspect_file`, `create_pipeline`, `build_template`,
@@ -43,9 +43,9 @@ window and has no console, so it cannot serve JSON or the MCP protocol.
 
 Where MCP may write: pipeline files (`create_pipeline`, `build_template`, and
 every tool that edits one) must be `.json` files inside the server's root
-folder; `create_pipeline(overwrite=true)` replaces only a file that is already a
-DANCR pipeline. Every other file must be inside the folder that holds the pipeline
-file and must not be a data file the pipeline reads: `export_node(out_path)`,
+folder and outside any `.dancr` folder; `create_pipeline(overwrite=true)` replaces only a file that is
+already a DANCR pipeline. Every other file must be inside the folder that holds the pipeline
+file, outside its `.dancr` folder, and must not be a data file the pipeline reads: `export_node(out_path)`,
 `render_chart(out_png)`, and the `path` of `export`, `workbook` and `report` steps
 (checked when the step is added or changed, and before `run_pipeline` or a reading
 tool runs it); a step pointing elsewhere fails with a message. Relative paths are
@@ -80,7 +80,8 @@ outside the project folder or over the project's data; the person runs it.
   `report` steps also run again when their file was deleted or changed, or when
   the titles or column labels they show changed. `force` (`run --force`,
   `run_pipeline(force=true)`) recomputes everything and replaces the stored
-  results. Results of 100M-row steps stay on disk; `get_sample`, `get_stats` and
+  results. `dancr clear-cache` deletes the stored results except those another DANCR program is
+  using right now (a window showing them, a run or a read in progress). Results of 100M-row steps stay on disk; `get_sample`, `get_stats` and
   `render_chart` read them lazily.
 - **Reports**: steps attach findings (fit equation, R², RMSE; gap statistics;
   PASS/FAIL counts) to their status. Read them with `node_status` /

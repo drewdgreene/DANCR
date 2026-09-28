@@ -314,6 +314,17 @@ def _prepared(lf: pl.LazyFrame, x: str, y: str, group: str | None) -> pl.LazyFra
     return lf.select(cols).filter(pl.col(X).is_finite() & pl.col(Y).is_finite())
 
 
+def _require_spread(lf: pl.LazyFrame) -> tuple[float, float]:
+    """The x range of the data, refusing too few points or one x value only: every shape would then 'fit'
+    with any parameters at all (an exact test: a centred sum of squares can come out a hair above 0)."""
+    m = _row(lf, [pl.len().alias("n"), pl.col(X).min().alias("lo"), pl.col(X).max().alias("hi")])
+    if int(m["n"]) < 2 or m["lo"] is None:
+        raise ValueError("Need at least two points to fit")
+    if m["lo"] == m["hi"]:
+        raise ValueError("All x values are the same, so no curve can be fitted")
+    return float(m["lo"]), float(m["hi"])
+
+
 def _require_positive_x(lf: pl.LazyFrame, kind: str) -> None:
     if kind in POSITIVE_X:
         k = int(_row(lf, [(pl.col(X) <= 0).sum().alias("k")])["k"])
@@ -334,6 +345,7 @@ def fit_frame(lf: pl.LazyFrame, x: str, y: str, kind: str = "linear", degree: in
     errors: list[str] = []
     for key, part in parts:
         try:
+            lo, hi = _require_spread(part)
             _require_positive_x(part, kind)
             params, passes, converged = fit_lazy(part, kind, degree)
         except ValueError as e:
@@ -342,9 +354,8 @@ def fit_frame(lf: pl.LazyFrame, x: str, y: str, kind: str = "linear", degree: in
                 continue
             raise
         r2, rmse, n = _score(part, kind, params)
-        ext = _row(part, [pl.col(X).min().alias("lo"), pl.col(X).max().alias("hi")])
         fits.append(Fit(kind, [float(p) for p in params], r2, rmse, n, x, y, key, equation(kind, params, x, y),
-                        float(ext["lo"]), float(ext["hi"]), passes, converged))
+                        lo, hi, passes, converged))
     if not fits:
         raise ValueError("Nothing could be fitted (not enough valid points)" + (": " + "; ".join(errors[:3]) if errors else ""))
     return fits
@@ -354,6 +365,7 @@ def fit_arrays(kind: str, xs: np.ndarray, ys: np.ndarray, degree: int = 2) -> tu
     """Fit in-memory arrays (same engine); returns (params, predicted ys)."""
     lf = pl.DataFrame({X: np.asarray(xs, dtype=float), Y: np.asarray(ys, dtype=float)}).lazy()
     lf = lf.filter(pl.col(X).is_finite() & pl.col(Y).is_finite())
+    _require_spread(lf)
     _require_positive_x(lf, kind)
     params, _, _ = fit_lazy(lf, kind, degree)
     return params, predict_arrays(kind, params, np.asarray(xs, dtype=float))

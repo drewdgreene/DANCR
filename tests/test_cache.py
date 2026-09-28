@@ -5,6 +5,7 @@ import shutil
 import time
 from pathlib import Path
 
+import fastexcel
 import polars as pl
 import pytest
 
@@ -211,11 +212,11 @@ def test_workbook_follows_upstream_titles(tmp_path):
     p.connect("src", "wb")
     ex = Executor(p)
     ex.run()
-    assert pl.read_excel(tmp_path / "book.xlsx", sheet_name="Load").height == 3
+    assert fastexcel.read_excel(str(tmp_path / "book.xlsx")).load_sheet("Load").height == 3
     p.rename_node("src", "Readings")
     assert ex.state("wb").status != "done"
     ex.run()
-    assert pl.read_excel(tmp_path / "book.xlsx", sheet_name="Readings").height == 3
+    assert fastexcel.read_excel(str(tmp_path / "book.xlsx")).load_sheet("Readings").height == 3
 
 
 def test_report_follows_column_labels(tmp_path):
@@ -432,3 +433,43 @@ def test_gc_survives_missing_files(pipe):
         f.unlink()
     ex.gc()  # must not raise
     assert ex.state("a").status == "stale"
+
+
+def test_a_frozen_app_uses_the_fingerprint_its_build_baked_in(monkeypatch, tmp_path):
+    from dancr.core import executor
+    baked = tmp_path / "fingerprint.txt"
+    baked.write_text("abc123def456\n")
+    monkeypatch.setattr(executor.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(executor, "BAKED_FINGERPRINT", baked)
+    assert _code_fingerprint() == "abc123def456"
+    baked.unlink()
+    with pytest.raises(RuntimeError, match="incomplete"):
+        _code_fingerprint()
+
+
+def test_clearing_the_cache_keeps_what_another_live_process_holds(tmp_path):
+    p = saved_table(tmp_path)
+    p.add_node("calculate", params={"formulas": [{"name": "y", "expr": "[x] * 2"}]}, id="c")
+    p.connect("src", "c")
+    p.save()
+    window = Executor(p)
+    states = window.run()
+    window.hold({"c": states["c"].hash})
+    held = window.node_dir("c") / f"{states['c'].hash}.parquet"
+    src = window.node_dir("src") / f"{states['src'].hash}.parquet"
+    Executor(Pipeline.load(p.path)).clear_cache()                        # dancr clear-cache while the window shows c
+    assert held.exists() and not src.exists()
+    window.clear_cache()                                                 # the window's own clear lets go of its hold
+    assert not held.exists()
+
+
+def test_a_read_holds_the_result_until_it_is_done(tmp_path):
+    from dancr import headless as hl
+    p = saved_table(tmp_path)
+    ex = Executor(p)
+    h = ex.run()["src"].hash
+    with hl.result_frame(p, Executor(p), "src", run=False) as lf:
+        Executor(Pipeline.load(p.path)).clear_cache()                    # another process clears meanwhile
+        assert lf.collect().height > 0
+    Executor(Pipeline.load(p.path)).clear_cache()
+    assert not (ex.node_dir("src") / f"{h}.parquet").exists()

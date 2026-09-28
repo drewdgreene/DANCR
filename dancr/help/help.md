@@ -290,13 +290,16 @@ project refers to them by a path relative to itself. If you use *Save as* to
 put the project in another folder, every file setting still points at the same
 file.
 
-Once you've saved a project, DANCR saves it again every minute. Earlier versions
-are under *File → Earlier versions…*. It keeps the last 50 you saved plus the
-last 30 autosaves, so autosaving can't push out a version you saved yourself.
+The project file changes only when you save. To have DANCR save a saved project
+every minute as well, turn on *File → Autosave*; the choice is remembered. Earlier
+versions are under *File → Earlier versions…*. It keeps the last 50 you saved
+plus the last 30 autosaves, so autosaving can't push out a version you saved
+yourself.
 
-Changes that aren't in the file yet are set aside every minute. That covers a
-project you haven't saved, and edits made while autosave is paused. If DANCR
-closes unexpectedly, it offers them back the next time it starts.
+Changes that aren't in the file yet are set aside every minute, whether autosave
+is on or off. That covers a project you haven't saved, edits you haven't saved,
+and edits made while autosave is paused. If DANCR closes unexpectedly, it offers
+them back the next time it starts.
 
 Ctrl+Z undoes anything, including deleting a step, and puts connections back in
 their original order. A toast also offers Undo when you delete.

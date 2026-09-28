@@ -40,6 +40,7 @@ class Task(QRunnable):
         self.signals = TaskSignals()
         self.cancelled = False
         self.waits_for_run = True
+        self.quick = False             # a short read someone is waiting on (a page of the grid): never queued behind long queries
         self.setAutoDelete(False)
 
     @Slot()
@@ -66,11 +67,19 @@ class ViewPool(QThreadPool):
     """A small pool for previews, chart queries, page fetches and searches.
 
     Tasks with ``waits_for_run`` are held here while a run executes and started when it ends, so a
-    waiting task never occupies a thread and page fetches or searches keep flowing during a run."""
+    waiting task never occupies a thread and page fetches or searches keep flowing during a run.
+
+    ``quick`` tasks (grid pages) run on threads of their own: a query already running cannot be interrupted,
+    so describing or charting a huge table (or several superseded ones still finishing) must never leave
+    the rows on screen waiting for a free thread."""
+
+    QUICK_THREADS = 2
 
     def __init__(self) -> None:
         super().__init__()
         self.setMaxThreadCount(min(4, os.cpu_count() or 1))
+        self._quick = QThreadPool()
+        self._quick.setMaxThreadCount(self.QUICK_THREADS)
         self._held: list[Task] = []
         self._active: set[Task] = set()
 
@@ -80,14 +89,17 @@ class ViewPool(QThreadPool):
             return
         self._active.add(task)
         task.signals.finished.connect(lambda t=task: self._active.discard(t))
-        super().start(task)
+        if task.quick:
+            self._quick.start(task)
+        else:
+            super().start(task)
 
     def take(self, task: Task) -> bool:
         """Remove a task that has not started; True if it was removed."""
         if task in self._held:
             self._held.remove(task)
             return True
-        if self.tryTake(task):
+        if (self._quick if task.quick else super()).tryTake(task):
             self._active.discard(task)
             return True
         return False
@@ -109,8 +121,8 @@ class ViewPool(QThreadPool):
         self._held = []
         for t in list(self._active):
             t.cancelled = True
-        self.clear()
-        self.waitForDone(wait_ms)
+        self.clear(); self._quick.clear()
+        self.waitForDone(wait_ms); self._quick.waitForDone(wait_ms)
         run_gate.set()
 
 

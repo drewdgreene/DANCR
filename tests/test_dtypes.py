@@ -8,7 +8,8 @@ from dancr.core.dtypes import datetime_literal, text_to_number_expr
 
 
 @pytest.mark.parametrize("text,value", [("1,200.5", 1200.5), ("1,5", 1.5), ("2,25", 2.25), ("1,500", 1500.0),
-                                        ("1.234.567,5", 1234567.5), (" -3 ", -3.0), ("abc", None)])
+                                        ("1.234.567,5", 1234567.5), (" -3 ", -3.0), ("abc", None),
+                                        ("inf", None), ("-Infinity", None), ("NaN", None)])
 def test_text_is_read_as_the_number_a_person_means(text, value):
     got = pl.DataFrame({"s": [text]}).select(text_to_number_expr(pl.col("s")))["s"][0]
     assert got == value

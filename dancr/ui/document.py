@@ -6,9 +6,10 @@ thread (a run, previews, schemas, state polls, the data model) gets its own Exec
 meanwhile never changes what a worker is reading. Threads are always joined before the objects
 they use are replaced.
 
-Autosave, recovery copies and earlier versions all live here. Autosave pauses whenever
-what is in memory should not silently overwrite what is on disk (the file changed under us,
-an earlier version was restored, a recovered project was brought back) until the person
+Autosave, recovery copies and earlier versions all live here. Autosave is off unless the person
+turns it on (File → Autosave); unsaved edits are copied to a recovery file either way. Autosave
+pauses whenever what is in memory should not silently overwrite what is on disk (the file changed
+under us, an earlier version was restored, a recovered project was brought back) until the person
 saves, saves as, or reverts.
 """
 from __future__ import annotations
@@ -23,7 +24,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
-from PySide6.QtCore import QObject, Signal, QTimer, QFileSystemWatcher
+from PySide6.QtCore import QObject, Signal, QTimer, QFileSystemWatcher, QEventLoop
 from PySide6.QtGui import QUndoStack
 from PySide6.QtWidgets import QApplication
 
@@ -128,9 +129,10 @@ class Document(QObject):
     answerRemoved = Signal(str)
     answerChanged = Signal(str)
     autoRunChanged = Signal(bool)
-    autosaveChanged = Signal(object)   # the reason autosave is paused, or None
+    autosaveChanged = Signal(object)   # autosave turned on or off, or paused (the reason) or resumed (None)
     autosaved = Signal()               # a quiet save just happened
     flushRequested = Signal()          # settings typed but not yet committed (editors wait ~350 ms) must go in now
+    busy = Signal(object)              # why the window must wait (a run is stopping), or None once it may go on
 
     AUTO_RUN_BYTES = 200_000_000       # sources smaller than this in total run automatically after every change
 
@@ -147,11 +149,14 @@ class Document(QObject):
         self.last_run_outcome = "done"     # how the last run ended: done | stopped | crashed
         self._watcher = QFileSystemWatcher(self)
         self._watcher.fileChanged.connect(self._on_file_changed)
+        self._watcher.directoryChanged.connect(self._on_project_dir_changed)
         self._last_saved_text: str | None = None
         self._states_cache: dict[str, NodeState] = {}
         self._held: dict[str, str | None] = {}
         self._states_token = 0             # bumped by every refresh on this thread: older background polls are dropped
-        self._poll_task: Task | None = None
+        self._poll_task: Task | None = None     # the one states read under way
+        self._states_again = False         # a refresh was asked for while it read: read once more after it
+        self._closed = False
         self._poll = QTimer(self)
         self._poll.setInterval(POLL_MS)
         self._poll.timeout.connect(self._poll_states)
@@ -161,8 +166,12 @@ class Document(QObject):
         self._source_timer.timeout.connect(self._source_changed_settle)
         self._auto_timer.timeout.connect(self._auto_run_now)
         self._auto_pending = False
+        self._auto_gen = 0                 # bumped by every request for an automatic run
+        self._auto_task: Task | None = None  # the states read that decides whether to run
         self._src_watcher = QFileSystemWatcher(self)
         self._src_watcher.fileChanged.connect(self._on_source_changed)
+        self._src_watcher.directoryChanged.connect(self._on_source_dir_changed)
+        self.autosave = False              # save the project file every minute; the person turns it on (File → Autosave)
         self.autosave_paused: str | None = None
         self.held: set[str] = set()                # steps changed elsewhere that save files where they should not: run only when asked
         self.last_set_aside: list[str] = []        # hand-edited steps the last answer change left as they were
@@ -184,13 +193,30 @@ class Document(QObject):
     def dirty(self) -> bool:
         return not self.undo.isClean()
 
+    @staticmethod
+    def _watch(watcher: QFileSystemWatcher, paths: list[Path]) -> None:
+        """Watch exactly these files; for one that is missing (deleted, or being replaced), its folder instead,
+        so the file coming back is noticed however long it was gone."""
+        old = watcher.files() + watcher.directories()
+        if old:
+            watcher.removePaths(old)
+        want: set[str] = set()
+        for p in paths:
+            if p.exists():
+                want.add(str(p))
+            elif p.parent.is_dir():
+                want.add(str(p.parent))
+        if want:
+            watcher.addPaths(sorted(want))
+
     def _rewatch(self) -> None:
-        files = self._watcher.files()
-        if files:
-            self._watcher.removePaths(files)
-        if self.pipeline.path and self.pipeline.path.exists():
-            self._watcher.addPath(str(self.pipeline.path))
+        self._watch(self._watcher, [self.pipeline.path] if self.pipeline.path else [])
         self._rewatch_sources()
+
+    def _on_project_dir_changed(self, _dir: str) -> None:
+        p = self.pipeline.path
+        if p is not None and p.exists() and str(p) not in self._watcher.files():
+            self._on_file_changed(str(p))           # the project file is back: read it as any other change
 
     # ------------------------------------------------------------ sources and auto-run
     def source_paths(self) -> list[Path]:
@@ -205,15 +231,15 @@ class Document(QObject):
         return out
 
     def _rewatch_sources(self) -> None:
-        files = self._src_watcher.files()
-        if files:
-            self._src_watcher.removePaths(files)
-        for p in self.source_paths():
-            if p.exists():
-                self._src_watcher.addPath(str(p))
+        self._watch(self._src_watcher, self.source_paths())
 
     def _on_source_changed(self, path: str) -> None:
         self._source_timer.start()                  # restarted by each event: one refresh once writing stops
+
+    def _on_source_dir_changed(self, _dir: str) -> None:
+        watched = set(self._src_watcher.files())
+        if any(p.exists() and str(p) not in watched for p in self.source_paths()):
+            self._source_timer.start()              # a data file that was missing is there now
 
     def _source_changed_settle(self) -> None:
         self._rewatch_sources()
@@ -249,19 +275,42 @@ class Document(QObject):
     def schedule_auto_run(self) -> None:
         if self.auto_run:
             self._auto_pending = True
+            self._auto_gen += 1
             self._auto_timer.start()
 
     def _auto_run_now(self) -> None:
-        if not self._auto_pending:
+        """Run what is not computed yet. Which steps those are means reading every step's state (files, maybe
+        on a network drive), so it is read on a worker; a change made meanwhile asks again once it is read."""
+        if not self._auto_pending or self._auto_task is not None or self._closed:
             return
         if self.running:
             self._auto_timer.start(); return
-        self._auto_pending = False
-        states = self.executor.states()
-        todo = [nid for nid in self.pipeline.nodes
-                if nid not in self.held and not (self.held and self.held & self.pipeline.upstream_closure(nid))]
-        if any(states[nid].status != "done" for nid in todo if nid in states):
-            self.run(todo if self.held else None, auto=True)
+        gen, executor = self._auto_gen, self.executor
+        t = Task(self.snapshot_executor().states)
+        t.waits_for_run = False
+
+        def decide(states: dict[str, NodeState]) -> None:
+            if gen != self._auto_gen or executor is not self.executor or self.running:
+                return                              # changed meanwhile: asked again below
+            self._auto_pending = False
+            todo = [nid for nid in self.pipeline.nodes
+                    if nid not in self.held and not (self.held and self.held & self.pipeline.upstream_closure(nid))]
+            if any(states[nid].status != "done" for nid in todo if nid in states):
+                self.run(todo if self.held else None, auto=True)
+
+        def failed(_msg: str) -> None:
+            if gen == self._auto_gen:
+                self._auto_pending = False          # logged by the task; the next edit tries again
+
+        def finished() -> None:
+            self._auto_task = None
+            if self._auto_pending and not self._closed:
+                self._auto_timer.start()
+        t.signals.done.connect(decide)
+        t.signals.failed.connect(failed)
+        t.signals.finished.connect(finished)
+        self._auto_task = t
+        view_pool().start(t)
 
     # ------------------------------------------------------------ inputs and column registry (undoable)
     def set_input(self, name: str, value: Any = None, unit: str | None = None, note: str | None = None) -> None:
@@ -326,7 +375,9 @@ class Document(QObject):
             log.exception("Could not compare the project on disk with the one in memory")
         if self.dirty:
             self.pause_autosave("the project file changed on disk")
-            self.message.emit("The project file changed on disk, but you have unsaved edits. Autosave is paused. Save to overwrite the file, or use File → Revert to load the new version.")
+            self.message.emit("The project file changed on disk, but you have unsaved edits."
+                              + (" Autosave is paused." if self.autosave else "")
+                              + " Save to overwrite the file, or use File → Revert to load the new version.")
             return
         if self.autosave_paused is not None:
             # an earlier version or recovered project is open on purpose: never silently replace it
@@ -369,6 +420,11 @@ class Document(QObject):
         return out
 
     # ------------------------------------------------------------ autosave, recovery, versions
+    def set_autosave(self, on: bool) -> None:
+        if self.autosave != on:
+            self.autosave = on
+            self.autosaveChanged.emit(self.autosave_paused)
+
     def pause_autosave(self, reason: str) -> None:
         if self.autosave_paused != reason:
             self.autosave_paused = reason
@@ -380,14 +436,15 @@ class Document(QObject):
             self.autosaveChanged.emit(None)
 
     def autosave_now(self) -> None:
-        """Once a minute: save quietly when the project has a file (keeping the replaced file as an autosave
-        version). Edits that must not go into the file yet — an unsaved project, autosave paused, a run in
-        progress, or a dialog open that asks about these very edits (Save changes? Revert?) — are copied
-        to the recovery file instead, so a crash or a force-quit loses nothing."""
+        """Once a minute: with autosave on, save quietly when the project has a file (keeping the replaced file
+        as an autosave version). Edits that must not go into the file — autosave off, an unsaved project,
+        autosave paused, a run in progress, or a dialog open that asks about these very edits (Save changes?
+        Revert?) — are copied to the recovery file instead, so a crash or a force-quit loses nothing."""
         self.flush_edits()
         if not self.pipeline.nodes or not self.dirty:
             return
-        if self.pipeline.path is None or self.autosave_paused or self.running or QApplication.activeModalWidget() is not None:
+        if (not self.autosave or self.pipeline.path is None or self.autosave_paused or self.running
+                or QApplication.activeModalWidget() is not None):
             self.write_recovery()
             return
         try:
@@ -507,10 +564,10 @@ class Document(QObject):
         Results of a project that was never saved are deleted: nothing refers to them any more.
         Call this after the view pool has been drained: nothing may still be reading the results."""
         self._auto_pending = False
+        self._closed = True
         self._auto_timer.stop(); self._poll.stop(); self._autosave.stop(); self._source_timer.stop()
         for w in (self._watcher, self._src_watcher):
-            if w.files():
-                w.removePaths(w.files())
+            self._watch(w, [])
         self.executor.release()
         if self.pipeline.path is None and self.executor.cache_dir.exists():
             shutil.rmtree(self.executor.cache_dir, ignore_errors=True)
@@ -601,14 +658,11 @@ class Document(QObject):
         return st
 
     def refresh_states(self) -> None:
-        """Re-read every step's state now (after an edit: the person expects to see it at once)."""
+        """Re-read every step's state (after an edit, a reload, a run). Any answer read before this call is
+        dropped; see ``_read_states``."""
         self._states_token += 1
-        try:
-            new = self.executor.states()
-        except Exception:  # noqa: BLE001
-            log.exception("Could not read the step states")
-            return
-        self._apply_states(new)
+        self._states_again = self._poll_task is not None
+        self._read_states()
 
     def snapshot_executor(self) -> Executor:
         """An Executor over a copy of the project as it is now, for work off the GUI thread: the live project
@@ -616,10 +670,15 @@ class Document(QObject):
         return Executor(Pipeline.from_dict(self.pipeline.to_dict(), self.pipeline.path), self.executor.cache_dir)
 
     def _poll_states(self) -> None:
-        """The periodic check for changes made elsewhere (a CLI run, a source file rewritten). Every step's
-        state means reading files, which can be slow on a network drive, so it runs on a worker over a
-        snapshot of the project; the answer is dropped if the project was edited meanwhile."""
-        if self._poll_task is not None:
+        """The periodic check for changes made elsewhere (a CLI run, a source file rewritten)."""
+        self._read_states()
+
+    def _read_states(self) -> None:
+        """Every step's state means reading files (sources are stat'ed and sampled), which can be slow on a
+        network drive, so it runs on a worker over a snapshot of the project, one read at a time; the answer is
+        dropped if the project was edited meanwhile, and a refresh asked for during a read gets one more read
+        (however many were asked for) once it ends."""
+        if self._poll_task is not None or self._closed:
             return
         ex = self.snapshot_executor()
         token, executor = self._states_token, self.executor
@@ -629,6 +688,9 @@ class Document(QObject):
 
         def finished() -> None:
             self._poll_task = None
+            if self._states_again:
+                self._states_again = False
+                self._read_states()
         t.signals.finished.connect(finished)
         self._poll_task = t
         view_pool().start(t)
@@ -860,15 +922,33 @@ class Document(QObject):
         """A step that saves a file named relative to the project's folder."""
         return any(not Path(v).expanduser().is_absolute() for v in _saved_paths(p, nid))
 
-    def stop(self, wait: bool = False) -> None:
+    def stop(self, wait: bool = False, why: str = "Stopping the current step…") -> None:
+        """Ask the run to stop. It ends at the next step boundary: a step already writing its result finishes first.
+        With ``wait``, return once it has ended and been settled. That step cannot be cut short and may take
+        minutes on a big table, so the window is never frozen meanwhile: events keep flowing and ``busy`` tells
+        the window why it must wait (it accepts no other command until ``busy(None)``)."""
         t = self._run
         if t is None:
             return
         t.cancel.set()
-        if wait:
-            if t.isRunning():
-                t.wait()
-            self._on_run_done(t)
+        if not wait or self._run_settled:
+            return
+        if t.isRunning():
+            loop = QEventLoop()
+            t.finished.connect(loop.quit)
+            check = QTimer(); check.setInterval(100)        # also covers a finish signalled just before connecting
+            check.timeout.connect(lambda: loop.quit() if not t.isRunning() else None)
+            check.start()
+            self.busy.emit(why)
+            try:
+                if t.isRunning():
+                    loop.exec()
+            finally:
+                check.stop()
+                t.finished.disconnect(loop.quit)
+                self.busy.emit(None)
+        t.wait()                                            # it has ended: this only joins the thread
+        self._on_run_done(t)
 
     def _on_run_failed(self, text: str) -> None:
         log.error("Run failed:\n%s", text)
@@ -896,6 +976,10 @@ class Document(QObject):
         view_pool().release()
         results = dict(t.results)
         self.last_run_outcome = t.outcome
+        # what the run found is known now, without reading a file here; a step it was computing when stopped
+        # is no longer "running" (it is read again when asked for); the full re-read follows on a worker
+        self._states_cache = {k: v for k, v in self._states_cache.items() if v.status != "running"}
+        self._states_cache.update({k: v for k, v in results.items() if k in self.pipeline.nodes})
         self.refresh_states()
         failed = [s for s in results.values() if s.status == "failed"]
         self.runFinished.emit(t.outcome == "done" and not failed, results)

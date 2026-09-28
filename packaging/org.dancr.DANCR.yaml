@@ -1,7 +1,7 @@
 # Flatpak manifest. Build with:
 #   flatpak-builder --user --install --force-clean build-dir packaging/org.dancr.DANCR.yaml
-# Python dependencies are installed from PyPI wheels at build time (needs network
-# during build, or vendor the wheels with flatpak-pip-generator).
+# Python dependencies are installed from PyPI wheels at build time (needs network during build), exactly the
+# versions uv.lock pins, from packaging/requirements.txt (uv export; CI checks it matches uv.lock).
 id: org.dancr.DANCR
 runtime: org.freedesktop.Platform
 runtime-version: "24.08"
@@ -21,7 +21,8 @@ modules:
       build-args:
         - --share=network
     build-commands:
-      - pip3 install --prefix=/app --no-cache-dir .
+      - pip3 install --prefix=/app --no-cache-dir --require-hashes -r packaging/requirements.txt
+      - pip3 install --prefix=/app --no-cache-dir --no-deps .
       - printf '#!/bin/sh\nexec dancr gui "$@"\n' > /app/bin/dancr-gui && chmod +x /app/bin/dancr-gui
       - install -Dm644 packaging/org.dancr.DANCR.desktop /app/share/applications/org.dancr.DANCR.desktop
       - install -Dm644 dancr/assets/icon.png /app/share/icons/hicolor/128x128/apps/org.dancr.DANCR.png

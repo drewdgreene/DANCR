@@ -285,10 +285,16 @@ def group_values(lf: pl.LazyFrame, column: str, limit: int = 12) -> list[Any]:
 
 def group_values_info(lf: pl.LazyFrame, column: str, limit: int = 12) -> tuple[list[Any], int, int]:
     """(the values shown, most frequent first, blank included; how many other values are not shown; their rows).
-    Ties in frequency are broken by the value, so the same data always shows the same groups."""
+    Ties in frequency are broken by the value, so the same data always shows the same groups.
+    Only the shown groups (with the totals over all groups) leave the query: a column with a hundred million
+    distinct values never becomes a hundred-million-row frame here."""
     df = _collect(lf.group_by(column).agg(pl.len().alias("n"))
-                  .with_columns(pl.col(column).cast(pl.Utf8).alias("__k"))
-                  .sort(["n", "__k"], descending=[True, False], nulls_last=True))
+                  .with_columns(pl.col(column).cast(pl.Utf8).alias("__k"),
+                                pl.len().alias("__groups"), pl.col("n").sum().alias("__rows"))
+                  .sort(["n", "__k"], descending=[True, False], nulls_last=True)
+                  .head(max(1, limit)))
+    if df.height == 0:
+        return [], 0, 0
     shown = df.head(limit)
-    rest = df.slice(limit)
-    return shown[column].to_list(), rest.height, int(rest["n"].sum() or 0)
+    return (shown[column].to_list(), int(df["__groups"][0]) - shown.height,
+            int(df["__rows"][0]) - int(shown["n"].sum() or 0))

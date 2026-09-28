@@ -552,6 +552,8 @@ def _point(items: list[Item], i: int, year_ok: bool) -> tuple[dict | None, int]:
     words, m = items[i]
     nxt = items[i + 1][1] if i + 1 < len(items) else None
     if m.kind == "date":
+        if "/" not in str(m.value) and not _real_date(str(m.value)):   # 2024-02-30, 2024-13
+            raise PlanError(f"“{words}” is not a date. Write it as year-month-day, for example 2024-03-01")
         if re.fullmatch(r"\d{4}-\d{2}", str(m.value)):                # 2024-03: March 2024
             y, mo = (int(x) for x in str(m.value).split("-"))
             return {"month": mo, "year": y, "text": words}, 1
@@ -576,6 +578,15 @@ def _point(items: list[Item], i: int, year_ok: bool) -> tuple[dict | None, int]:
             return {"rel": "past", "n": nxt.value, "unit": items[i + 2][1].value,
                     "text": f"{words} {items[i + 1][0]} {items[i + 2][0]}"}, 3
     return None, 0
+
+
+def _real_date(d: str) -> bool:
+    """Whether '2024-03-01' (or the month '2024-03', or '2024-03-01 09:30') is a day that exists."""
+    try:
+        datetime.fromisoformat(d.replace("t", " ") if len(d) > 7 else d + "-01")
+        return True
+    except ValueError:
+        return False
 
 
 def _is_day(v: Any) -> bool:
@@ -774,6 +785,9 @@ def _assemble(model: DataModel, items: list[Item], out: Asked) -> dict[str, Any]
             # "top 5", "top customers" (ten), "best day" (one day)
             n = nxt.value if nxt is not None and nxt.kind == "num" else 1 if nxt is not None and nxt.kind == "unit" and \
                 not words_at(i + 1).endswith("s") else 10
+            if isinstance(n, bool) or n != int(n) or n < 1:
+                raise PlanError(f"“{words} {words_at(i + 1)}” is not a number of rows. Say a whole number of 1 or more, "
+                                f"as in “{words} 5”")
             q.top, q.bottom = int(n), bool(m.value)
             used |= {i, i + 1} if nxt is not None and nxt.kind == "num" else {i}
             i += 2 if nxt is not None and nxt.kind == "num" else 1
@@ -853,6 +867,10 @@ def _holds(model: DataModel, col: Meaning, value: Meaning) -> bool:
 
 
 def _build(model: DataModel, items: list[Item], q: _Parts, used: set[int], out: Asked) -> dict[str, Any]:
+    named = ([q.by] if q.by else []) + q.cols
+    for k, (_, w, m) in enumerate(named):              # "by region region": the second one has nothing to say
+        if any(m2.refs == m.refs for _, _, m2 in named[:k]):
+            raise PlanError(f"“{w}” is named twice. Name each column once")
     tables = list(q.tables)
     lookups_named = [t for t in tables if model.tables[t].shape == LOOKUP]
     if q.rows_tables and lookups_named and q.rows_tables[0] not in tables:
@@ -923,7 +941,14 @@ def _build(model: DataModel, items: list[Item], q: _Parts, used: set[int], out: 
                 raise PlanError(f"{t0.title} is the table you're asking about. Say which of its columns to group by")
             raise PlanError(f"{model.tables[q.by_table].title} isn't linked to {t0.title}, so {t0.title} can't be counted per {model.tables[q.by_table].title}")
     if by_ref is not None and by_ref[0] == base and _unique_id(model, by_ref) and not q.top:
-        by_ref = None                              # "average tip per ticket": one row per ticket, so the plain average
+        # one row per ticket: "average tip per ticket" is the plain average (and the highest, the lowest), but a
+        # total or a count per ticket is each row on its own, so that is refused rather than answered for all rows
+        if stat not in ("mean", "median", "min", "max") or q.share:
+            word = q.by[1] if q.by else q.by_table_words if q.by_table else by_ref[1]
+            ranked = numbers[0][1][1] if numbers else _first_measure(model, base)
+            raise PlanError(f"{by_ref[1]} is different on every row of {t0.title}, so “{word}” leaves each row on its own. "
+                            f"Ask without it, or for the rows themselves (“top 10 {t0.title} by {ranked}”)")
+        by_ref = None
     named_lookups = [t for t in tables if t != base and model.tables[t].shape == LOOKUP]
     if by_ref is None and named_lookups and (numbers or stat or q.top or q.rows_named) and not (q.top is not None and base in tables and not named_lookups):
         by_ref = _name_column(model, named_lookups[0], base)
@@ -961,7 +986,7 @@ def _build(model: DataModel, items: list[Item], q: _Parts, used: set[int], out: 
     nums = [r for _, r in numbers]
     top = q.top
     if q.noun_unit and q.big is not None:
-        top = top or 1                             # "hottest day", "biggest month": that one
+        top = 1 if top is None else top            # "hottest day", "biggest month": that one
         spec["superlative"] = q.sup or ""
         spec["noun"] = q.noun_unit
         every = _unit_step(q.noun_unit)
@@ -1104,7 +1129,7 @@ def _choose_recipe(model, spec, recipe, numbers, by_ref, stat, every, top, botto
         measure = numbers[0] if numbers else _first_measure_ref(model, base)
         if measure is None:
             raise PlanError(f"{t0.title} has no number to rank its rows by")
-        spec.update({"recipe": "toprows", "n": top or 10, "measure": measure, "bottom": (bottom if top is not None else big) or None})
+        spec.update({"recipe": "toprows", "n": 10 if top is None else top, "measure": measure, "bottom": (bottom if top is not None else big) or None})
         if not rows_named:
             spec.pop("noun", None)
         return _tidy(spec)
@@ -1504,9 +1529,11 @@ def _filter(model: DataModel, items: list[Item], i: int) -> tuple[list[dict] | N
     two = val.kind == "num" and j + 2 < len(items) and items[j + 2][1].kind == "num"
     if op in ("between", "outside"):
         if two and items[j + 1][1].kind == "and":
+            _check_range(items, j)
             return [{"column": ref, "op": op, "value": val.value, "value2": items[j + 2][1].value}], j + 3 - i
         return None, 1
     if op == "ge" and op_words == "from" and two and items[j + 1][0] in RANGE_TO | {"and"}:
+        _check_range(items, j)
         return [{"column": ref, "op": "between", "value": val.value, "value2": items[j + 2][1].value}], j + 3 - i
     if val.kind == "num":
         vals, k = [val.value], j + 1
@@ -1523,6 +1550,14 @@ def _filter(model: DataModel, items: list[Item], i: int) -> tuple[list[dict] | N
     if val.kind == "col" and op in ("gt", "lt", "ge", "le", "eq", "ne"):
         return [{"column": ref, "op": op, "column2": val.refs[0]}], j + 1 - i   # stock below reorder level
     return None, 1
+
+
+def _check_range(items: list[Item], j: int) -> None:
+    """A range of numbers written backwards ("between 20 and 10") is refused, as a backwards range of dates is,
+    rather than answered with nothing."""
+    (lo, a), (hi, b) = items[j], items[j + 2]
+    if a.value > b.value:
+        raise PlanError(f"{lo} is more than {hi}. Put the smaller one first (“{hi} {items[j + 1][0]} {lo}”)")
 
 
 def _role(model: DataModel, ref: list) -> str:

@@ -385,12 +385,14 @@ class Compiler:
         if op == "*":
             return Typed(_wide(a) * _wide(b), self._numkind(a, b))
         if op == "/":
+            self._numkind(a, b)
             den = b.expr.cast(pl.Float64)
             # dividing by zero has no answer (Excel shows #DIV/0!): a blank, not an infinity that breaks charts and totals
             return Typed(pl.when(den == 0).then(None).otherwise(a.expr.cast(pl.Float64) / den), NUM)
         if op == "%":
             return _mod(a, b)
         if op == "^":
+            self._numkind(a, b)
             return Typed(a.expr.cast(pl.Float64).pow(b.expr.cast(pl.Float64)), NUM)
         raise FormulaError(f"Unknown operator {op}")
 

@@ -83,3 +83,74 @@ def test_steps_of_a_removed_answer_that_another_uses_become_that_answers(shop):
     A.change(p, m, a2.id, "stat", "mean")                           # changed in place, nothing left behind
     assert set(a2.nodes) == old and set(p.nodes) == old | {"orders"}
     assert A.remove(p, a2.id, True) == sorted(old) and set(p.nodes) == {"orders"}
+
+
+def _chain():
+    """a, b -> mine -> step: a step of the person's ("mine") in front of an answer's step."""
+    p = Pipeline("p")
+    for n in ("a", "b", "c"):
+        p.add_node("enter_data", title=n, id=n)
+    p.add_node("keep_rows", title="Mine", id="mine")
+    p.add_node("sort", title="Step", id="step")
+    p.connect("a", "mine"); p.connect("mine", "step")
+    return p
+
+
+def _edges(p):
+    return sorted((s, t, port) for t in p.nodes for port, srcs in p.inputs_of(t).items() for s in srcs)
+
+
+@pytest.mark.parametrize("case", ["ports differ", "wants two inputs", "fixed", "not a chain", "gone"])
+def test_steps_put_in_front_are_not_moved_unless_they_are_a_simple_chain_of_the_persons_own(case):
+    from dancr.core.planner import PipelineEdits, _move_inserted
+    p = _chain()
+    made, want, fixed = {"in": ["a"]}, {"in": ["b"]}, set()
+    if case == "ports differ":
+        want = {"in": ["b"], "other": ["c"]}
+    elif case == "wants two inputs":
+        want = {"in": ["b", "c"]}
+    elif case == "fixed":
+        fixed = {"mine"}                                    # another answer's step: never moved
+    elif case == "not a chain":
+        p.add_node("combine", title="Joined", id="join")    # two inputs in front: no single path back
+        p.disconnect("mine", "step", "in"); p.connect("mine", "join", "left"); p.connect("c", "join", "right")
+        p.connect("join", "step")
+    elif case == "gone":
+        made = {"in": ["x"]}                                # what it read before is no longer upstream
+        p.disconnect("a", "mine", "in")
+    before = _edges(p)
+    assert _move_inserted(p, PipelineEdits(p), "step", made, want, fixed) is False
+    assert _edges(p) == before
+
+
+def test_steps_put_in_front_move_onto_the_new_input():
+    from dancr.core.planner import PipelineEdits, _move_inserted
+    p = _chain()
+    assert _move_inserted(p, PipelineEdits(p), "step", {"in": ["a"]}, {"in": ["b"]}, set()) is True
+    assert p.inputs_of("mine")["in"] == ["b"] and p.inputs_of("step")["in"] == ["mine"]
+
+
+def test_rewiring_a_step_changes_its_ports_in_name_order():
+    from dancr.core.planner import Edits, _rewire
+    p = Pipeline("p")
+    for n in ("a", "b", "c", "d"):
+        p.add_node("enter_data", title=n, id=n)
+    p.add_node("combine", title="Joined", id="join")
+    p.connect("a", "join", "right"); p.connect("b", "join", "left")
+    calls = []
+
+    class Log(Edits):
+        def connect(self, s, t, port): calls.append(("+", s, port))
+        def disconnect(self, s, t, port): calls.append(("-", s, port))
+    _rewire(p, Log(p), "join", {"right": ["c"], "left": ["d"]})
+    assert calls == [("-", "b", "left"), ("+", "d", "left"), ("-", "a", "right"), ("+", "c", "right")]
+
+
+def test_a_removed_answers_step_goes_to_the_first_other_answer_that_uses_it(shop):
+    p, m = shop
+    a1, _ = A.build(p, m, ask(m, "total qty by region").spec)
+    a2, _ = A.build(p, m, ask(m, "total qty by region").spec)
+    a3, _ = A.build(p, m, ask(m, "total qty by region").spec)
+    A.remove(p, a1.id, True)
+    assert set(a2.steps) == set(a1.steps) and a3.steps == {}      # handed over once, to one answer
+    assert A.remove(p, a3.id, True) == [] and set(a2.nodes) <= set(p.nodes)

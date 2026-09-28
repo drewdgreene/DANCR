@@ -52,8 +52,10 @@ def app():
     """The one QApplication, styled as the app styles it."""
     from PySide6.QtWidgets import QApplication
     from dancr.ui.theme import apply_app_style
+    from dancr.ui.app import install_gui_thread_gc
     a = QApplication.instance() or QApplication([])
     apply_app_style(a)
+    install_gui_thread_gc(a)
     return a
 
 

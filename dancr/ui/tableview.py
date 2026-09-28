@@ -141,16 +141,18 @@ class TableView(QWidget):
             if tab == 0:
                 self.grid.set_overlay("")
 
-                def open_result():                      # reads the Parquet footer: off the GUI thread
+                def open_result():                      # reads the Parquet footer (and counts, if unknown): off the GUI thread
                     lf = pl.scan_parquet(output)
-                    return nid, lf, TablePager(lf, rows=rows)
+                    pager = TablePager(lf, rows=rows)
+                    pager.rows                           # noqa: B018 - counted here, never by the grid on the GUI thread
+                    return nid, lf, pager
 
                 def ready(r):
                     n, lf, pager = r
                     if n != self.nid or self.doc.state(n).output != output:
                         return
-                    self.grid.set_content(lf, rows, False, st.column_stats, self.doc.pipeline.columns, pager=pager)
-                    if rows and rows > MAX_TABLE_ROWS:
+                    self.grid.set_content(lf, pager.rows, False, st.column_stats, self.doc.pipeline.columns, pager=pager)
+                    if pager.rows > MAX_TABLE_ROWS:
                         self.status.setText(self.status.text() + f" · showing the first {MAX_TABLE_ROWS:,}")
 
                 def failed(m: str) -> None:              # say so, then look again (the file may have been swept)

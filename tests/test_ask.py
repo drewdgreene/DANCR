@@ -326,3 +326,71 @@ def test_two_groups_at_once_are_refused(shop, question):
     _, m, _ = shop
     a = ask(m, question)
     assert not a.ok and "one thing at a time" in a.message
+
+
+# ------------------------------------------------------------------- refused rather than answered with something else
+def _refused(m, question: str) -> str:
+    from dancr.core.bank import Bank
+    a = ask(m, question, bank=Bank([], []))            # the grammar's own answer, no recall behind it
+    assert not a.ok, (question, a.spec)
+    return a.message
+
+
+@pytest.mark.parametrize("question", ["top 0 orders by price", "top 2.5 orders by price", "top -3 orders by price",
+                                      "bottom 0 customers by quantity"])
+def test_top_needs_a_whole_number_of_one_or_more(shop, question):
+    _, m, _ = shop
+    assert "whole number of 1 or more" in _refused(m, question)
+
+
+def test_a_spec_with_no_rows_to_keep_is_refused_and_one_without_n_keeps_ten(shop):
+    from dancr.core.recipes import PlanError
+    p, m, rows = shop
+    spec = ask(m, "top 3 orders by price").spec
+    for bad in (0, -3, 2.5, True, "5"):
+        with pytest.raises(PlanError, match="whole number of 1 or more"):
+            plan(m, {**spec, "n": bad})
+    q = Pipeline.from_dict(p.to_dict(), p.path)
+    pl_ = plan(m, {k: v for k, v in spec.items() if k != "n"})
+    node = instantiate(q, pl_)[pl_.terminal]
+    ex = Executor(q); ex.run(targets=[node])
+    node = q.inputs_of(node)["in"][0] if q.nodes[node].type == "chart" else node
+    assert pl.read_parquet(ex.state(node).output).height == 10
+
+
+@pytest.mark.parametrize("question", ["orders where price between 20 and 10", "orders where price from 20 to 10",
+                                      "orders where price not between 20 and 10"])
+def test_a_range_of_numbers_written_backwards_is_refused_as_dates_are(shop, question):
+    _, m, _ = shop
+    assert "Put the smaller one first" in _refused(m, question)
+    assert ask(m, question.replace("20", "x").replace("10", "20").replace("x", "10")).ok
+
+
+@pytest.mark.parametrize("question", ["total quantity on 2024-02-30", "total quantity in 2024-13-01",
+                                      "total quantity in 2024-13", "orders from 2024-02-31 to 2024-03-05",
+                                      "orders on 31/02/2024"])
+def test_a_day_that_does_not_exist_is_refused_when_the_question_is_read(shop, question):
+    _, m, _ = shop
+    assert "is not a date" in _refused(m, question)
+
+
+@pytest.mark.parametrize("question", ["total quantity by order id", "count per order id", "share of quantity by order id",
+                                      "quantity per order id"])
+def test_a_total_per_unique_id_is_refused_not_answered_for_every_row(shop, question):
+    _, m, _ = shop
+    msg = _refused(m, question)
+    assert "order_id is different on every row" in msg and "“order id”" in msg
+
+
+@pytest.mark.parametrize("question,stat", [("average price per order", "mean"), ("highest price per order id", "max")])
+def test_an_average_per_unique_id_is_the_plain_average(shop, question, stat):
+    p, m, rows = shop
+    spec, df = answer(p, m, question)
+    assert spec["recipe"] == "single" and spec["stat"] == stat
+    assert df["price"].to_list() == [pytest.approx(rows["price"].mean() if stat == "mean" else rows["price"].max())]
+
+
+@pytest.mark.parametrize("question", ["total quantity by region region", "total quantity quantity by region"])
+def test_a_column_named_twice_is_refused(shop, question):
+    _, m, _ = shop
+    assert "is named twice" in _refused(m, question)

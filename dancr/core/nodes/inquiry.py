@@ -154,8 +154,11 @@ def _compare_periods(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: di
     what = _label(ctx, measure) if measure else "rows"
     if df.height == 0:
         return NodeResult(df.lazy(), messages=["Nothing to compare in those two periods"])
-    prev_tot = float(df["previous"].sum() or 0.0)
-    cur_tot = float(df["current"].sum() or 0.0)
+    # the whole table's figure for each period, not a sum of the groups' figures: an average (or a median, a
+    # minimum) of the whole period is not the sum of the groups' averages
+    whole = sub.select(aggs).collect(engine="streaming").row(0, named=True) if by else df.row(0, named=True)
+    prev_tot = float(whole["previous"] or 0.0)
+    cur_tot = float(whole["current"] or 0.0)
     delta = cur_tot - prev_tot
     pct = (100.0 * delta / abs(prev_tot)) if prev_tot else None
     leader = ""
@@ -219,7 +222,7 @@ def _contribution(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[
         out = out.with_columns(
             pl.when(pl.lit(abs(net) > 0)).then(pl.col("change") / abs(pl.lit(net)) * 100).otherwise(None)
             .alias("contribution_percent")
-        ).with_columns(pl.col("change").abs().alias("__abs")).sort("__abs", descending=True).drop("__abs")
+        ).with_columns(pl.col("change").abs().alias("__abs")).sort("__abs", descending=True, nulls_last=True).drop("__abs")
         df = out.collect(engine="streaming")
         if df.height:
             top = df.row(0, named=True)
@@ -235,10 +238,13 @@ def _contribution(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[
         return NodeResult(df.lazy(), report=report,
                           messages=[f"Net change {_signed(net)} between {_period_label(prev, every)} and {_period_label(cur, every)}"])
     # contribution to a total: value, share and cumulative share (Pareto)
-    out = lf.with_columns(pl.lit(1).alias("__one")).group_by(by).agg(val().alias("value")).sort("value", descending=True)
+    out = lf.with_columns(pl.lit(1).alias("__one")).group_by(by).agg(val().alias("value")) \
+            .sort("value", descending=True, nulls_last=True)      # a group with no values is not the largest
+    total = pl.col("value").sum()
+    share = lambda e: pl.when(total != 0).then(e / total * 100)  # noqa: E731 - a total of 0 has no shares
     out = out.with_columns([
-        (pl.col("value") / pl.col("value").sum() * 100).alias("share_percent"),
-        (pl.col("value").cum_sum() / pl.col("value").sum() * 100).alias("cumulative_percent"),
+        share(pl.col("value")).alias("share_percent"),
+        share(pl.col("value").cum_sum()).alias("cumulative_percent"),
     ])
     df = out.collect(engine="streaming")
     if df.height == 0:
@@ -316,10 +322,12 @@ def _cramers_v(df: pl.DataFrame, a: str, b: str) -> float | None:
     tab = d.group_by(["a", "b"]).len()
     rt = tab.group_by("a").agg(pl.col("len").sum().alias("rt"))
     ct = tab.group_by("b").agg(pl.col("len").sum().alias("ct"))
-    t = tab.join(rt, on="a").join(ct, on="b").with_columns((pl.col("rt") * pl.col("ct") / n).alias("e"))
-    chi2 = float((((t["len"] - t["e"]) ** 2) / t["e"]).sum() or 0.0)
-    denom = n * (min(len(va), len(vb)) - 1)
-    return max(0.0, min(1.0, math.sqrt(chi2 / denom))) if denom > 0 else None
+    t = tab.join(rt, on="a").join(ct, on="b")
+    # chi² = n·(Σ O²/(row·col) − 1): the pairs that never occur count too (their expected share is not 0),
+    # and they are exactly the ones a table of the pairs seen leaves out
+    chi2 = n * (float((t["len"].cast(pl.Float64) ** 2 / (t["rt"].cast(pl.Float64) * t["ct"])).sum() or 0.0) - 1.0)
+    denom = n * (min(rt.height, ct.height) - 1)          # the categories left once blanks are dropped
+    return max(0.0, min(1.0, math.sqrt(max(chi2, 0.0) / denom))) if denom > 0 else None
 
 
 def _associations(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, Any]) -> NodeResult:
@@ -337,22 +345,22 @@ def _associations(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[
         raise ValueError("Need at least two columns to look for relationships between")
     df = lf.select(chosen).head(ASSOC_ROWS).collect(engine="streaming")
     rows: list[dict[str, Any]] = []
-    for i, a in enumerate(chosen):
-        for b in chosen[i + 1:]:
-            ka, kb = kind_of_dtype(schema[a]), kind_of_dtype(schema[b])
-            value = kind = None
-            if ka == NUM and kb == NUM:
-                value, kind = _pearson(df, a, b), "straight line"
-                label = "r"
-            elif ka == NUM or kb == NUM:
-                cat, num = (b, a) if ka == NUM else (a, b)
-                value, kind, label = _eta_squared(df, cat, num), "group difference", "eta²"
-            else:
-                value, kind, label = _cramers_v(df, a, b), "association", "V"
-            if value is None:
-                continue
-            rows.append({"left": _label(ctx, a), "right": _label(ctx, b), "kind": kind, "measure": label,
-                         "strength": round(abs(float(value)), 4), "value": round(float(value), 4)})
+    # with a target, only how each column relates to it; without one, every pair
+    pairs = [(target, b) for b in chosen[1:]] if target else \
+        [(a, b) for i, a in enumerate(chosen) for b in chosen[i + 1:]]
+    for a, b in pairs:
+        ka, kb = kind_of_dtype(schema[a]), kind_of_dtype(schema[b])
+        if ka == NUM and kb == NUM:
+            value, kind, label = _pearson(df, a, b), "straight line", "r"
+        elif ka == NUM or kb == NUM:
+            cat, num = (b, a) if ka == NUM else (a, b)
+            value, kind, label = _eta_squared(df, cat, num), "group difference", "eta²"
+        else:
+            value, kind, label = _cramers_v(df, a, b), "association", "V"
+        if value is None:
+            continue
+        rows.append({"left": _label(ctx, a), "right": _label(ctx, b), "kind": kind, "measure": label,
+                     "strength": round(abs(float(value)), 4), "value": round(float(value), 4)})
     if not rows:
         raise ValueError("No two columns had enough values to compare")
     out = pl.DataFrame(rows).sort("strength", descending=True)
@@ -424,7 +432,8 @@ def _check_data(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[st
         if kind_of_dtype(dt) == STR:
             num_like = int(row[f"num{i}"] or 0)
             filled = max(rows - miss, 1)
-            if num_like >= max(3, 0.5 * filled) and distinct > num_like:
+            # mostly numbers, but not all: the few that aren't (n/a, a typo) kept the column as text
+            if num_like >= max(3, 0.5 * filled) and num_like < filled:
                 issues.append((2, f"numbers stored as text ({num_like:,} look like numbers)"))
             if int(row[f"ws{i}"] or 0) > 0:
                 issues.append((1, f"{int(row[f'ws{i}']):,} values have spaces around them"))
@@ -518,6 +527,9 @@ def _forecast(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str,
     method = params.get("method") or "linear"
     cycle = params.get("cycle") or "weekday"
     horizon = int(number_param(params, "horizon", 10, "The horizon", whole=True, at_least=1, at_most=1000))
+    if method == "seasonal" and cycle == "hour" and isinstance(schema[t], pl.Date):
+        raise ValueError(f"A pattern through the day needs times of day, but {t} holds dates only. "
+                         "Choose a pattern that repeats each week or each year")
     prep = (lf.select([pl.col(t), pl.col(col).cast(pl.Float64).alias("__y")])
               .with_columns(pl.col(t).dt.epoch("s").cast(pl.Float64).alias("__t"))
               .filter(pl.col("__t").is_finite() & pl.col("__y").is_finite()))
@@ -537,7 +549,11 @@ def _forecast(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str,
     fit = fit_frame(prep, "__t", "__y", "linear")[0]
     a, b = float(fit.params[0]), float(fit.params[1])
     rmse = float(fit.rmse or 0.0)
-    vals = [pl.select(pl.lit(last).dt.offset_by(f"{i}{step}")).item() for i in range(1, horizon + 1)]
+    parts = re.findall(r"(\d+)([a-z]+)", step)
+    # step i is i whole steps on from the last reading ("1d" three times is "3d", not "31d"); each counted from
+    # the last reading, so month steps from the 31st stay at month ends instead of drifting
+    vals = [pl.select(pl.lit(last).dt.offset_by("".join(f"{int(k) * i}{u}" for k, u in parts))).item()
+            for i in range(1, horizon + 1)]
     future_times = pl.Series("__t2", vals)
     epochs = future_times.dt.epoch("s").cast(pl.Float64).to_list()
     preds = [a * e + b for e in epochs]

@@ -316,7 +316,7 @@ def _edited(node, rec: dict) -> bool:
 def _rewire(pipe, edits: Edits, nid: str, ins: dict[str, list[str]]) -> None:
     """Make a step's inputs exactly ``ins`` (order kept on a multi-input port)."""
     current = pipe.inputs_of(nid)
-    for port in set(current) | set(ins):
+    for port in sorted(set(current) | set(ins)):
         have, want = list(current.get(port) or []), list(ins.get(port) or [])
         if have == want:
             continue

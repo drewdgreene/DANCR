@@ -401,3 +401,13 @@ def test_a_text_group_code_needs_its_exact_text(tmp_path):
     st = Executor(p).run()["pred"]
     assert st.status == "done", st.error
     assert pl.read_parquet(st.output)["yhat"].to_list() == [None, pytest.approx(30.0)]
+
+
+@pytest.mark.parametrize("kind", ["linear", "logarithmic", "power", "exponential", "saturating", "polynomial"])
+@pytest.mark.parametrize("x", [0.1, 123.456, 1e9 + 0.1])
+def test_every_shape_refuses_a_single_x_value(kind, x):
+    """With one x value any parameters 'fit'; the nonlinear shapes (and a line whose centred sum of squares came
+    out a hair above zero) used to report a meaningless equation instead of saying so."""
+    lf = pl.DataFrame({"x": [x] * 7, "y": [1.0, 2, 3, 4, 5, 6, 7]}).lazy()
+    with pytest.raises(ValueError, match="All x values are the same"):
+        fits.fit_frame(lf, "x", "y", kind)

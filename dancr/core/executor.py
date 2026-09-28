@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import shutil
+import sys
 import threading
 import time
 import traceback
@@ -86,9 +87,18 @@ def engine_files() -> list[Path]:
     return sorted(f for f in seen if f.is_file())
 
 
+BAKED_FINGERPRINT = Path(__file__).resolve().parent.parent / "fingerprint.txt"     # written by packaging/dancr.spec
+
+
 def _code_fingerprint() -> str:
     """Hash of the code that can shape a step's output, so cached outputs are invalidated when it changes:
-    the modules a run executes (see ``engine_files``) and the versions of the libraries that compute and read."""
+    the modules a run executes (see ``engine_files``) and the versions of the libraries that compute and read.
+    A frozen app has no source to read, so the build computes this from the source and bakes it in."""
+    if getattr(sys, "frozen", False):
+        try:
+            return BAKED_FINGERPRINT.read_text().strip()
+        except OSError as e:
+            raise RuntimeError(f"this build of DANCR is incomplete: {BAKED_FINGERPRINT} is missing") from e
     import numpy
     top = Path(__file__).resolve().parent.parent.parent
     h = hashlib.sha1(IMPL_VERSION.encode())
@@ -520,16 +530,17 @@ class Executor:
         results: dict[str, NodeState] = {}
         self._claim_cache_dir()          # owner.pid before anything else: a starting window's sweep must see an owner
         run_lease = f"{self._lease}-run"
-        self._write_lease(run_lease, {nid: self._safe_hash(nid, memo) for nid in order})
+        self._write_lease(run_lease, {nid: self.safe_hash(nid, memo) for nid in order})
         try:
             return self._run(order, emit, cancel, force, memo, results)
         finally:
             self._remove_lease(run_lease)
 
-    def _safe_hash(self, nid: str, memo: dict[str, str]) -> str | None:
+    def safe_hash(self, nid: str, memo: dict[str, str] | None = None) -> str | None:
+        """The step's plan hash, or None for a step whose hash cannot be worked out (it simply holds nothing)."""
         try:
             return self.plan_hash(nid, memo)
-        except Exception:  # noqa: BLE001 - a broken node simply holds nothing
+        except Exception:  # noqa: BLE001
             return None
 
     def _run(self, order: list[str], emit: EventFn, cancel: threading.Event | None, force: bool,
@@ -771,7 +782,7 @@ class Executor:
         return held
 
     def gc(self, only: list[str] | None = None, keep_per_node: int = 1, grace_seconds: float = 900.0,
-           memo: dict[str, str] | None = None) -> None:
+           memo: dict[str, str] | None = None, keep_current: bool = True) -> None:
         """Delete stale cached outputs of the given nodes (default: all nodes of this pipeline).
         Older versions are kept while younger than `grace_seconds` so a quick undo stays instant.
         Never raises.
@@ -790,7 +801,7 @@ class Executor:
         for nid in nodes:
             nd = self.node_dir(nid)
             try:
-                live = {self.plan_hash(nid, memo)} | held.get(nid, set())
+                live = ({self.plan_hash(nid, memo)} if keep_current else set()) | held.get(nid, set())
             except Exception:
                 continue
             # a result is a record ({hash}.json) with, for steps that keep a table, {hash}.parquet
@@ -867,7 +878,10 @@ class Executor:
                 pass
 
     def clear_cache(self) -> None:
-        shutil.rmtree(self.cache_dir, ignore_errors=True)
+        """Delete every stored result except those a live DANCR process holds (a window showing it, a run or a
+        read in progress): the same sweep as ``gc``, keeping nothing else. This executor's own hold is let go first."""
+        self.release()
+        self.gc(keep_per_node=0, grace_seconds=0, keep_current=False)
 
     def cache_size(self) -> int:
         try:

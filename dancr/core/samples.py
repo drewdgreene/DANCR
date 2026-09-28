@@ -1,6 +1,7 @@
 """Sample data and starter templates for the start screen (and for AI agents wanting a quick demo)."""
 from __future__ import annotations
 
+import os
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -50,7 +51,9 @@ def write_sample(directory: Path | str, rows: int = 60_000) -> Path:
     })
     gap0, gap1 = rows // 2, min(rows, rows // 2 + 900)          # 75 minutes of missing data (never past the end)
     df = pl.concat([df[:gap0], df[gap1:]])
-    df.write_csv(out)
+    tmp = out.with_name(f"{out.name}.{os.getpid()}.tmp")        # a crash mid-write never leaves half a sample
+    df.write_csv(tmp)
+    os.replace(tmp, out)
     return out
 
 
@@ -160,6 +163,7 @@ def write_example(key: str, directory: Path | str) -> Path:
     from .answers import build, model_for
     from .ask import ask
     from .executor import Executor
+    from .planner import place_near
     ex = example(key)
     directory = Path(directory)
     project = directory / f"{ex['title']}.json"
@@ -169,8 +173,8 @@ def write_example(key: str, directory: Path | str) -> Path:
     files = _EXAMPLE_DATA[key](directory)
     p = Pipeline(ex["title"])
     p.path = project
-    for name in files:
-        p.add_node("load_file", title=Path(name).stem, params={"path": name}, id=Path(name).stem)
+    for i, name in enumerate(files):                    # the files one below another, at the left
+        p.add_node("load_file", title=Path(name).stem, params={"path": name}, id=Path(name).stem, y=i * 155.0)
     model = model_for(p, Executor(p))                   # the tables; the answers only add steps after them
     for q in ex["questions"]:
         asked = ask(model, q)
@@ -180,7 +184,8 @@ def write_example(key: str, directory: Path | str) -> Path:
     items = [a.terminal for a in p.answers]
     if key == "batches":
         items.append(_batch_limit(p))
-    report = p.add_node("report", title="Report", id="report",
+    x, y = place_near(p, items)                         # after the last step it shows, so its inputs read left to right
+    report = p.add_node("report", title="Report", id="report", x=x, y=y,
                         params={"title": ex["title"], "path": f"{ex['title']} report.html", "notes": ex["blurb"]})
     for nid in items:
         p.connect(nid, report.id, "items")
@@ -190,8 +195,10 @@ def write_example(key: str, directory: Path | str) -> Path:
 
 def _batch_limit(p) -> str:
     """A pass/fail check against a minimum kept on the Inputs page, so changing it reruns the check."""
+    from .planner import place_near
     p.set_input("minimum strength", 30, "MPa", "from the product spec")
-    check = p.add_node("check_limits", title="Strength at least the minimum", id="strength_check",
+    x, y = place_near(p, ["batch_tests"])
+    check = p.add_node("check_limits", title="Strength at least the minimum", id="strength_check", x=x, y=y,
                        params={"column": "strength", "min": "minimum strength", "action": "flag"})
     p.connect("batch_tests", check.id)
     return check.id

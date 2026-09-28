@@ -1,14 +1,17 @@
 """Smoke test of a frozen build: python packaging/smoke.py path/to/dancr-cli [work folder]
 
 Checks what the frozen app does in ways the test suite cannot: the command line runs a template, a report
-writes its PDF through the frozen pdf helper, and `dancr-cli mcp` answers an MCP handshake and lists its tools.
+writes its PDF through the frozen pdf helper, `dancr-cli mcp` answers an MCP handshake and lists its tools, and
+the window program (DANCR, next to dancr-cli) starts, opens a project and keeps running.
 Exits non-zero with a message at the first thing that does not work."""
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
 
@@ -66,6 +69,26 @@ def check_mcp(exe: str, work: Path) -> None:
     print(f"MCP ok: {len(tools)} tools")
 
 
+def check_window(exe: str, work: Path) -> None:
+    """The window program has no console, so it is checked by running it (offscreen) on a project: a missing Qt
+    plugin or a module the window alone imports ends it at once with an error, a working window keeps running."""
+    gui = Path(exe).with_name("DANCR.exe" if exe.lower().endswith(".exe") else "DANCR")
+    env = {**os.environ, "QT_QPA_PLATFORM": "offscreen"}
+    p = subprocess.Popen([str(gui), str(work / "t.json")], env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                         text=True)
+    try:
+        time.sleep(20)
+        if p.poll() is not None:
+            out, _ = p.communicate(timeout=30)
+            log = cli(exe, "log").strip()
+            sys.exit(f"the window program ended by itself ({p.returncode}):\n{out}\n{log}")
+    finally:
+        if p.poll() is None:
+            p.terminate()
+            p.wait(timeout=30)
+    print("window ok")
+
+
 def main() -> None:
     exe = sys.argv[1]
     work = Path(sys.argv[2] if len(sys.argv) > 2 else "smoke").resolve()
@@ -76,6 +99,7 @@ def main() -> None:
         sys.exit("the compare template failed to run")
     check_report_pdf(exe, work)
     check_mcp(exe, work)
+    check_window(exe, work)
 
 
 if __name__ == "__main__":

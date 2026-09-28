@@ -107,7 +107,7 @@ def test_steps_changed_elsewhere_that_write_outside_are_held(app, project, tmp_p
     assert doc.held == {"leak", "over"}
     doc._auto_pending = True
     doc._auto_run_now()
-    settle(app, lambda: not doc.running)
+    settle(app, lambda: not (doc._auto_pending or doc.running))
     assert (tmp_path / "out.csv").exists() and not outside.exists()
     assert pl.read_csv(tmp_path / "data.csv")["a"].to_list() == [1, 2, 3]
     doc.run(["leak"])                                    # the person asks for it: it runs
@@ -133,7 +133,7 @@ def test_a_held_step_stays_held_through_later_edits_elsewhere_and_revert(app, pr
     assert doc.held == {"leak"}
     doc._auto_pending = True
     doc._auto_run_now()
-    settle(app, lambda: not doc.running)
+    settle(app, lambda: not (doc._auto_pending or doc.running))
     assert not outside.exists()
     doc.shutdown()
 
@@ -356,13 +356,14 @@ def test_undo_after_save_as_elsewhere_still_points_at_the_same_files(doc, tmp_pa
     assert doc.pipeline.nodes[keep].params["path"] == str(a / "other.csv")
 
 
-def test_save_as_leaves_no_lease_behind(doc, tmp_path):
+def test_save_as_leaves_no_lease_behind(doc, tmp_path, app):
     from dancr.core.executor import LIVE_DIR
     pl.DataFrame({"v": [1.0]}).write_csv(tmp_path / "a.csv")
     doc.add_node("load_file", 0, 0, params={"path": str(tmp_path / "a.csv")})
     doc.save(tmp_path / "one.json")
     doc.executor.run()
     doc.refresh_states()                                # holds its results
+    settle(app, lambda: doc._poll_task is None)
     assert list((doc.executor.cache_dir / LIVE_DIR).glob("*.json"))
     doc.save(tmp_path / "two.json")
     doc.executor.release()
@@ -371,6 +372,7 @@ def test_save_as_leaves_no_lease_behind(doc, tmp_path):
 
 def test_autosave_never_writes_while_a_dialog_about_the_edits_is_open(doc, tmp_path, small_csv, monkeypatch):
     from dancr.ui.document import recovery_path
+    doc.set_autosave(True)
     path = _saved(doc, tmp_path, small_csv)
     before = path.read_text()
     doc.add_node("sort", 0, 0)
@@ -383,6 +385,20 @@ def test_autosave_never_writes_while_a_dialog_about_the_edits_is_open(doc, tmp_p
     doc.autosave_now()
     assert len(json.loads(path.read_text())["nodes"]) == 2
     assert not recovery_path().exists()                    # saved: nothing left to recover
+
+
+def test_autosave_is_off_until_turned_on(doc, tmp_path, small_csv):
+    from dancr.ui.document import recovery_path
+    assert doc.autosave is False
+    path = _saved(doc, tmp_path, small_csv)
+    before = path.read_text()
+    doc.add_node("sort", 0, 0)
+    doc.autosave_now()
+    assert path.read_text() == before                      # the file changes only when the person saves
+    assert len(json.loads(recovery_path().read_text())["pipeline"]["nodes"]) == 2     # a crash still loses nothing
+    doc.set_autosave(True)
+    doc.autosave_now()
+    assert len(json.loads(path.read_text())["nodes"]) == 2
 
 
 def test_recovered_edits_stay_protected_until_saved(doc, tmp_path, small_csv):
@@ -417,3 +433,88 @@ def test_old_style_recovery_files_are_discarded(doc):
     stale.parent.mkdir(parents=True, exist_ok=True)
     stale.write_text(json.dumps(Pipeline("x").to_dict()))
     assert Document.pending_recovery() is None and not stale.exists()
+
+
+def test_stopping_a_run_mid_step_never_freezes_the_window(doc, app, monkeypatch):
+    # a step writing its result cannot be interrupted: waiting for it must keep the window's events flowing
+    from PySide6.QtCore import QTimer
+    from dancr.core.executor import Executor
+    from dancr.ui.workers import run_gate
+    writing, release = threading.Event(), threading.Event()
+
+    def long_step(self, targets=None, on_event=None, cancel=None, force=False):
+        writing.set()
+        release.wait(20)                                    # ignores cancel, as sink_parquet does
+        return {}
+    monkeypatch.setattr(Executor, "run", long_step)
+    doc.add_node("enter_data", 0, 0)
+    doc.run()
+    settle(app, writing.is_set)
+    busy, ticks = [], []
+    doc.busy.connect(busy.append)
+    tick = QTimer(); tick.setInterval(20); tick.timeout.connect(lambda: ticks.append(1)); tick.start()
+    QTimer.singleShot(300, release.set)                     # only an event loop that keeps running gets here
+    threading.Timer(15, release.set).start()                # never hang the suite if it does freeze
+    doc.stop(wait=True)
+    tick.stop()
+    assert release.is_set() and len(ticks) >= 5
+    assert busy == ["Stopping the current step…", None]
+    assert not doc.running and run_gate.is_set()
+
+
+def test_a_stopped_step_is_not_left_marked_running(doc, app):
+    from dancr.core.executor import NodeState
+    nid = doc.add_node("enter_data", 0, 0)
+    doc.run()
+    t = doc._run
+    doc._states_cache[nid] = NodeState(nid, status="running")   # it was being computed when the run stopped
+    doc.stop(wait=True)
+    assert t is not None and doc.state(nid).status != "running"
+
+
+def test_refreshing_states_reads_off_the_gui_thread_once_per_burst(doc, tmp_path, app, monkeypatch):
+    from dancr.core.executor import Executor
+    pl.DataFrame({"v": [1.0]}).write_csv(tmp_path / "a.csv")
+    nid = doc.add_node("load_file", 0, 0, params={"path": str(tmp_path / "a.csv")})
+    settle(app, lambda: doc._poll_task is None)
+    threads = []
+    orig = Executor.states
+    monkeypatch.setattr(Executor, "states", lambda self: (threads.append(threading.current_thread()), orig(self))[1])
+    for _ in range(5):
+        doc.refresh_states()                                # a burst of edits
+    assert threads == [] or threads[0] is not threading.main_thread()
+    settle(app, lambda: doc._poll_task is None and not doc._states_again)
+    assert 1 <= len(threads) <= 2 and threading.main_thread() not in threads
+    assert doc.state(nid).status in ("idle", "stale")
+
+
+def test_a_project_file_deleted_then_written_again_later_is_still_watched(app, project):
+    import time
+    doc = Document()
+    doc.load(project)
+    text = project.read_text()
+    project.unlink()
+    settle(app, lambda: str(project.parent) in doc._watcher.directories())
+    t = time.time()
+    while time.time() - t < 0.6:                            # longer than the one retry the watcher used to make
+        app.processEvents()
+    data = json.loads(text)
+    data["nodes"].append({"id": "later", "type": "sort", "title": "Later", "params": {}, "x": 0, "y": 0})
+    project.write_text(json.dumps(data), encoding="utf-8")
+    settle(app, lambda: "later" in doc.pipeline.nodes)
+    assert str(project) in doc._watcher.files()
+    doc.shutdown()
+
+
+def test_a_data_file_missing_at_open_is_noticed_when_it_appears(app, project, monkeypatch):
+    monkeypatch.setattr(docmod, "SOURCE_SETTLE_MS", 50)
+    (project.parent / "data.csv").unlink()
+    doc = Document()
+    doc.load(project)
+    assert str(project.parent) in doc._src_watcher.directories()
+    got = []
+    doc.message.connect(got.append)
+    pl.DataFrame({"a": [1, 2, 3]}).write_csv(project.parent / "data.csv")
+    settle(app, lambda: "A data file changed on disk" in got)
+    assert str(project.parent / "data.csv") in doc._src_watcher.files()
+    doc.shutdown()

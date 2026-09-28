@@ -14,6 +14,7 @@ from typing import Any, Iterator
 import polars as pl
 
 from .core import Pipeline, PipelineError, registry
+from .core.registry import in_dancr_folder
 from .core.dtypes import json_safe
 from .core.executor import Executor, NodeState
 from .core.model import Node
@@ -94,17 +95,24 @@ def run_record(p: Pipeline, ex: Executor, res: dict[str, NodeState], elapsed: fl
             "findings": found, "headline": finding_headline(found)}
 
 
-def result_frame(p: Pipeline, ex: Executor, node_id: str, run: bool) -> pl.LazyFrame:
-    """A step's output, running it first when `run` is set and it is not computed yet."""
+@contextmanager
+def result_frame(p: Pipeline, ex: Executor, node_id: str, run: bool) -> Iterator[pl.LazyFrame]:
+    """A step's output, running it first when `run` is set and it is not computed yet. The frame reads the stored
+    result lazily, so the result is held (see ``Executor.hold``) until the block ends: another process's cache
+    sweep must not delete it while it is being read."""
     require_node(p, node_id)
-    st = ex.state(node_id)
-    if st.status != "done":
-        if not run:
-            raise ValueError(f"{node_id} hasn't been run yet (it's {st.status}). Run the project first, or ask for it to be run")
-        res = ex.run(targets=[node_id])
-        if res[node_id].status != "done":
-            raise StepFailed(f"{node_id} failed: {res[node_id].error}")
-    return ex.frame(node_id)
+    ex.hold({node_id: ex.safe_hash(node_id)})           # before looking for the result, as Executor.gc expects
+    try:
+        st = ex.state(node_id)
+        if st.status != "done":
+            if not run:
+                raise ValueError(f"{node_id} hasn't been run yet (it's {st.status}). Run the project first, or ask for it to be run")
+            res = ex.run(targets=[node_id])
+            if res[node_id].status != "done":
+                raise StepFailed(f"{node_id} failed: {res[node_id].error}")
+        yield ex.frame(node_id)
+    finally:
+        ex.release()
 
 
 def select_columns(lf: pl.LazyFrame, columns: list[str] | None) -> pl.LazyFrame:
@@ -196,6 +204,8 @@ def unsafe_write(p: Pipeline, target: Path, folder: Path) -> str | None:
     target = target.resolve()
     if not target.is_relative_to(folder):
         return f"Can only save inside the project folder {folder}, not {target}"
+    if in_dancr_folder(target, folder):
+        return f"Won't save into DANCR's own .dancr folder: {target}"
     if any(_same_file(target, src) for src in source_files(p)):
         return f"Won't save over {target}, because the project reads its data from that file"
     return None

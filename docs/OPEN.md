@@ -1,6 +1,13 @@
 # Open
 
 - Windows and macOS builds are validated only by the CI workflow, not on a real machine.
+- Releases are not code-signed (Windows SmartScreen and macOS Gatekeeper warn on first open): that needs a
+  signing certificate and an Apple Developer ID, then `signtool` and `codesign`/`notarytool` steps in CI. The
+  macOS build is for Apple silicon only (the `macos-latest` runner); an Intel Mac needs an Intel runner or a
+  universal2 Python and wheels.
+- `contribution` in change mode with an average (`stat` mean) adds up each group's change in its average, which
+  is not a share of the change in the overall average; a change in an average does not split by group.
+- The seasonal forecast's band uses the straight-line fit's error, so it is a rough band.
 - Answers cannot yet: group by two things at once (a cross-tab; refused), link keys written differently
   (`#10234` against `10234`), treat survey answers as ordered, say which month was over budget, join two
   different conditions with "or", keep two separate periods (`in March and April`), exclude a month

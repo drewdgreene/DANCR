@@ -1,12 +1,13 @@
 """python -m dancr.ui.app [pipeline.json]"""
 from __future__ import annotations
 
+import gc
 import logging
 import os
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QCoreApplication, QObject, QEvent
+from PySide6.QtCore import QCoreApplication, QObject, QEvent, QTimer
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication, QComboBox, QAbstractSpinBox
 
@@ -26,6 +27,35 @@ class WheelGuard(QObject):
                 w = w.parentWidget()
             return True
         return False
+
+
+class GuiThreadGC(QObject):
+    """Python's cycle collector runs on whichever thread happens to allocate when it is due, so a reference cycle
+    holding a widget (a closed dialog, a replaced card) can be freed on a worker thread. Destroying a widget there
+    deadlocks against the GUI thread (both wait on Qt's locks and the GIL) or crashes. So automatic collection is
+    turned off for the whole process, and this collects on the GUI thread instead, as often as Python would."""
+
+    FULL_EVERY = 60                          # ticks between full collections (the young generation goes when due)
+
+    def __init__(self, app: QApplication, interval_ms: int = 500) -> None:
+        super().__init__(app)
+        gc.disable()
+        self._ticks = 0
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self.check)
+        self._timer.start(interval_ms)
+
+    def check(self) -> None:
+        self._ticks += 1
+        if self._ticks >= self.FULL_EVERY:
+            self._ticks = 0
+            gc.collect()
+        elif gc.get_count()[0] > gc.get_threshold()[0]:
+            gc.collect(0)
+
+
+def install_gui_thread_gc(app: QApplication) -> GuiThreadGC:
+    return GuiThreadGC(app)
 
 
 def install_wheel_guard(app: QApplication) -> WheelGuard:
@@ -70,11 +100,11 @@ def main(argv: list[str] | None = None) -> int:
     apply_app_style(app)
     theme = theme_manager(app)
     install_wheel_guard(app)
+    install_gui_thread_gc(app)
     icon = Path(__file__).resolve().parent.parent / "assets" / "icon.png"
     if icon.exists():
         app.setWindowIcon(QIcon(str(icon)))
     from ..logsetup import start_watchdog, gui_tick, install_signal_logging, breadcrumb
-    from PySide6.QtCore import QTimer
     import threading
     tick = QTimer(); tick.setInterval(250); tick.timeout.connect(gui_tick); tick.start()
     start_watchdog(3.0)

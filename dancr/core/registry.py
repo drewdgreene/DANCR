@@ -68,7 +68,15 @@ class Ctx:
             real = out.resolve()
             if not real.is_relative_to(self.output_root):
                 raise ValueError(f"Can only save inside the project folder {self.output_root}, not {real}")
+            if in_dancr_folder(real, self.output_root):
+                raise ValueError(f"Won't save into DANCR's own .dancr folder: {real}")
         return out
+
+
+def in_dancr_folder(real: Path, folder: Path) -> bool:
+    """Whether a resolved path inside `folder` lies in a .dancr folder (results, versions, locks), which only
+    DANCR writes. Any spelling of the name counts, as a Mac or Windows disk sees .DANCR as the same folder."""
+    return any(part.lower() == ".dancr" for part in real.relative_to(folder).parts)
 
 
 ApplyFn = Callable[[Ctx, dict[str, list[pl.LazyFrame]], dict[str, Any]], "pl.LazyFrame | NodeResult"]

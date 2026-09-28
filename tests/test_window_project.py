@@ -136,6 +136,7 @@ def test_recovery_of_unsaved_project(window, app, sample, monkeypatch):
 
 
 def test_autosave_pauses_after_external_change_and_restore(window, app, sample, tmp_path):
+    window.doc.set_autosave(True)
     window._add_load_node(str(sample), None); wait_run(window, app)
     path = tmp_path / "paused.json"
     window.doc.save(path)
@@ -160,6 +161,24 @@ def test_autosave_pauses_after_external_change_and_restore(window, app, sample, 
     assert path.read_text() == before
     window.open_path(path)                                           # Revert
     assert window.doc.autosave_paused is None
+
+
+def test_autosave_is_a_file_menu_choice_off_by_default_and_remembered(window, app):
+    from PySide6.QtCore import QSettings
+    from dancr.ui.mainwindow import MainWindow
+    file_menu = window.menuBar().actions()[0].menu()
+    assert window.a_autosave in file_menu.actions() and window.a_autosave.isCheckable()
+    assert not window.a_autosave.isChecked() and window.doc.autosave is False
+    try:
+        window.a_autosave.trigger()
+        assert window.doc.autosave is True
+        again = MainWindow()                                         # the next window (or start) keeps the choice
+        assert again.a_autosave.isChecked() and again.doc.autosave is True
+        again.doc.undo.setClean(); again.close(); again.deleteLater()
+        window.a_autosave.trigger()
+        assert window.doc.autosave is False
+    finally:
+        QSettings().setValue("autosave", False)
 
 
 @pytest.mark.parametrize("key", [e["key"] for e in EXAMPLES])

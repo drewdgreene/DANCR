@@ -264,19 +264,17 @@ class Bank:
             return []
         qnorm = tuple(_content(text))
         out: list[Match] = []
+        exacts: set[str] = set()                      # the question itself: first among those that score 1
         for i in cand:
             q = self._questions[i]
             if not all(_mentions(raw, g) for g in self._required.get(q.key, ())):
                 continue
-            best = 0.0
-            for vtoks in self._variants[q.key]:
-                s = self._score(quniq, vtoks)
-                if s > best:
-                    best = s
-            if qnorm == tuple(_content(q.canonical)) or text.strip().lower() == q.canonical.strip().lower():
-                best = 1.0
+            exact = qnorm == tuple(_content(q.canonical)) or text.strip().lower() == q.canonical.strip().lower()
+            best = 1.0 if exact else max(self._score(quniq, v) for v in self._variants[q.key])
             out.append(Match(q, round(best, 6)))
-        out.sort(key=lambda m: (-m.score, self._recipe_rank(m.question.recipe),
+            if exact:
+                exacts.add(q.key)
+        out.sort(key=lambda m: (-m.score, m.question.key not in exacts, self._recipe_rank(m.question.recipe),
                                 self._table_order.get(m.question.table, 0), m.question.canonical, m.question.key))
         return out[:max(0, limit)]
 
@@ -302,18 +300,18 @@ class Bank:
         return self._idf.get(token, self._idf_unseen)
 
     def _score(self, quniq: tuple[str, ...], vtoks: tuple[str, ...]) -> float:
-        """How well one phrasing answers the question: its BM25 score over the words it covers, out of the
-        score the question's own words would get. 0 when nothing matches, 1 when the phrasing is the question."""
-        if not vtoks:
+        """How well one phrasing answers the question (0..1): each of the question's words it covers counts by its
+        BM25 weight in the phrasing, out of the weight it has in the question itself, and at most that (a phrasing
+        shorter than the question, or repeating a word, gains nothing). 0 when nothing matches; 1 only when it
+        covers every word of the question; a longer phrasing covers each word less."""
+        if not vtoks or not quniq:
             return 0.0
         doc = Counter(vtoks)
-        dl = len(vtoks)
-        matched = [t for t in quniq if t in doc]
-        if not matched:
-            return 0.0
-        raw = sum(self._idf_of(t) * (doc[t] * (K1 + 1)) / (doc[t] + K1 * (1 - B + B * dl / self._avgdl))
-                  for t in matched)
-        dq = Counter(quniq)
-        ideal = sum(self._idf_of(t) * (dq[t] * (K1 + 1)) / (dq[t] + K1 * (1 - B + B * len(quniq) / self._avgdl))
-                    for t in quniq)
-        return raw / ideal if ideal > 0 else 0.0
+        dl, ql = len(vtoks), len(quniq)
+        got = sum(self._idf_of(t) * min(1.0, self._tf(doc[t], dl) / self._tf(1, ql)) for t in quniq if t in doc)
+        ideal = sum(self._idf_of(t) for t in quniq)
+        return got / ideal if ideal > 0 else 0.0
+
+    def _tf(self, count: int, length: int) -> float:
+        """BM25's weight of a word said ``count`` times in ``length`` words."""
+        return count * (K1 + 1) / (count + K1 * (1 - B + B * length / self._avgdl))

@@ -1,7 +1,6 @@
 """Time-series operations for data with a date/time column."""
 from __future__ import annotations
 
-from datetime import timedelta
 from typing import Any, Callable
 
 import polars as pl
@@ -12,7 +11,7 @@ from ..timeutil import parse_duration, parse_bucket, format_seconds
 from ._common import first_input, schema_of, require_column, number_param, temporal_columns, build_aggregations, stat_expr, check_stats, STAT_HELP, column_title
 from ..expr import TIME, NUM
 from ..dtypes import is_date, align_time_column, temp_name
-from ..findings import finding, fmt_number
+from ..findings import finding
 
 
 def _time_col(schema: dict[str, pl.DataType], params: dict[str, Any], key: str = "time_column") -> str:
@@ -268,35 +267,27 @@ def _regular_grid(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[
     schema = schema_of(lf)
     t = _time_col(schema, params)
     lf = _with_time(lf, schema, t).sort(t)
-    tdt = pl.Datetime("us") if is_date(schema[t]) else schema[t]
     every, secs = parse_duration(params.get("every") or "1s")
     bounds = lf.select(pl.col(t).min().alias("lo"), pl.col(t).max().alias("hi")).collect(engine="streaming")
-    lo, hi = bounds["lo"][0], bounds["hi"][0]
-    if lo is None:
+    if bounds["lo"][0] is None:
         raise ValueError("The time column is empty")
     step_us = int(round(secs * 1e6))
     # ticks fall on whole multiples of the spacing (12:00:00, 12:00:01 … not 12:00:00.120, 12:00:01.120 …), so two
-    # tables put on the same grid line up tick for tick; the first tick is the first such time at or after the data
-    zoned0 = isinstance(tdt, pl.Datetime) and tdt.time_zone
-    first = pl.select((pl.lit(lo).cast(tdt) if zoned0 else pl.lit(lo).cast(pl.Datetime("us"))).dt.truncate(every)).item()
-    if first < lo:
-        first = first + timedelta(microseconds=step_us)
-    lo = first
-    if lo > hi:
+    # tables put on the same grid line up tick for tick; the first tick is the first such time at or after the data.
+    # All of it is worked out by Polars in the column's own zone: a day is a calendar day (midnight to midnight
+    # across a daylight-saving change) and an hour a real hour, where Python's arithmetic on zoned times would
+    # count wall-clock time and lose or add ticks around the change
+    bounds = bounds.with_columns(pl.col("lo").dt.truncate(every).alias("first"))
+    bounds = bounds.with_columns(pl.when(pl.col("first") < pl.col("lo")).then(pl.col("first").dt.offset_by(every))
+                                 .otherwise(pl.col("first")).alias("first"))
+    lo, hi = bounds["first"][0], bounds["hi"][0]
+    if bounds.select(pl.col("first") > pl.col("hi")).item():
         raise ValueError(f"The data spans less than one {every} step, so there is no tick to put it on")
     # whole microseconds, not seconds as floats: 0.3 s / 0.1 s is 2.9999… and would lose the last tick
-    n_ticks = (hi - lo) // timedelta(microseconds=1) // step_us + 1
+    n_ticks = int(bounds.select((pl.col("hi").dt.epoch("us") - pl.col("first").dt.epoch("us")) // step_us + 1).item())
     if n_ticks > 200_000_000:
         raise ValueError(f"A {every} spacing over this time span would create {n_ticks:,.0f} rows. Use a larger spacing.")
-    idx = temp_name("tick", schema)
-    # Build the first tick directly in the column's own dtype. For a zoned column the literal keeps
-    # its instant; casting a zoned value to a naive datetime would shift it to UTC wall time first.
-    zoned = isinstance(tdt, pl.Datetime) and tdt.time_zone
-    start = pl.lit(lo).cast(tdt) if zoned else pl.lit(lo).cast(pl.Datetime("us"))
-    grid = (pl.LazyFrame().select(pl.int_range(0, n_ticks, dtype=pl.Int64).alias(idx))
-              .select((start + pl.duration(microseconds=pl.col(idx) * step_us)).alias(t)))
-    if not zoned:
-        grid = grid.with_columns(pl.col(t).cast(tdt))
+    grid = bounds.lazy().select(pl.datetime_range(pl.col("first").first(), pl.col("hi").first(), every, closed="both").alias(t))
     method = params.get("method") or "nearest"
     if method in ("nearest", "backward", "forward"):
         out = grid.join_asof(lf, on=t, strategy=method)

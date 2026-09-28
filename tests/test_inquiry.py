@@ -159,3 +159,85 @@ def test_number_and_percent_formatting():
     assert fmt_number(1234.5) == "1,234" or fmt_number(1234.5) == "1,230"
     assert fmt_number(None) == "–" and fmt_number(float("nan")) == "–"
     assert fmt_pct(12.0) == "12%" and fmt_pct(0.5) == "0.5%" and fmt_pct(None) == "–"
+
+
+# ------------------------------------------------------------------- regressions
+def _t(m: int) -> datetime:
+    return datetime(2024, m, 5)
+
+
+def test_compare_periods_averages_the_whole_period_not_the_groups(tmp_path):
+    """With groups, the headline figure is the whole period's average (15 → 40), not a sum of group averages."""
+    df = pl.DataFrame({"time": [_t(1)] * 2 + [_t(2)] * 3, "g": ["a", "b", "a", "b", "c"], "v": [10.0, 20, 30, 40, 50]})
+    st, _ = _run(_pipe(df, tmp_path), "compare_periods",
+                 {"time_column": "time", "every": "1mo", "measure": "v", "stat": "mean", "by": ["g"]})
+    assert st.report["previous_total"] == pytest.approx(15.0) and st.report["current_total"] == pytest.approx(40.0)
+
+
+def test_contribution_ranks_a_group_without_values_last(tmp_path):
+    df = pl.DataFrame({"g": ["a", "a", "b", "b", "c"], "v": [None, None, 5.0, 1.0, 2.0]})
+    st, out = _run(_pipe(df, tmp_path), "contribution", {"by": ["g"], "measure": "v", "stat": "mean"})
+    assert out["g"].to_list() == ["b", "c", "a"]
+    assert st.report["top"] == "b"
+
+
+def test_contribution_of_a_zero_total_has_no_shares(tmp_path):
+    df = pl.DataFrame({"g": ["a", "b"], "v": [0.0, 0.0]})
+    st, out = _run(_pipe(df, tmp_path), "contribution", {"by": ["g"], "measure": "v", "stat": "sum"})
+    assert out["share_percent"].null_count() == 2 and st.report["top_share"] is None
+
+
+def test_contribution_to_a_change_ranks_a_missing_change_last(tmp_path):
+    df = pl.DataFrame({"time": [_t(1)] * 2 + [_t(2)] * 3, "g": ["a", "b", "a", "b", "c"], "v": [10.0, 20, 30, 40, 50]})
+    st, out = _run(_pipe(df, tmp_path), "contribution",
+                   {"by": ["g"], "measure": "v", "stat": "mean", "time_column": "time", "every": "1mo"})
+    assert out["g"].to_list()[-1] == "c"
+    assert "came from c" not in st.report["finding"]["statement"]
+
+
+def test_associations_with_a_target_only_pair_the_target(tmp_path):
+    n = 40
+    df = pl.DataFrame({"x": [float(i) for i in range(n)], "y": [float(i % 7) for i in range(n)],
+                       "z": [float(i % 7) * 2 for i in range(n)]})
+    _, out = _run(_pipe(df, tmp_path), "associations", {"target": "x"})
+    assert all("x" in (r["left"], r["right"]) for r in out.to_dicts()) and out.height == 2
+
+
+def test_cramers_v_of_a_perfect_association_is_one(tmp_path):
+    """Pairs that never occur count in the chi-square too; leaving them out halved it (V = 0.71 for a perfect link)."""
+    n = 40
+    df = pl.DataFrame({"h": ["p" if i % 2 else "q" for i in range(n)],
+                       "k": [("u" if i % 2 else "v") if i < 20 else None for i in range(n)]})
+    _, out = _run(_pipe(df, tmp_path), "associations", {})
+    assert out.row(0, named=True)["strength"] == pytest.approx(1.0)
+
+
+def test_check_data_flags_repeated_numbers_stored_as_text(tmp_path):
+    """Few distinct values (10, 20) with a stray 'n/a' is the usual case of numbers kept as text."""
+    df = pl.DataFrame({"amount": ["10", "20", "10", "20", "n/a"] * 20, "code": ["001", "002"] * 50})
+    _, out = _run(_pipe(df, tmp_path), "check_data", {})
+    issues = dict(zip(out["column"].to_list(), out["issue"].to_list()))
+    assert "numbers stored as text" in issues["amount"] and issues["code"] == ""
+
+
+@pytest.mark.parametrize("every,expected", [
+    ("1d", [datetime(2024, 1, 31), datetime(2024, 2, 1), datetime(2024, 2, 2)]),
+    ("1w", [datetime(2024, 2, 6), datetime(2024, 2, 13), datetime(2024, 2, 20)]),
+    ("1mo", [datetime(2024, 2, 29), datetime(2024, 3, 30), datetime(2024, 4, 30)]),
+])
+def test_forecast_steps_are_one_step_apart(every, expected, tmp_path):
+    """Step i was offset by f'{i}{step}', so '1d' became 11 days, 21 days, 31 days …"""
+    t0 = datetime(2024, 1, 1)
+    df = pl.DataFrame({"time": [t0 + timedelta(days=i) for i in range(30)], "v": [float(i) for i in range(30)]})
+    _, out = _run(_pipe(df, tmp_path), "forecast", {"time_column": "time", "column": "v", "horizon": 3, "every": every})
+    assert out["time"].to_list() == expected
+
+
+def test_forecast_refuses_a_daily_pattern_on_dates_only(tmp_path):
+    t0 = datetime(2024, 1, 1)
+    df = pl.DataFrame({"day": [(t0 + timedelta(days=i)).date() for i in range(30)], "v": [float(i) for i in range(30)]})
+    p = _pipe(df, tmp_path)
+    p.add_node("forecast", params={"time_column": "day", "column": "v", "method": "seasonal", "cycle": "hour"}, id="s")
+    p.connect("src", "s")
+    st = Executor(p).run(targets=["s"])["s"]
+    assert st.status == "failed" and "holds dates only" in st.error

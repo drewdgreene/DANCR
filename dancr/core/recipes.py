@@ -846,8 +846,18 @@ def _part_formula(part: str, col: str) -> str:
     return {"hour": f"HOUR([{col}])", "month": f"MONTH([{col}])", "day": f"DAY([{col}])"}[part]
 
 
+def top_n(spec: dict) -> int:
+    """How many rows a top or toprows answer keeps: ten unless the spec says; a whole number of 1 or more."""
+    n = spec.get("n")
+    if n is None:
+        return 10
+    if isinstance(n, bool) or not isinstance(n, (int, float)) or n != int(n) or n < 1:
+        raise PlanError(f"top {n} is not a number of rows. Say a whole number of 1 or more, as in top 5")
+    return int(n)
+
+
 def _plan_top(b: _Builder):
-    n = int(b.spec.get("n") or 10)
+    n = top_n(b.spec)
     if b.spec.get("every") and not b.spec.get("by"):
         return _plan_top_times(b, n)
     return _plan_breakdown(b, top=n)
@@ -896,7 +906,7 @@ def _plan_toprows(b: _Builder):
     measure = spec.get("measure")
     if not measure:
         raise PlanError("Say which number to rank the rows by, for example “biggest orders by amount”")
-    n = int(spec.get("n") or 10)
+    n = top_n(spec)
     bottom = bool(spec.get("bottom"))
     b.base()
     b.need(measure)
@@ -1273,7 +1283,7 @@ def chips(model: DataModel, spec: dict) -> list[dict[str, Any]]:
         out.append({"key": "by", "text": f"by {_group_ref_label(model, by, t.node)}" if by else "by …", "value": by,
                     "choices": [{"label": f"by {_group_ref_label(model, g, t.node)}", "value": g} for g in groupables(model, t.node)]})
     if r in ("top", "toprows"):
-        n = int(spec.get("n") or 10)
+        n = top_n(spec)
         out.append({"key": "n", "text": f"top {n}", "value": n, "choices": [{"label": f"top {k}", "value": k} for k in TOP_CHOICES]})
     if r == "relationship":
         for key in ("x", "y"):

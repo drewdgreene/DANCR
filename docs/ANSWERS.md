@@ -23,7 +23,8 @@ ties are broken by project order, column order and recipe order.
 - Statistics (total, average, count, highest …), a group (`by region`, `per customer`), a time step (`per week`,
   `monthly`), top N, parts of the day or week, shares, and the recipe words (trend, compare, gaps, spikes …).
 - Comparisons on a column: `price above 30`, `price is between 10 and 20`, `price from 10 to 20`, `price not
-  between 10 and 20`, `price is not above 30`, `customer_id is 1, 2 or 3` (any of them), `stock below reorder level`.
+  between 10 and 20`, `price is not above 30`, `customer_id is 1, 2 or 3` (any of them), `stock below reorder level`. A range written backwards
+  (`between 20 and 10`) is refused, as for dates.
   A comma between digits groups thousands only before exactly three digits (`1,234`, `12,345.5`); otherwise it
   separates a list (`1,2` is 1 and 2). A decimal comma is not read: write `30.5`. "is" belongs to the comparison after it, or means "equals" before a value (`region is North`),
   and is nothing otherwise (`what is the average price`).
@@ -45,7 +46,10 @@ ties are broken by project order, column order and recipe order.
   rows; `last month` is the calendar month before the one holding that date, `the last 7 days` the seven days up
   to it. The filter's text says the dates chosen (`last month (March 2024)`). Two separate periods (`in March and
   April`), dates no row can be in at once (`before February and after March`), a range written backwards and
-  `the last 0 days` are refused rather than answered with nothing.
+  `the last 0 days` are refused rather than answered with nothing, and so is a date no calendar has (`2024-02-30`).
+- `top N` needs a whole number of at least 1 (`top 0`, `top 2.5` are refused). A total or count per something
+  every row has its own of (`total quantity by order id`) is refused: each row would be its own group.
+- A column named twice (`by region region`) is refused.
 - Superlatives: `biggest orders`, `cheapest orders`, `orders with the highest price` are rows; `lowest temperature
   in site B` is one value; `hottest day`, `highest sales day`, `which day had the highest sales`, `best day` over a
   table with several rows per day add each day up (or average it, for readings) first and give the top one

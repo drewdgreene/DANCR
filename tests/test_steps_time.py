@@ -293,3 +293,17 @@ def test_time_buckets_columns_param_and_names(pipe):
     assert run_one(pipe, tb.id).columns == ["time", "pressure_psi_mean", "pressure_psi_max"]
     pipe.set_params(tb.id, default_stats=["max"])
     assert run_one(pipe, tb.id).columns == ["time", "pressure_psi"]
+
+
+def test_regular_grid_follows_the_calendar_across_daylight_saving(tmp_path):
+    """A daily grid stays on local midnight across a clock change, and an hourly grid keeps every real hour
+    (Python's wall-clock arithmetic on zoned times put the days at 01:00 and lost the repeated hour)."""
+    spring = pl.datetime_range(datetime(2024, 3, 29), datetime(2024, 4, 2), "1h", time_zone="Europe/London", eager=True)
+    p = _pipe(pl.DataFrame({"t": spring, "v": range(len(spring))}), tmp_path)
+    n = _step(p, "regular_grid", {"every": "1d", "method": "nearest"})
+    assert [x.hour for x in run_one(p, n)["t"].to_list()] == [0, 0, 0, 0, 0]
+    autumn = pl.datetime_range(datetime(2024, 10, 26, 20), datetime(2024, 10, 27, 4), "1h", time_zone="Europe/London", eager=True)
+    p = _pipe(pl.DataFrame({"t": autumn, "v": range(len(autumn))}), tmp_path, "autumn.parquet")
+    n = _step(p, "regular_grid", {"every": "1h", "method": "nearest"})
+    out = run_one(p, n)
+    assert out.height == len(autumn) and out["v"].to_list() == list(range(len(autumn)))

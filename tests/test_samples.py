@@ -3,7 +3,7 @@ import polars as pl
 import pytest
 
 from dancr.core import Pipeline
-from dancr.core.samples import TEMPLATES, build_template, write_sample
+from dancr.core.samples import EXAMPLES, TEMPLATES, build_template, write_example, write_sample
 
 
 def test_templates_build_and_run(tmp_path):
@@ -52,3 +52,16 @@ def test_synth_low_rate_does_not_crash(tmp_path):
     from dancr.synth import write_dataset
     t = write_dataset(tmp_path, hours=1.0, rate=0.001, seed=1, fmt="parquet")
     assert pl.read_parquet(tmp_path / "probe_A.parquet").height == t["rows_a"]
+
+
+@pytest.mark.parametrize("key", [e["key"] for e in EXAMPLES])
+def test_examples_read_left_to_right(tmp_path, key):
+    """Every step of an example sits right of the steps it reads from (the report after all it shows), and no
+    two steps sit on each other, so the map needs no tidying before it can be read."""
+    import json
+    p = json.loads(write_example(key, tmp_path).read_text())
+    at = {n["id"]: (n["x"], n["y"]) for n in p["nodes"]}
+    assert [(e["source"], e["target"]) for e in p["edges"] if at[e["source"]][0] >= at[e["target"]][0]] == []
+    spots = list(at.items())
+    assert [(a, b) for i, (a, (ax, ay)) in enumerate(spots) for b, (bx, by) in spots[i + 1:]
+            if abs(ax - bx) < 230 and abs(ay - by) < 130] == []

@@ -79,6 +79,22 @@ def test_lod_inf_tz_gaps():
         lod.line_data(df.lazy(), "nope", ["v"])
 
 
+def test_group_values_info_brings_back_only_the_shown_groups(monkeypatch):
+    # many distinct values: only the shown groups leave the query, and what is left out is still counted
+    n = 20_000
+    keys = [f"k{i:05d}" for i in range(n)] + ["b", "b", "b", "a", "a", "a", None, None, None, "c", "c"]
+    lf = pl.LazyFrame({"g": keys})
+    heights = []
+    real = lod._collect
+    monkeypatch.setattr(lod, "_collect", lambda q: heights.append((df := real(q)).height) or df)
+    shown, others, other_rows = lod.group_values_info(lf, "g", limit=4)
+    assert max(heights) <= 4
+    assert shown == ["a", "b", None, "c"]                   # most frequent first, ties by value, blank last among equals
+    assert others == n and other_rows == n
+    assert lod.group_values_info(pl.LazyFrame({"g": ["x", "y"]}), "g", limit=12) == (["x", "y"], 0, 0)
+    assert lod.group_values_info(pl.LazyFrame({"g": pl.Series([], dtype=pl.Utf8)}), "g") == ([], 0, 0)
+
+
 def test_envelope_contains_extremes_and_streams(pipe):
     ex = Executor(pipe); ex.run()
     lf = ex.frame("a")

@@ -170,7 +170,8 @@ def text_to_number_expr(expr: pl.Expr) -> pl.Expr:
          .when(s.str.contains(_EU_THOUSANDS)).then(s.str.replace_all(".", "", literal=True).str.replace(",", ".", literal=True))
          .when(s.str.contains(_DECIMAL_COMMA)).then(s.str.replace(",", ".", literal=True))
          .otherwise(s))
-    return s.cast(pl.Float64, strict=False)
+    n = s.cast(pl.Float64, strict=False)
+    return pl.when(n.is_finite()).then(n)        # 'inf' and 'NaN' are words, not numbers, as in number_from_text
 
 
 def number_from_text(value: Any, what: str) -> float:

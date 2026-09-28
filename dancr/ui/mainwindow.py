@@ -7,7 +7,7 @@ import logging
 import time
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QPointF, QPoint, QSettings, QTimer, QSize, QUrl, QEventLoop
+from PySide6.QtCore import Qt, QPointF, QPoint, QSettings, QTimer, QSize, QUrl
 from PySide6.QtGui import QAction, QActionGroup, QKeySequence, QCloseEvent, QDesktopServices
 from PySide6.QtWidgets import (QMainWindow, QMenu, QFileDialog, QMessageBox, QSplitter, QToolBar, QStatusBar, QInputDialog, QLabel,
                                QProgressDialog, QApplication, QToolButton, QStackedWidget, QWidget, QVBoxLayout, QHBoxLayout,
@@ -51,6 +51,7 @@ class MainWindow(QMainWindow):
         self.steps = StepFactory(self)
         self._terminating = False
         self._disposed = False
+        self._busy_dlg: QProgressDialog | None = None
         self._toast_index = -1
         self.scene = CanvasScene(self.doc, self)          # parented: it goes when the window goes (theme switch)
         self.view = CanvasView(self.scene)
@@ -155,6 +156,11 @@ class MainWindow(QMainWindow):
         self.a_save_as = self._act("Save &as…", None, QKeySequence.SaveAs, self.save_as)
         self.a_versions = self._act("Earlier &versions…", "clock-counter-clockwise", None, self.show_versions, "Go back to an earlier saved version")
         self.a_revert = self._act("Re&vert to saved", None, None, self.revert)
+        self.a_autosave = QAction("A&utosave", self, checkable=True)
+        self.a_autosave.setToolTip("Save the project to its file every minute. When off, the file changes only when you save.")
+        self.a_autosave.setChecked(self.settings.value("autosave", False, type=bool))
+        self.a_autosave.triggered.connect(self._set_autosave)
+        self.doc.set_autosave(self.a_autosave.isChecked())
         self.a_open_data = self._act("Open data file…", "folder-open", "Ctrl+I", self.add_data_file, "Open a CSV, Excel or Parquet file as a new table (Ctrl+I)")
         self.a_quit = self._act("&Quit", None, QKeySequence.Quit, self.close)
         self.recent_menu = file_m.addMenu("Open &recent")
@@ -168,7 +174,8 @@ class MainWindow(QMainWindow):
             self.examples_menu.addAction(e["title"], lambda k=e["key"]: self.open_example(k))
         file_m.addAction(self.a_new); file_m.addMenu(self.template_menu); file_m.addMenu(self.examples_menu); file_m.addAction(self.a_open); file_m.addMenu(self.recent_menu)
         file_m.addSeparator(); file_m.addAction(self.a_open_data); file_m.addSeparator()
-        file_m.addAction(self.a_save); file_m.addAction(self.a_save_as); file_m.addAction(self.a_versions); file_m.addAction(self.a_revert)
+        file_m.addAction(self.a_save); file_m.addAction(self.a_save_as); file_m.addAction(self.a_autosave)
+        file_m.addAction(self.a_versions); file_m.addAction(self.a_revert)
         file_m.addSeparator(); file_m.addAction(self.a_quit)
         self._refresh_recent()
 
@@ -341,6 +348,7 @@ class MainWindow(QMainWindow):
         listen(self, d.undo.indexChanged, self._on_undo_index)
         listen(self, d.reloaded, self._on_reloaded)
         listen(self, d.message, lambda m: self.status.showMessage(m, 8000))
+        listen(self, d.busy, self._on_busy)
         listen(self, d.runStarted, self._on_run_started)
         listen(self, d.runProgress, self._run_progress)
         listen(self, d.runFinished, self._on_run_finished)
@@ -669,9 +677,16 @@ class MainWindow(QMainWindow):
                                 lambda: self.doc.undo.undo() if self.doc.undo.index() == idx else None)
 
     # ------------------------------------------------------------ file ops
+    def _set_autosave(self, on: bool) -> None:
+        """Autosave is the person's choice for every project (remembered between sessions); off to begin with."""
+        self.settings.setValue("autosave", on)
+        self.doc.set_autosave(on)
+        self.status.showMessage("Autosave on: the project is saved every minute" if on
+                                else "Autosave off: the project file changes only when you save", 4000)
+
     def _update_title(self) -> None:
         name = self.doc.path.stem if self.doc.path else "Untitled"
-        paused = self.doc.autosave_paused
+        paused = self.doc.autosave_paused if self.doc.autosave else None
         self.setWindowTitle(f"{'• ' if self.doc.dirty else ''}{name}{' (autosave paused)' if paused else ''} — DANCR")
         self.autosave_label.setText(f"Autosave paused: {paused}" if paused else "")
         self.a_revert.setEnabled(self.doc.path is not None and self.doc.dirty)
@@ -700,7 +715,8 @@ class MainWindow(QMainWindow):
         if not self.doc.dirty:
             return True
         if self.doc.autosave_paused:
-            what = f"Autosave is paused ({self.doc.autosave_paused}). Save replaces {self.doc.path.name if self.doc.path else 'nothing'} with what you see now; Discard keeps the file on disk as it is."
+            why = f"Autosave is paused ({self.doc.autosave_paused})" if self.doc.autosave else self.doc.autosave_paused.capitalize()
+            what = f"{why}. Save replaces {self.doc.path.name if self.doc.path else 'nothing'} with what you see now; Discard keeps the file on disk as it is."
         else:
             what = "Save changes to this project?"
         r = QMessageBox.question(self, "Unsaved changes", what, QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel)
@@ -714,30 +730,18 @@ class MainWindow(QMainWindow):
         r = QMessageBox.question(self, "A run is in progress", f"Stop the run and {what}?", QMessageBox.Yes | QMessageBox.No)
         if r != QMessageBox.Yes:
             return False
-        self._wait_for_run("Stopping the current step…")
+        self.doc.stop(wait=True)
         return True
 
-    def _wait_for_run(self, text: str) -> None:
-        """Stop the run and wait for it to settle. A local event loop driven by runFinished is used
-        instead of a manual processEvents() loop, which could re-enter open/save/close while tearing
-        the run down."""
-        if not self.doc.running:
-            return
-        self.doc.stop()
-        dlg = QProgressDialog(text, None, 0, 0, self)
-        dlg.setWindowTitle("DANCR"); dlg.setWindowModality(Qt.WindowModal); dlg.setMinimumDuration(0)
-        dlg.show(); dlg.setValue(0)
-        loop = QEventLoop(self)
-        self.doc.runFinished.connect(loop.quit)
-        try:
-            if self.doc.running:
-                loop.exec()
-        finally:
-            try:
-                self.doc.runFinished.disconnect(loop.quit)
-            except (RuntimeError, TypeError):
-                pass
-            dlg.close()
+    def _on_busy(self, why: str | None) -> None:
+        """While the document waits for a run to stop, a window-modal note says why; it takes every click, so
+        nothing can open, save or close the project while the run is torn down."""
+        if self._busy_dlg is not None:
+            self._busy_dlg.close(); self._busy_dlg.deleteLater(); self._busy_dlg = None
+        if why:
+            dlg = self._busy_dlg = QProgressDialog(why, None, 0, 0, self)
+            dlg.setWindowTitle("DANCR"); dlg.setWindowModality(Qt.WindowModal); dlg.setMinimumDuration(0)
+            dlg.show(); dlg.setValue(0)
 
     def new_pipeline(self) -> None:
         if self._confirm_stop_run("start a new project") and self.maybe_save():
@@ -846,7 +850,8 @@ class MainWindow(QMainWindow):
                 self.doc.restore_version(dlg.chosen())
             except Exception as e:  # noqa: BLE001
                 QMessageBox.critical(self, "Cannot restore", str(e)); return
-            self.status.showMessage("Restored. Save to keep it, or Revert to go back. Autosave is paused until then.", 8000)
+            self.status.showMessage("Restored. Save to keep it, or Revert to go back."
+                                    + (" Autosave is paused until then." if self.doc.autosave else ""), 8000)
 
     def terminate(self) -> None:
         """The system asked us to quit (SIGTERM): no questions, keep an unsaved project recoverable, close cleanly."""
@@ -857,14 +862,14 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, e: QCloseEvent) -> None:
         if self._terminating:
-            self.doc.stop(wait=True)
+            self.doc.stop(wait=True, why="Stopping the current step before quitting…")
             self.doc.write_recovery()             # unsaved edits of any project; offered back on the next start
         else:
             if self.doc.running:
                 r = QMessageBox.question(self, "A run is in progress", "Stop the run and quit?", QMessageBox.Yes | QMessageBox.No)
                 if r != QMessageBox.Yes:
                     e.ignore(); return
-                self._wait_for_run("Stopping the current step before quitting…")
+                self.doc.stop(wait=True, why="Stopping the current step before quitting…")
             if not self.maybe_save():
                 e.ignore(); return
             self.doc.clear_recovery()             # saved or deliberately discarded

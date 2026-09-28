@@ -384,3 +384,11 @@ def test_text_and_round_keep_extreme_numbers_exact():
     assert _f('[x] & ""', df) == ["1e-300", "1e+300", "0.1", "0", ""]
     assert _f("ROUND([x], 2)", df)[:4] == [0.0, 1e300, 0.1, 0.0]
     assert str(_f("ROUND([x] * -1, 0)", pl.DataFrame({"x": [0.2]}))[0]) == "0.0"      # no -0
+
+
+@pytest.mark.parametrize("src", ["s / 2", "2 / s", "d / 2", "s ^ 2", "2 ^ d", "(n > 1) / 2", "2 ^ (n > 1)"])
+def test_divide_and_power_refuse_text_dates_and_true_false_like_the_other_arithmetic(src):
+    with pytest.raises(FormulaError, match="Cannot do arithmetic"):
+        compile_formula(src, DF.schema)
+    assert check_formula(src, DF.schema) is not None
+    assert evaluate("n / 2") == [0.5, None, 1.5, 2.0] and evaluate("n ^ 2") == [1.0, None, 9.0, 16.0]

@@ -110,3 +110,24 @@ def test_a_question_that_omits_the_number_is_not_matched(model):
     a = ask(model, "total by region")
     assert not a.ok and a.source == "grammar"
     assert "which number" in a.message
+
+
+def test_scores_stay_between_0_and_1_and_the_question_itself_comes_first():
+    from dancr.core.bank import Question
+    exact = Question(spec={}, canonical="Quantity region", recipe="describe", table="t", key="exact")
+    loud = Question(spec={}, canonical="Loud", recipe="trend", table="t", key="loud")      # ranks first on a tie
+    short = Question(spec={}, canonical="Short", recipe="trend", table="t", key="short")
+    bank = Bank([exact, loud, short], [(("quantity", "region"),),
+                                       (("quantity", "quantity", "region", "region"),),    # says the words twice
+                                       (("region",),)])                                   # shorter than the question
+    got = bank.match("quantity region")
+    assert got[0].question.key == "exact" and got[0].score == 1.0
+    assert all(0.0 <= m.score <= 1.0 for m in got)
+    assert bank.match("quantity region things stuff")[0].score < MATCH_THRESHOLD   # the question's words must be covered
+    assert bank._score(("quantity", "region", "things"), ("region",)) <= 1.0
+
+
+def test_scores_on_a_real_bank_never_exceed_1(model):
+    bank = Bank.from_model(model)
+    for text in ("quantity by region", "price per customer", "orders quantity price region segment", "total total quantity"):
+        assert all(0.0 <= m.score <= 1.0 for m in bank.match(text, limit=100)), text

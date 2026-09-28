@@ -29,6 +29,7 @@ from . import __version__
 from . import headless as hl
 from .core import Pipeline, PipelineError, registry
 from .core.executor import Executor
+from .core.registry import in_dancr_folder
 
 log = logging.getLogger("dancr.mcp")
 
@@ -43,11 +44,11 @@ mcp = MCPServer("dancr", version=__version__, instructions=(
     "Use open_in_gui so the person can watch; the GUI reloads the file whenever it changes. "
     "Pipeline files must be inside the server's root folder, and every file a pipeline or tool writes "
     "(export, workbook and report steps, render_chart out_png, export_node) must be inside the pipeline file's folder "
-    "and must not be a data file the pipeline reads. "
+    "and must not be a data file the pipeline reads or inside a .dancr folder. "
     "Reading data files is not restricted; relative data paths are taken from the root folder."))
 
 ROOT = Path.cwd().resolve()        # where pipelines may be created; `dancr mcp --root DIR` sets it
-ROOT_REFUSED = False               # started in the home folder or at the top of a drive with no --root: no pipelines
+ROOT_REFUSED = False               # started in or above the home folder, or at the top of a drive, with no --root: no pipelines
 
 
 def friendly(fn):
@@ -70,7 +71,7 @@ def friendly(fn):
 
 def _in_root(path: str | Path, change: bool = True) -> Path:
     """A pipeline file path (relative to the root), refused outside the server's root folder. A server started
-    in the home folder or at the top of a drive reads pipelines there but does not create or change them."""
+    in or above the home folder, or at the top of a drive, reads pipelines there but does not create or change them."""
     if ROOT_REFUSED and change:
         raise ToolError(f"The DANCR MCP server was started in {ROOT}, so it won't create or change projects "
                         "anywhere under it. Start it in the project's folder, or with --root <folder>.")
@@ -78,6 +79,8 @@ def _in_root(path: str | Path, change: bool = True) -> Path:
     p = (p if p.is_absolute() else ROOT / p).resolve()
     if not p.is_relative_to(ROOT):
         raise ToolError(f"Projects can only be created inside {ROOT} (the folder the DANCR MCP server was started in), not {p}")
+    if change and in_dancr_folder(p, ROOT):
+        raise ToolError(f"Won't create or change a project inside DANCR's own .dancr folder: {p}")
     return p
 
 
@@ -440,13 +443,16 @@ def node_status(path: str, node_id: str) -> str:
     return _dump(_record(p, Executor(p), node_id))
 
 
-def _frame(path: str, node_id: str, run: bool) -> tuple[Pipeline, pl.LazyFrame]:
+@contextmanager
+def _frame(path: str, node_id: str, run: bool) -> Iterator[tuple[Pipeline, pl.LazyFrame]]:
+    """The pipeline and a step's output, held while the block reads it (``headless.result_frame``)."""
     p = _load(path)
     hl.require_node(p, node_id)
     unsafe = _unsafe_steps(p, [node_id])
     if unsafe and run:
         raise ToolError(next(iter(unsafe.values())))
-    return p, hl.result_frame(p, _executor(p), node_id, run)
+    with hl.result_frame(p, _executor(p), node_id, run) as lf:
+        yield p, lf
 
 
 @mcp.tool()
@@ -471,8 +477,8 @@ def get_sample(path: str, node_id: str, rows: int = 20, offset: int = 0, columns
     """Rows from a node's output as JSON records (1 to 500 rows; pass columns to narrow wide tables)."""
     if not 1 <= int(rows) <= 500 or int(offset) < 0:
         raise ValueError("rows must be between 1 and 500, and offset at least 0")
-    _, lf = _frame(path, node_id, run)
-    return hl.select_columns(lf, columns).slice(int(offset), int(rows)).collect(engine="streaming").write_json()
+    with _frame(path, node_id, run) as (_, lf):
+        return hl.select_columns(lf, columns).slice(int(offset), int(rows)).collect(engine="streaming").write_json()
 
 
 @mcp.tool()
@@ -480,8 +486,8 @@ def get_sample(path: str, node_id: str, rows: int = 20, offset: int = 0, columns
 def get_stats(path: str, node_id: str, columns: list[str] | None = None, run: bool = True) -> str:
     """Summary statistics (count, missing, mean, std, min, quartiles, max) for the columns of a node's output."""
     from .views.stats import column_summary
-    _, lf = _frame(path, node_id, run)
-    return column_summary(lf, columns).write_json()
+    with _frame(path, node_id, run) as (_, lf):
+        return column_summary(lf, columns).write_json()
 
 
 @mcp.tool()
@@ -494,10 +500,10 @@ def render_chart(path: str, node_id: str, out_png: str | None = None, kind: str 
     default line), x and y. Big data is downsampled per pixel.
     out_png (optional) must be inside the pipeline file's folder; otherwise the PNG goes to the cache."""
     from .views.render import render_chart as _render
-    p, lf = _frame(path, node_id, run)
-    params = hl.chart_params(p.nodes[node_id], kind, x, y, column, title)
-    out = _inside_project(p, out_png) if out_png else (Executor(p).cache_dir / ".charts" / f"{node_id}.png")
-    _render(lf, params, out, width=width, height=height, columns=p.columns, inputs=p.input_values())
+    with _frame(path, node_id, run) as (p, lf):
+        params = hl.chart_params(p.nodes[node_id], kind, x, y, column, title)
+        out = _inside_project(p, out_png) if out_png else (Executor(p).cache_dir / ".charts" / f"{node_id}.png")
+        _render(lf, params, out, width=width, height=height, columns=p.columns, inputs=p.input_values())
     return Image(path=str(out))
 
 
@@ -506,9 +512,9 @@ def render_chart(path: str, node_id: str, out_png: str | None = None, kind: str 
 def export_node(path: str, node_id: str, out_path: str, run: bool = True) -> str:
     """Write a node's full output to a .csv, .tsv, .parquet or .xlsx file inside the pipeline file's folder."""
     from .core.nodes.outputs import write_table
-    p, lf = _frame(path, node_id, run)
-    out = _inside_project(p, out_path)
-    write_table(lf, out)
+    with _frame(path, node_id, run) as (p, lf):
+        out = _inside_project(p, out_path)
+        write_table(lf, out)
     return _dump({"ok": True, "path": str(out)})
 
 
@@ -549,10 +555,10 @@ def main(root: str | None = None) -> None:
             raise ValueError(f"--root {ROOT} is not a folder")      # a usage error: exit 2, JSON with --json
         ROOT_REFUSED = False
     else:
-        # started from the home folder or the top of a drive (an agent launched from there): every file of the
-        # person's would be in reach, so creating or changing pipelines is refused until --root names a folder.
-        # Reading and running existing ones still works.
-        ROOT_REFUSED = ROOT == Path.home().resolve() or ROOT.parent == ROOT
+        # started from the home folder, a folder holding it (/home, /Users, C:\Users) or the top of a drive (an
+        # agent launched from there): every file of the person's would be in reach, so creating or changing
+        # pipelines is refused until --root names a folder. Reading and running existing ones still works.
+        ROOT_REFUSED = Path.home().resolve().is_relative_to(ROOT) or ROOT.parent == ROOT
     configure(stderr_level=logging.WARNING)      # stdout carries the protocol; the log file and stderr get the rest
     mcp.run(transport="stdio")
 
