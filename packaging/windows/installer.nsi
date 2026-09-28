@@ -1,6 +1,6 @@
 ; DANCR Windows installer (NSIS). Cross-builds on Linux/macOS with makensis, or runs on Windows.
 ;
-;   makensis -DAPPDIR=dist/DANCR -DVERSION=2.0.0 -DOUTFILE=dist/DANCR-Setup-2.0.0.exe \
+;   makensis -DAPPDIR=dist/DANCR -DVERSION=2.1.0 -DOUTFILE=dist/DANCR-Setup-2.1.0.exe \
 ;            -DICON=packaging/icon.ico packaging/windows/installer.nsi
 ;
 ; APPDIR is the one-folder PyInstaller output (DANCR.exe, dancr-cli.exe, _internal/...).
