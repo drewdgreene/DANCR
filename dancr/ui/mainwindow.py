@@ -2,24 +2,27 @@
 a Map drawer showing the steps, and a Settings dock on the right."""
 from __future__ import annotations
 
+import json
+import logging
 import time
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QPointF, QPoint, QSettings, QTimer, QSize, QUrl
 from PySide6.QtGui import QAction, QActionGroup, QKeySequence, QCloseEvent, QDesktopServices
-from PySide6.QtWidgets import (QMainWindow, QFileDialog, QMessageBox, QSplitter, QToolBar, QStatusBar, QInputDialog, QLabel,
+from PySide6.QtWidgets import (QMainWindow, QMenu, QFileDialog, QMessageBox, QSplitter, QToolBar, QStatusBar, QInputDialog, QLabel,
                                QProgressDialog, QApplication, QToolButton, QStackedWidget, QWidget, QVBoxLayout, QHBoxLayout,
-                               QPushButton, QFrame, QProgressBar, QDialog, QSizePolicy)
+                               QPushButton, QFrame, QProgressBar, QDialog, QSizePolicy, QCheckBox)
 
 from ..core import registry, PipelineError
 from ..core.model import Pipeline
 from ..core.samples import write_sample, build_template
 from .document import Document
+from .common import listen
 from .dialogs import Toast, VersionsDialog
 from .stepfactory import StepFactory
 from .workers import view_pool
 from .canvas import CanvasScene, CanvasView, NODE_W, NODE_H
-from .inspector import InspectorDock
+from .inspector import InspectorPanel
 from .steppicker import StepPicker
 from .rail import Rail, VIEW_TYPES, REPORT_TYPES
 from .tableview import TableView
@@ -27,6 +30,7 @@ from .chartview import ChartView
 from .reportview import ReportView
 from .inputsview import InputsView
 from .enterdata import EnterDataView
+from .answering import Understanding, AskBar, AnswerPanel
 from .startpage import StartPage
 from .theme import T
 from .icons import icon
@@ -34,6 +38,8 @@ from .icons import icon
 FILE_FILTER = "DANCR project (*.json)"
 DATA_FILTER = "Data files (*.csv *.tsv *.txt *.dat *.xlsx *.xlsm *.xls *.parquet);;All files (*)"
 
+
+log = logging.getLogger("dancr.ui")
 
 class MainWindow(QMainWindow):
     def __init__(self, doc: Document | None = None) -> None:
@@ -45,8 +51,9 @@ class MainWindow(QMainWindow):
         self.steps = StepFactory(self)
         self._terminating = False
         self._disposed = False
+        self._busy_dlg: QProgressDialog | None = None
         self._toast_index = -1
-        self.scene = CanvasScene(self.doc)
+        self.scene = CanvasScene(self.doc, self)          # parented: it goes when the window goes (theme switch)
         self.view = CanvasView(self.scene)
         self.rail = Rail(self.doc)
         self.pages = QStackedWidget()
@@ -55,20 +62,30 @@ class MainWindow(QMainWindow):
         self.report = ReportView(self.doc); self.inputs = InputsView(self.doc); self.entry = EnterDataView(self.doc)
         for p in (self.start, self.table, self.chart, self.report, self.inputs, self.entry):
             self.pages.addWidget(p)
-        # centre: pages over the map drawer
+        # Top row: project rail | content pages | settings. Below it the map runs the full width,
+        # so the graph gets the whole window and the side panels stop at the top of the map.
         centre = QWidget(); cl = QVBoxLayout(centre); cl.setContentsMargins(0, 0, 0, 0); cl.setSpacing(0)
-        self.centre_split = QSplitter(Qt.Vertical)
-        self.centre_split.addWidget(self.pages)
-        self.map_box = QWidget(); ml = QVBoxLayout(self.map_box); ml.setContentsMargins(0, 0, 0, 0); ml.setSpacing(0)
+        self.understanding = Understanding(self.doc, self)
+        self.askbar = AskBar(self.doc, self.understanding)
+        self.answer_bar = AnswerPanel(self.doc, self.understanding)
+        self.answer_bar.set_answer(None)
+        cl.addWidget(self.askbar)
+        cl.addWidget(self.answer_bar)
+        cl.addWidget(self.pages, 1)
+        self.toast = Toast(centre)
+        self.inspector = InspectorPanel(self.doc, self)
+        self.top_split = QSplitter(Qt.Horizontal)
+        self.top_split.addWidget(self.rail); self.top_split.addWidget(centre); self.top_split.addWidget(self.inspector)
+        self.top_split.setStretchFactor(0, 0); self.top_split.setStretchFactor(1, 1); self.top_split.setStretchFactor(2, 0)
+        self.top_split.setSizes([250, 820, 370]); self.top_split.setCollapsible(1, False)
+        # the map drawer, full width
+        self.map_box = QWidget(); self.map_box.setMinimumHeight(140); ml = QVBoxLayout(self.map_box); ml.setContentsMargins(0, 0, 0, 0); ml.setSpacing(0)
         map_head = QFrame(); map_head.setStyleSheet(f"QFrame {{ background: {T.bg}; border-top: 1px solid {T.border}; border-bottom: 1px solid {T.border}; }}")
         mh = QHBoxLayout(map_head); mh.setContentsMargins(10, 3, 6, 3)
-        ml_lab = QLabel("Map — every step in this project, in order. Drag a step to move it; click one to see it."); ml_lab.setObjectName("muted"); ml_lab.setWordWrap(True)
+        ml_lab = QLabel("The map shows every step in this project, in order. Drag a step to move it, or click one to see it."); ml_lab.setObjectName("muted"); ml_lab.setWordWrap(True)
         self.map_close = QToolButton(); self.map_close.setObjectName("quiet"); self.map_close.setIcon(icon("x", T.muted, 14)); self.map_close.clicked.connect(lambda: self.a_map.setChecked(False))
         mh.addWidget(ml_lab, 1); mh.addWidget(self.map_close)
         ml.addWidget(map_head); ml.addWidget(self.view, 1)
-        self.centre_split.addWidget(self.map_box)
-        self.centre_split.setStretchFactor(0, 3); self.centre_split.setStretchFactor(1, 1); self.centre_split.setSizes([620, 260])
-        cl.addWidget(self.centre_split, 1)
         # when the map is closed it collapses to this handle, so it is always one click away
         self.map_handle = QToolButton(); self.map_handle.setObjectName("quiet"); self.map_handle.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         self.map_handle.setIcon(icon("map-trifold", T.muted, 14)); self.map_handle.setText("Show the map of steps (Ctrl+M)")
@@ -76,28 +93,31 @@ class MainWindow(QMainWindow):
         self.map_handle.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.map_handle.clicked.connect(lambda: self.a_map.setChecked(True))
         self.map_handle.hide()
-        cl.addWidget(self.map_handle)
-        self.toast = Toast(centre)
-        # run strip (bottom of centre)
+        # run strip (full width, above the log bar)
         self.progress = QFrame(); self.progress.setStyleSheet(f"QFrame {{ background: {T.panel}; border-top: 1px solid {T.border}; }}")
         pl_ = QHBoxLayout(self.progress); pl_.setContentsMargins(10, 4, 10, 4); pl_.setSpacing(10)
         self.progress_label = QLabel("")
         self.progress_bar = QProgressBar(); self.progress_bar.setTextVisible(False); self.progress_bar.setFixedHeight(4); self.progress_bar.setRange(0, 0)
         self.stop_btn = QPushButton("Stop"); self.stop_btn.setIcon(icon("stop", T.text, 14)); self.stop_btn.clicked.connect(self.stop)
         pl_.addWidget(self.progress_label, 1); pl_.addWidget(self.progress_bar, 2); pl_.addWidget(self.stop_btn)
-        self.progress.hide(); cl.addWidget(self.progress)
-        split = QSplitter(Qt.Horizontal); split.addWidget(self.rail); split.addWidget(centre)
-        split.setStretchFactor(0, 0); split.setStretchFactor(1, 1); split.setSizes([250, 1170]); split.setCollapsible(1, False)
-        self.setCentralWidget(split)
-        self.inspector = InspectorDock(self.doc, self)
-        self.addDockWidget(Qt.RightDockWidgetArea, self.inspector)
-        self.resizeDocks([self.inspector], [370], Qt.Horizontal)
+        self.progress.hide()
+        self.outer_split = QSplitter(Qt.Vertical)
+        self.outer_split.addWidget(self.top_split)
+        self.outer_split.addWidget(self.map_box)
+        self.outer_split.setStretchFactor(0, 3); self.outer_split.setStretchFactor(1, 1); self.outer_split.setSizes([620, 260])
+        self.outer_split.setCollapsible(0, False)
+        central = QWidget(); cw = QVBoxLayout(central); cw.setContentsMargins(0, 0, 0, 0); cw.setSpacing(0)
+        cw.addWidget(self.outer_split, 1); cw.addWidget(self.map_handle); cw.addWidget(self.progress)
+        self.setCentralWidget(central)
         self.picker = StepPicker(self)
         self._picker_ctx: dict = {}
         self.status = QStatusBar(); self.setStatusBar(self.status)
         self.autosave_label = QLabel(""); self.autosave_label.setObjectName("faint"); self.status.addPermanentWidget(self.autosave_label)
         self.mode_label = QLabel(""); self.mode_label.setObjectName("faint"); self.status.addPermanentWidget(self.mode_label)
         self._current: str | None = None
+        self._current_answer: str | None = None
+        self._ask_open = False                    # the ask bar shows only when asked for
+        self._building: set[str] = set()          # answers queued until every row has been read
         self._tick = QTimer(self); self._tick.setInterval(100); self._tick.timeout.connect(self._tick_progress)
         self._progress_text = ""
         self._run_total = 0
@@ -110,8 +130,9 @@ class MainWindow(QMainWindow):
         self._update_title()
         self._restore_layout()
         self._show_page()
+        if self.doc.running:                     # rebuilt (theme switch) during a run: show it, keep Stop working
+            self._on_run_started()
         QTimer.singleShot(200, self._maybe_recover)
-        QTimer.singleShot(400, self._maybe_tour)
 
     # ------------------------------------------------------------ actions
     def _act(self, text: str, icon_name: str | None, shortcut=None, slot=None, tip: str | None = None) -> QAction:
@@ -135,12 +156,26 @@ class MainWindow(QMainWindow):
         self.a_save_as = self._act("Save &as…", None, QKeySequence.SaveAs, self.save_as)
         self.a_versions = self._act("Earlier &versions…", "clock-counter-clockwise", None, self.show_versions, "Go back to an earlier saved version")
         self.a_revert = self._act("Re&vert to saved", None, None, self.revert)
+        self.a_autosave = QAction("A&utosave", self, checkable=True)
+        self.a_autosave.setToolTip("Save the project to its file every minute. When off, the file changes only when you save.")
+        self.a_autosave.setChecked(self.settings.value("autosave", False, type=bool))
+        self.a_autosave.triggered.connect(self._set_autosave)
+        self.doc.set_autosave(self.a_autosave.isChecked())
         self.a_open_data = self._act("Open data file…", "folder-open", "Ctrl+I", self.add_data_file, "Open a CSV, Excel or Parquet file as a new table (Ctrl+I)")
         self.a_quit = self._act("&Quit", None, QKeySequence.Quit, self.close)
         self.recent_menu = file_m.addMenu("Open &recent")
-        file_m.addAction(self.a_new); file_m.addAction(self.a_open); file_m.addMenu(self.recent_menu)
+        self.template_menu = QMenu("New from &template", self)
+        from ..core.samples import TEMPLATES
+        for t in TEMPLATES:
+            self.template_menu.addAction(t["title"], lambda k=t["key"]: self._start_template(k))
+        self.examples_menu = QMenu("&Examples", self)
+        from ..core.samples import EXAMPLES
+        for e in EXAMPLES:
+            self.examples_menu.addAction(e["title"], lambda k=e["key"]: self.open_example(k))
+        file_m.addAction(self.a_new); file_m.addMenu(self.template_menu); file_m.addMenu(self.examples_menu); file_m.addAction(self.a_open); file_m.addMenu(self.recent_menu)
         file_m.addSeparator(); file_m.addAction(self.a_open_data); file_m.addSeparator()
-        file_m.addAction(self.a_save); file_m.addAction(self.a_save_as); file_m.addAction(self.a_versions); file_m.addAction(self.a_revert)
+        file_m.addAction(self.a_save); file_m.addAction(self.a_save_as); file_m.addAction(self.a_autosave)
+        file_m.addAction(self.a_versions); file_m.addAction(self.a_revert)
         file_m.addSeparator(); file_m.addAction(self.a_quit)
         self._refresh_recent()
 
@@ -151,6 +186,8 @@ class MainWindow(QMainWindow):
         self.doc.undo.undoTextChanged.connect(self._undo_text); self.doc.undo.redoTextChanged.connect(self._redo_text)
         self.a_undo.setEnabled(False); self.a_redo.setEnabled(False)
         self.a_add = self._act("Add &step…", "plus", ["Ctrl+K", "Insert"], lambda: self.open_picker(), "Add a step after the current table (Ctrl+K)")
+        self.a_ask = self._act("Ask a question…", "sparkle", "Ctrl+J", self.focus_ask,
+                                  "Ask about your data in plain words, or pick an answer DANCR offers (Ctrl+J)")
         self.a_delete = self._act("&Delete step", "trash", None, self.delete_current, "Delete the selected step (Delete in the project list or the map)")
         self.a_dup = self._act("D&uplicate step", "copy", "Ctrl+D", lambda: self.doc.duplicate_nodes(self.scene.selected_node_ids()))
         self.a_note = self._act("Add &note to the map", "note-pencil", "Ctrl+Shift+N", lambda: self._add_note(self.view.mapToScene(self.view.viewport().rect().center())))
@@ -160,12 +197,12 @@ class MainWindow(QMainWindow):
         edit_m.addSeparator()
         for a in (self.a_add, self.a_delete, self.a_dup, self.a_note, self.a_inputs):
             edit_m.addAction(a)
-
+        edit_m.insertAction(self.a_delete, self.a_ask)
         run_m = mb.addMenu("&Run")
         self.a_run = self._act("&Run everything", "play", ["Ctrl+R", "F5"], lambda: self.run(), "Compute every step on the full data (Ctrl+R)")
         self.a_run_sel = self._act("Run up to &this step", None, "Ctrl+Shift+R", self.run_selected, "Run the current step and what it needs (Ctrl+Shift+R)")
         self.a_run_force = self._act("Run everything again (ignore cached results)", None, None, lambda: self.run(force=True))
-        self.a_stop = self._act("&Stop", "stop", "Escape", self.stop, "Stop after the current step")
+        self.a_stop = self._act("&Stop", "stop", "Ctrl+.", self.stop, "Stop after the current step (Ctrl+.)")   # not Escape: Escape closes find bars and editors
         self.a_stop.setEnabled(False); self.a_stop.setVisible(False)
         self.a_auto = QAction("Run automatically after every change", self, checkable=True)
         self.a_auto.setToolTip("On for small data. Turn it off for very large files, and press Run when you are ready.")
@@ -179,7 +216,10 @@ class MainWindow(QMainWindow):
         self.a_map = QAction("Show the &map of steps", self, checkable=True, checked=True); self.a_map.setShortcut("Ctrl+M")
         self.a_map.setIcon(icon("map-trifold", T.text, 16)); self.a_map.setToolTip("Show or hide the map of steps (Ctrl+M)")
         self.a_map.toggled.connect(self._toggle_map)
-        self.a_settings = self.inspector.toggleViewAction(); self.a_settings.setText("Show &settings"); self.a_settings.setIcon(icon("sliders", T.text, 16)); self.a_settings.setShortcut("Ctrl+,")
+        self.a_settings = QAction("Show &settings", self, checkable=True, checked=True)
+        self.a_settings.setIcon(icon("sliders", T.text, 16)); self.a_settings.setShortcut("Ctrl+,")
+        self.a_settings.setToolTip("Show or hide the settings panel (Ctrl+,)")
+        self.a_settings.toggled.connect(lambda _: self._apply_side_panels())
         self.a_fit = self._act("&Fit the map in view", "arrows-out", "Ctrl+0", self.view.fit_all)
         self.a_zoom_in = self._act("Zoom map in", None, [QKeySequence.ZoomIn, "Ctrl+="], lambda: self.view.zoom_by(1.2))
         self.a_zoom_out = self._act("Zoom map out", None, QKeySequence.ZoomOut, lambda: self.view.zoom_by(1 / 1.2))
@@ -202,7 +242,6 @@ class MainWindow(QMainWindow):
         help_m.addAction(self._act("&User guide", "question", "F1", self.show_help))
         help_m.addAction(self._act("Formula &functions", None, None, lambda: self.show_help("formulas")))
         help_m.addAction(self._act("For AI agents and the command line", None, None, lambda: self.show_help("agents")))
-        help_m.addAction(self._act("Show the &tour again", None, None, lambda: self._maybe_tour(force=True)))
         help_m.addSeparator()
         help_m.addAction(self._act("Show &log file", None, None, self.show_log))
         help_m.addAction(self._act("&About DANCR", None, None, self.about))
@@ -210,7 +249,7 @@ class MainWindow(QMainWindow):
         tb = QToolBar("Main"); tb.setObjectName("maintoolbar"); tb.setMovable(False); tb.setIconSize(QSize(16, 16))
         tb.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         self.addToolBar(tb)
-        tb.addAction(self.a_open_data); tb.addAction(self.a_add); tb.addSeparator()
+        tb.addAction(self.a_open_data); tb.addAction(self.a_add); tb.addAction(self.a_ask); tb.addSeparator()
         tb.addAction(self.a_run); tb.addAction(self.a_stop); tb.addSeparator()
         tb.addAction(self.a_undo); tb.addAction(self.a_redo); tb.addSeparator()
         tb.addAction(self.a_save); tb.addAction(self.a_versions)
@@ -239,16 +278,27 @@ class MainWindow(QMainWindow):
 
     def capture_ui_state(self) -> dict:
         """Everything worth carrying across a theme rebuild."""
-        return {"geometry": self.saveGeometry(), "current": self._current,
-                "map": self.a_map.isChecked(), "tab": self.table.tabs.currentIndex()}
+        return {"geometry": self.saveGeometry(), "current": self._current, "answer": self._current_answer,
+                "map": self.a_map.isChecked(), "tab": self.table.tabs.currentIndex(),
+                "top_split": self.top_split.saveState(), "outer_split": self.outer_split.saveState(),
+                "settings": self.a_settings.isChecked()}
 
     def restore_ui_state(self, state: dict) -> None:
         g = state.get("geometry")
         if g is not None:
             self.restoreGeometry(g)
+        if state.get("top_split"):
+            self.top_split.restoreState(state["top_split"])
+        if state.get("outer_split"):
+            self.outer_split.restoreState(state["outer_split"])
+        self.a_settings.setChecked(bool(state.get("settings", True)))
         self.a_map.setChecked(bool(state.get("map", True)))
         if state.get("tab"):
             self.table.tabs.setCurrentIndex(int(state["tab"]))
+        answer = state.get("answer")
+        if answer and self.doc.pipeline.answer(answer) is not None:
+            self.show_answer(answer)
+            return
         cur = state.get("current")
         if cur == "inputs" or (cur and cur in self.doc.pipeline.nodes):
             self.show_node(cur)
@@ -291,24 +341,36 @@ class MainWindow(QMainWindow):
 
     def _wire(self) -> None:
         d = self.doc
-        d.dirtyChanged.connect(lambda _: self._update_title())
-        d.pathChanged.connect(lambda _: self._update_title())
-        d.autosaveChanged.connect(lambda _: self._update_title())
-        d.autosaved.connect(lambda: (self._update_title(), self.status.showMessage("Saved automatically", 2000)))
-        d.undo.indexChanged.connect(self._on_undo_index)
-        d.reloaded.connect(self._on_reloaded)
-        d.message.connect(lambda m: self.status.showMessage(m, 8000))
-        d.runStarted.connect(self._on_run_started)
-        d.runProgress.connect(self._run_progress)
-        d.runFinished.connect(self._on_run_finished)
-        d.nodeAdded.connect(lambda _: self._show_page())
-        d.nodeRemoved.connect(self._on_node_removed)
-        d.autoRunChanged.connect(lambda _: self._refresh_mode())
-        d.nodeAdded.connect(lambda _: self._refresh_mode()); d.nodeRemoved.connect(lambda _: self._refresh_mode()); d.nodeChanged.connect(lambda _: self._refresh_mode())
+        listen(self, d.dirtyChanged, lambda _: self._update_title())
+        listen(self, d.pathChanged, lambda _: self._update_title())
+        listen(self, d.autosaveChanged, lambda _: self._update_title())
+        listen(self, d.autosaved, lambda: (self._update_title(), self.status.showMessage("Saved automatically", 2000)))
+        listen(self, d.undo.indexChanged, self._on_undo_index)
+        listen(self, d.reloaded, self._on_reloaded)
+        listen(self, d.message, lambda m: self.status.showMessage(m, 8000))
+        listen(self, d.busy, self._on_busy)
+        listen(self, d.runStarted, self._on_run_started)
+        listen(self, d.runProgress, self._run_progress)
+        listen(self, d.runFinished, self._on_run_finished)
+        listen(self, d.nodeAdded, lambda _: self._show_page())
+        listen(self, d.nodeRemoved, self._on_node_removed)
+        listen(self, d.autoRunChanged, lambda _: self._refresh_mode())
+        for sig in (d.nodeAdded, d.nodeRemoved, d.nodeChanged):
+            listen(self, sig, lambda _: self._refresh_mode())
         self.scene.status.connect(lambda m: self.status.showMessage(m, 6000))
         self.scene.selectionChangedTo.connect(self._on_scene_select)
         self.scene.nodeActivated.connect(self.show_node)
         self.scene.addAfterRequested.connect(self._add_after)
+        self.scene.runRequested.connect(lambda targets: self.run(targets))
+        self.scene.answerActivated.connect(self.show_answer)
+        self.scene.answerChangeRequested.connect(self.show_answer)
+        self.scene.answerDeleteRequested.connect(self.delete_answer_dialog)
+        self.askbar.build.connect(lambda spec: self.build_answer(spec))
+        self.askbar.closed.connect(self.close_ask)
+        self.answer_bar.change.connect(self.change_answer)
+        self.answer_bar.showSteps.connect(self._show_answer_steps)
+        self.answer_bar.delete.connect(self.delete_answer_dialog)
+        self.answer_bar.rename.connect(self.doc.rename_answer)
         self.view.fileDropped.connect(self._file_dropped)
         self.view.nodeTypeDropped.connect(lambda k, p: self.add_node(k, p))
         self.view.addStepRequested.connect(lambda gp, sp: self.open_picker(gp, sp))
@@ -324,19 +386,26 @@ class MainWindow(QMainWindow):
         self.table.chartColumns.connect(self.steps.chart_columns)
         self.chart.addToReport.connect(self.steps.add_to_report)
         self.report.runRequested.connect(lambda nid: self.run([nid]))
-        self.start.openData.connect(self.add_data_file); self.start.openProject.connect(self.open_dialog)
+        self.start.openProject.connect(self.open_dialog)
+        self.start.openFiles.connect(self.add_data_files)
         self.start.openRecent.connect(lambda p: self._confirm_stop_run("open another project") and self.maybe_save() and self.open_path(p))
-        self.start.template.connect(self._start_template); self.start.blank.connect(lambda: self.add_node("enter_data", None))
+        self.start.blank.connect(lambda: self.add_node("enter_data", None))
+        self.start.example.connect(self.open_example)
+        self.start.removeRecent.connect(self._remove_recent)
         self.setAcceptDrops(True)
 
     # ------------------------------------------------------------ pages and selection
     def _show_page(self) -> None:
         """Pick the page for the current selection (start page when the project is empty)."""
-        if not self.doc.pipeline.nodes and self._current is None:
+        if self._on_start_page():
             self.start.set_recent(self._recent())
             self.pages.setCurrentWidget(self.start)
             self.map_box.setVisible(False); self.map_handle.setVisible(False)
+            self.askbar.setVisible(False)
+            self._apply_side_panels()
             return
+        self._apply_side_panels()
+        self.askbar.setVisible(self._ask_open)       # only when asked for: Ask a question, or an answer selected
         self._apply_map_visibility()
         nid = self._current
         if nid == "inputs":
@@ -353,9 +422,14 @@ class MainWindow(QMainWindow):
         self.pages.setCurrentWidget(page)
 
     def show_node(self, nid: str | None) -> None:
+        if nid != self._current:
+            self._current_answer = None
+            self.scene.clear_highlight()
+            self.answer_bar.set_answer(None)
         if nid == self._current:
             self._show_page(); return
         self._current = nid
+        self._focus_answers(nid)
         self.inspector.set_node(nid if nid != "inputs" else None)
         if nid and nid != "inputs":
             self.rail.select("node", nid, emit=False)
@@ -372,6 +446,8 @@ class MainWindow(QMainWindow):
             self.view.focus_node(ident)      # picking a step in the rail centres the map on it
         elif kind == "inputs":
             self.show_node("inputs")
+        elif kind == "answer":
+            self.show_answer(ident)
 
     def _on_scene_select(self, nid: str | None) -> None:
         if nid is not None:
@@ -382,6 +458,147 @@ class MainWindow(QMainWindow):
             self._current = None
             self.inspector.set_node(None)
         self._show_page()
+
+    # ------------------------------------------------------------ answers
+    def focus_ask(self) -> None:
+        """Ask a question: opens the ask bar (or closes it when it is already open)."""
+        if not self.doc.pipeline.nodes:
+            self.add_data_files(); return
+        if self._ask_open and self.askbar.isVisible():
+            self.close_ask(); return
+        self.open_ask(focus=True)
+
+    def open_ask(self, focus: bool = False) -> None:
+        self._ask_open = True
+        if self.doc.pipeline.nodes:
+            self.askbar.setVisible(True)
+        if focus:
+            self.askbar.focus_edit()
+
+    def close_ask(self) -> None:
+        self._ask_open = False
+        self.askbar.setVisible(False)
+
+    def build_answer(self, spec: dict, answer_id: str | None = None) -> None:
+        """Build (or change) an answer once every row of the tables has been read: answers are never planned
+        from a sample. Shows the answer when it is built."""
+        from ..core.recipes import PlanError
+        same = self._same_answer(spec) if answer_id is None else None
+        if same is not None:                       # asked again (or a double click): the answer is already here
+            self.show_answer(same)
+            return
+        key = json.dumps([spec, answer_id], sort_keys=True, default=str)
+        if key in self._building:
+            return
+        self._building.add(key)
+        if not self.understanding.full:
+            self.askbar.show_status("Reading every row of your tables first…")
+
+        def go(model) -> None:
+            self._building.discard(key)
+            if self._disposed:
+                return
+            if answer_id is None and self._same_answer(spec) is not None:
+                self.show_answer(self._same_answer(spec)); return
+            try:
+                aid = self.doc.build_answer(model, spec, answer_id)
+            except (PlanError, KeyError) as e:
+                self.askbar.show_status(str(e).strip("'\""), error=True)     # inline, never a dialog out of the blue
+                return
+            self.askbar.show_status("")
+            self.doc.schedule_auto_run()
+            self.show_answer(aid)
+            a = self.doc.pipeline.answer(aid)
+            if a is not None and a.terminal in self.scene.nodes:
+                QTimer.singleShot(0, lambda: self.view.reveal(a.terminal) if not self._disposed else None)
+            a = self.doc.pipeline.answer(aid)
+            if a is not None and not self.doc.auto_run and not self.doc.running:
+                self.run([a.terminal])
+            from ..core.answers import set_aside_note
+            note = set_aside_note(self.doc.last_set_aside)
+            if note:
+                self.toast.show_message(note, "OK", lambda: None)
+            self.status.showMessage(note or "Built the answer. Change its choices above, or ask another question", 8000)
+        self.understanding.when_full(go)
+
+    def _same_answer(self, spec: dict) -> str | None:
+        want = json.dumps({k: v for k, v in spec.items() if k != "title"}, sort_keys=True, default=str)
+        for a in self.doc.pipeline.answers:
+            if a.terminal in self.doc.pipeline.nodes and json.dumps({k: v for k, v in a.spec.items() if k != "title"},
+                                                                     sort_keys=True, default=str) == want:
+                return a.id
+        return None
+
+    def change_answer(self, aid: str, key: str, value) -> None:
+        from ..core.recipes import apply_choice
+        a = self.doc.pipeline.answer(aid)
+        if a is not None:
+            self.build_answer(apply_choice(a.spec, key, value), aid)
+
+    def _show_answer_steps(self) -> None:
+        a = self.doc.pipeline.answer(self._current_answer) if self._current_answer else None
+        if not self.a_map.isChecked():
+            self.a_map.setChecked(True)
+        if a is not None and a.terminal in self.doc.pipeline.nodes:
+            self.view.focus_node(a.terminal)
+        else:
+            self.view.fit_all()
+
+    def _focus_answers(self, nid: str | None) -> None:
+        """The tray offers answers about the table being looked at; a chart or report is not a table to ask about."""
+        n = self.doc.pipeline.nodes.get(nid) if nid else None
+        self.understanding.set_focus(nid if n is not None and registry.get(n.type).kind != "sink" and n.type != "chart" else None)
+
+    def show_answer(self, aid: str) -> None:
+        """Select an Answer: show its result in the centre and highlight its branch on the map."""
+        answer = self.doc.pipeline.answer(aid)
+        if answer is None:
+            return
+        self.understanding.set_focus(None)
+        self.open_ask()
+        self._current_answer = aid
+        self._current = answer.terminal if answer.terminal in self.doc.pipeline.nodes else None
+        self.rail.select("answer", aid, emit=False)
+        self.scene.select_answer(aid)
+        if self._current:
+            self.scene.highlight_branch(self.doc.pipeline.upstream_closure(self._current) | {self._current})
+            self.inspector.set_node(self._current)
+        else:
+            self.scene.clear_highlight()
+        self._sync_answer_bar()
+        self._show_page()
+
+    def delete_answer_dialog(self, aid: str) -> None:
+        answer = self.doc.pipeline.answer(aid)
+        if answer is None:
+            return
+        exclusive = self.doc.answer_exclusive_nodes(answer)
+        box = QMessageBox(self)
+        box.setWindowTitle("Delete answer")
+        box.setIcon(QMessageBox.Question)
+        box.setText(f"Delete “{answer.title}”?")
+        cb = QCheckBox("Also remove the steps it built")
+        if exclusive:
+            cb.setText(f"Also remove the {len(exclusive)} step(s) it built")
+        else:
+            cb.setText("Its steps are shared with other answers, so they are kept")
+            cb.setEnabled(False)
+        box.setCheckBox(cb)
+        box.setStandardButtons(QMessageBox.Cancel | QMessageBox.Yes)
+        box.setDefaultButton(QMessageBox.Cancel)
+        if box.exec() != QMessageBox.Yes:
+            return
+        self.doc.delete_answer(aid, remove_steps=cb.isChecked())
+        if self._current_answer == aid:
+            self._current_answer = None
+            self.scene.clear_highlight()
+            self.answer_bar.set_answer(None)
+            self._current = None
+            self._show_page()
+
+    def _sync_answer_bar(self) -> None:
+        answer = self.doc.pipeline.answer(self._current_answer) if self._current_answer else None
+        self.answer_bar.set_answer(answer.id if answer is not None else None)
 
     def current_table(self) -> str | None:
         """The table the person is looking at (charts and reports resolve to their input)."""
@@ -397,6 +614,17 @@ class MainWindow(QMainWindow):
             return None
         return nid
 
+    def _on_start_page(self) -> bool:
+        return not self.doc.pipeline.nodes and self._current is None
+
+    def _apply_side_panels(self) -> None:
+        """The project list and the settings panel have nothing to show until the project has a step."""
+        start = self._on_start_page()
+        self.rail.setVisible(not start)
+        self.inspector.setVisible(not start and self.a_settings.isChecked())
+        for a in (self.a_settings, self.a_map, self.a_add, self.a_ask, self.a_run):
+            a.setEnabled(not start)
+
     def _toggle_map(self, on: bool) -> None:
         self._apply_map_visibility()
         if on:
@@ -408,10 +636,10 @@ class MainWindow(QMainWindow):
         self.map_box.setVisible(on and have)
         self.map_handle.setVisible(have and not on)
         if on and have:
-            sizes = self.centre_split.sizes()
+            sizes = self.outer_split.sizes()
             if len(sizes) == 2 and sizes[1] < 120:          # reopened into a collapsed slot
-                total = sum(sizes) or self.centre_split.height()
-                self.centre_split.setSizes([max(200, total - 260), 260])
+                total = sum(sizes) or self.outer_split.height()
+                self.outer_split.setSizes([max(200, total - 260), 260])
 
     def _refresh_mode(self) -> None:
         auto = self.doc.auto_run and bool(self.doc.pipeline.nodes)
@@ -424,14 +652,20 @@ class MainWindow(QMainWindow):
             self.mode_label.setText("runs automatically")
         else:
             mb = self.doc.source_bytes() / 1e6
-            self.mode_label.setText(f"large data ({mb:,.0f} MB): press Run to compute")
+            self.mode_label.setText(f"large data ({mb:,.0f} MB), press Run to compute")
         if self.table.nid:
             self.table._refresh_header()
 
     def delete_current(self) -> None:
+        aids = self.scene.selected_answer_ids()
+        if aids:
+            self.delete_answer_dialog(aids[0])
+            return
+        if not self.scene.selected_node_ids() and self.scene.selectedItems():
+            self.scene.delete_selection()          # an arrow or a note is selected on the map: that is what goes
+            return
         ids = self.scene.selected_node_ids() or ([self._current] if self._current and self._current in self.doc.pipeline.nodes else [])
         if not ids:
-            self.scene.delete_selection()          # a selected arrow or note on the map
             return
         titles = [self.doc.pipeline.nodes[i].title for i in ids]
         if self.scene.selected_node_ids():
@@ -443,16 +677,27 @@ class MainWindow(QMainWindow):
                                 lambda: self.doc.undo.undo() if self.doc.undo.index() == idx else None)
 
     # ------------------------------------------------------------ file ops
+    def _set_autosave(self, on: bool) -> None:
+        """Autosave is the person's choice for every project (remembered between sessions); off to begin with."""
+        self.settings.setValue("autosave", on)
+        self.doc.set_autosave(on)
+        self.status.showMessage("Autosave on: the project is saved every minute" if on
+                                else "Autosave off: the project file changes only when you save", 4000)
+
     def _update_title(self) -> None:
         name = self.doc.path.stem if self.doc.path else "Untitled"
-        paused = self.doc.autosave_paused
+        paused = self.doc.autosave_paused if self.doc.autosave else None
         self.setWindowTitle(f"{'• ' if self.doc.dirty else ''}{name}{' (autosave paused)' if paused else ''} — DANCR")
         self.autosave_label.setText(f"Autosave paused: {paused}" if paused else "")
         self.a_revert.setEnabled(self.doc.path is not None and self.doc.dirty)
 
     def _on_reloaded(self) -> None:
+        self._building.clear()
         self._update_title()
         self._current = None
+        self._current_answer = None
+        self.scene.clear_highlight()
+        self.answer_bar.set_answer(None)
         self.inspector.set_node(None)
         QTimer.singleShot(0, self.view.fit_all)
         self.doc.schedule_auto_run()
@@ -466,10 +711,12 @@ class MainWindow(QMainWindow):
         self._refresh_mode()
 
     def maybe_save(self) -> bool:
+        self.doc.flush_edits()
         if not self.doc.dirty:
             return True
         if self.doc.autosave_paused:
-            what = f"Autosave is paused ({self.doc.autosave_paused}). Save replaces {self.doc.path.name if self.doc.path else 'nothing'} with what you see now; Discard keeps the file on disk as it is."
+            why = f"Autosave is paused ({self.doc.autosave_paused})" if self.doc.autosave else self.doc.autosave_paused.capitalize()
+            what = f"{why}. Save replaces {self.doc.path.name if self.doc.path else 'nothing'} with what you see now; Discard keeps the file on disk as it is."
         else:
             what = "Save changes to this project?"
         r = QMessageBox.question(self, "Unsaved changes", what, QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel)
@@ -483,20 +730,18 @@ class MainWindow(QMainWindow):
         r = QMessageBox.question(self, "A run is in progress", f"Stop the run and {what}?", QMessageBox.Yes | QMessageBox.No)
         if r != QMessageBox.Yes:
             return False
-        self._wait_for_run("Stopping the current step…")
+        self.doc.stop(wait=True)
         return True
 
-    def _wait_for_run(self, text: str) -> None:
-        if not self.doc.running:
-            return
-        self.doc.stop()
-        dlg = QProgressDialog(text, None, 0, 0, self)
-        dlg.setWindowTitle("DANCR"); dlg.setWindowModality(Qt.WindowModal); dlg.setMinimumDuration(0)
-        dlg.show(); dlg.setValue(0)
-        while self.doc.running:
-            QApplication.processEvents()
-            self.doc._run.wait(50)
-        dlg.close()
+    def _on_busy(self, why: str | None) -> None:
+        """While the document waits for a run to stop, a window-modal note says why; it takes every click, so
+        nothing can open, save or close the project while the run is torn down."""
+        if self._busy_dlg is not None:
+            self._busy_dlg.close(); self._busy_dlg.deleteLater(); self._busy_dlg = None
+        if why:
+            dlg = self._busy_dlg = QProgressDialog(why, None, 0, 0, self)
+            dlg.setWindowTitle("DANCR"); dlg.setWindowModality(Qt.WindowModal); dlg.setMinimumDuration(0)
+            dlg.show(); dlg.setValue(0)
 
     def new_pipeline(self) -> None:
         if self._confirm_stop_run("start a new project") and self.maybe_save():
@@ -521,8 +766,31 @@ class MainWindow(QMainWindow):
     def save(self) -> bool:
         if self.doc.path is None:
             return self.save_as()
+        from .document import ChangedOnDisk
         try:
             self.doc.save()
+        except ChangedOnDisk:
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Warning)
+            box.setWindowTitle("The project changed on disk")
+            box.setText(f"{self.doc.path.name} was changed by another program (an agent, the command line or another "
+                        "window) since it was opened here.")
+            box.setInformativeText("Keep mine overwrites their change (it stays under File → Earlier versions). "
+                                   "Load theirs throws away the unsaved changes in this window.")
+            mine = box.addButton("Keep mine", QMessageBox.AcceptRole)
+            theirs = box.addButton("Load theirs", QMessageBox.DestructiveRole)
+            box.addButton(QMessageBox.Cancel)
+            box.exec()
+            if box.clickedButton() is mine:
+                try:
+                    self.doc.save(overwrite=True)
+                except (OSError, PipelineError) as e:
+                    QMessageBox.critical(self, "Cannot save", str(e)); return False
+            elif box.clickedButton() is theirs:
+                self.doc.load(self.doc.path)
+                return True
+            else:
+                return False
         except (OSError, PipelineError) as e:
             QMessageBox.critical(self, "Cannot save", str(e)); return False
         self.status.showMessage(f"Saved {self.doc.path.name}", 3000)
@@ -555,11 +823,15 @@ class MainWindow(QMainWindow):
         if found is None:
             return
         pipe, rp = found
-        r = QMessageBox.question(self, "Unsaved project", f"Last time DANCR closed with an unsaved project of {len(pipe.nodes)} steps. Bring it back?",
-                                 QMessageBox.Yes | QMessageBox.No)
+        if pipe.path is not None:
+            text = (f"Last time DANCR closed with unsaved changes to {pipe.path.name}. Bring them back? "
+                    "The file itself is unchanged until you save.")
+        else:
+            text = f"Last time DANCR closed with an unsaved project of {len(pipe.nodes)} steps. Bring it back?"
+        r = QMessageBox.question(self, "Unsaved changes", text, QMessageBox.Yes | QMessageBox.No)
         if r == QMessageBox.Yes:
             self.doc.recover(pipe, rp)
-            self.status.showMessage("Recovered — save it to keep it", 8000)
+            self.status.showMessage("Recovered. Save it to keep it", 8000)
         else:
             rp.unlink(missing_ok=True)
 
@@ -578,7 +850,8 @@ class MainWindow(QMainWindow):
                 self.doc.restore_version(dlg.chosen())
             except Exception as e:  # noqa: BLE001
                 QMessageBox.critical(self, "Cannot restore", str(e)); return
-            self.status.showMessage("Restored — save to keep it, or Revert to go back. Autosave is paused until then.", 8000)
+            self.status.showMessage("Restored. Save to keep it, or Revert to go back."
+                                    + (" Autosave is paused until then." if self.doc.autosave else ""), 8000)
 
     def terminate(self) -> None:
         """The system asked us to quit (SIGTERM): no questions, keep an unsaved project recoverable, close cleanly."""
@@ -589,19 +862,20 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, e: QCloseEvent) -> None:
         if self._terminating:
-            self.doc.stop(wait=True)
-            self.doc.write_recovery()             # untitled projects only; offered back on the next start
+            self.doc.stop(wait=True, why="Stopping the current step before quitting…")
+            self.doc.write_recovery()             # unsaved edits of any project; offered back on the next start
         else:
             if self.doc.running:
                 r = QMessageBox.question(self, "A run is in progress", "Stop the run and quit?", QMessageBox.Yes | QMessageBox.No)
                 if r != QMessageBox.Yes:
                     e.ignore(); return
-                self._wait_for_run("Stopping the current step before quitting…")
+                self.doc.stop(wait=True, why="Stopping the current step before quitting…")
             if not self.maybe_save():
                 e.ignore(); return
             self.doc.clear_recovery()             # saved or deliberately discarded
         self.settings.setValue("geometry", self.saveGeometry())
-        self.settings.setValue("state", self.saveState())
+        self.settings.setValue("top_split", self.top_split.saveState())
+        self.settings.setValue("outer_split", self.outer_split.saveState())
         self.settings.setValue("map", self.a_map.isChecked())
         view_pool().shutdown(5000)                # nothing may still read the results when the cache is removed
         self.doc.shutdown()
@@ -611,11 +885,16 @@ class MainWindow(QMainWindow):
         g = self.settings.value("geometry")
         if g:
             self.restoreGeometry(g)
-        s = self.settings.value("state")
-        if s:
-            self.restoreState(s)
-        if self.inspector.width() < 320:
-            self.resizeDocks([self.inspector], [370], Qt.Horizontal)
+        t = self.settings.value("top_split")
+        if t:
+            self.top_split.restoreState(t)
+        o = self.settings.value("outer_split")
+        if o:
+            self.outer_split.restoreState(o)
+        if self.inspector.width() < 260:                    # a saved layout that squeezed it too far
+            sizes = self.top_split.sizes()
+            if len(sizes) == 3:
+                self.top_split.setSizes([sizes[0], max(300, sizes[1] - 120), 360])
         m = self.settings.value("map")
         if m is not None:
             self.a_map.setChecked(m in (True, "true", "True", 1))
@@ -625,6 +904,12 @@ class MainWindow(QMainWindow):
         if isinstance(v, str):
             return [v] if v else []
         return [str(x) for x in (v or [])]
+
+    def _remove_recent(self, p: str) -> None:
+        self.settings.setValue("recent", [r for r in self._recent() if r != p])
+        self._refresh_recent()
+        if self._on_start_page():
+            self.start.set_recent(self._recent())
 
     def _push_recent(self, p: Path) -> None:
         rec = [str(p)] + [r for r in self._recent() if r != str(p)]
@@ -646,13 +931,14 @@ class MainWindow(QMainWindow):
             e.acceptProposedAction()
 
     def dropEvent(self, e) -> None:
-        for u in e.mimeData().urls():
-            p = u.toLocalFile()
-            if p.lower().endswith(".json"):
-                if self._confirm_stop_run("open another project") and self.maybe_save():
-                    self.open_path(p)
-            elif p:
-                self._add_load_node(p, None)
+        paths = [u.toLocalFile() for u in e.mimeData().urls() if u.toLocalFile()]
+        projects = [p for p in paths if p.lower().endswith(".json")]
+        data = [p for p in paths if not p.lower().endswith(".json")]
+        if projects:
+            if self._confirm_stop_run("open another project") and self.maybe_save():
+                self.open_path(projects[0])
+            e.acceptProposedAction(); return
+        self._add_files(data)
         e.acceptProposedAction()
 
     # ------------------------------------------------------------ building
@@ -685,6 +971,18 @@ class MainWindow(QMainWindow):
             y += NODE_H + 30
         return QPointF(x, y)
 
+    def _source_position(self) -> QPointF:
+        """Tables go in the first column of the map, one under another."""
+        p = self.doc.pipeline
+        sources = [n for n in p.nodes.values() if registry.get(n.type).kind == "source"]
+        if not sources:
+            return self._free_position(None) if p.nodes else QPointF(60.0, 140.0)
+        x = min(n.x for n in sources)
+        y = max(n.y for n in sources) + NODE_H + 40
+        while any(abs(n.x - x) < NODE_W and abs(n.y - y) < NODE_H for n in p.nodes.values()):
+            y += NODE_H + 30
+        return QPointF(x, y)
+
     def add_node(self, type_key: str, pos: QPointF | None = None, params: dict | None = None, title: str | None = None,
                  connect_from: str | None = None, port: str | None = None, show: bool = True) -> str:
         nt = registry.get(type_key)
@@ -710,12 +1008,56 @@ class MainWindow(QMainWindow):
         self._add_load_node(path, pos)
 
     def add_data_file(self) -> None:
-        start = str(self.doc.path.parent) if self.doc.path else str(Path.home())
-        f, _ = QFileDialog.getOpenFileName(self, "Open data file", start, DATA_FILTER)
-        if f:
-            self._add_load_node(f, None)
+        self.add_data_files()
 
-    def _add_load_node(self, path: str, pos: QPointF | None) -> None:
+    def add_data_files(self) -> None:
+        start = str(self.doc.path.parent) if self.doc.path else str(Path.home())
+        files, _ = QFileDialog.getOpenFileNames(self, "Open data files", start, DATA_FILTER)
+        self._add_files(files)
+
+    def _add_files(self, files: list[str]) -> None:
+        """Load each file (as one undo step), show the first, and let the tray offer answers about them all. A big
+        workbook is looked through for its tables on a worker, so the window stays responsive meanwhile."""
+        if not files:
+            return
+        from ..core.nodes.load import tables_in, EXCEL_EXT
+
+        def listed() -> list[tuple[str, str, dict]]:
+            return [(f, title, extra) for f in files for title, extra in tables_in(f)]
+
+        def big(f: str) -> bool:
+            try:
+                return Path(f).suffix.lower() in EXCEL_EXT and Path(f).stat().st_size > 2_000_000
+            except OSError:
+                return False
+        if not any(big(f) for f in files):
+            self._add_listed(listed())
+            return
+        from .workers import Task
+        self.status.showMessage(f"Looking through {Path(next(f for f in files if big(f))).name}…")
+        t = Task(listed)
+        t.waits_for_run = False                        # reads only the files dropped, never a result being written
+        pending = getattr(self, "_listing", None)
+        if pending is None:
+            pending = self._listing = set()
+        pending.add(t)                                 # kept until it reports, so every drop is added, in order
+        t.signals.done.connect(lambda r, t=t: (pending.discard(t), self._add_listed(r)))
+        t.signals.failed.connect(lambda m, t=t: (pending.discard(t), self.status.showMessage(f"Could not open the files: {m}", 8000)))
+        view_pool().start(t)
+
+    def _add_listed(self, tables: list[tuple[str, str, dict]]) -> None:
+        if not tables:
+            return
+        with self.doc.macro("Open data" if len(tables) == 1 else f"Open {len(tables)} tables"):
+            ids = [self._add_load_node(f, None, run=False, show=False, extra=extra, title=title) for f, title, extra in tables]
+        if not self.doc.auto_run and not self.doc.running:
+            self.run(ids)
+        self.show_node(ids[0])
+        if len(ids) > 1:
+            self.status.showMessage(f"Opened {len(ids)} tables. The answers above cover all of them", 8000)
+
+    def _add_load_node(self, path: str, pos: QPointF | None, run: bool = True, show: bool = True,
+                       extra: dict | None = None, title: str | None = None) -> str:
         p = Path(path)
         rel = p
         if self.doc.path:
@@ -724,24 +1066,43 @@ class MainWindow(QMainWindow):
             except ValueError:
                 rel = p
         self.scene.clearSelection()
-        nid = self.add_node("load_file", pos, params={"path": str(rel)}, title=p.stem)
-        if not self.doc.auto_run and not self.doc.running:
+        if pos is None:
+            pos = self._source_position()
+        params = {"path": str(rel), **{k: v for k, v in (extra or {}).items() if v not in (None, "")}}
+        nid = self.add_node("load_file", pos, params=params, title=title or p.stem, connect_from=None, show=show)
+        if run and not self.doc.auto_run and not self.doc.running:
             self.run([nid])
         elif self.doc.running:
             self.status.showMessage(f"Added {p.name}. It will load when you next run.", 6000)
+        return nid
+
+    def open_example(self, key: str) -> None:
+        """Open an example project, making it first if it is not in ~/DANCR samples yet."""
+        from ..core.samples import write_example, example
+        if not (self._confirm_stop_run("open the example") and self.maybe_save()):
+            return
+        try:
+            path = write_example(key, Path.home() / "DANCR samples" / example(key)["title"])
+        except Exception as e:  # noqa: BLE001
+            log.exception("Could not make the example project")
+            QMessageBox.critical(self, "Example project", f"Couldn't make the example project: {e}"); return
+        self.open_path(str(path))
 
     def _start_template(self, key: str) -> None:
+        # a template is a new project: it never replaces the open one's file (even one whose steps were all deleted)
+        if not self.maybe_save():
+            return
         base = self.doc.path.parent if self.doc.path else Path.home() / "DANCR samples"
         try:
             data = write_sample(base)
         except OSError as e:
             QMessageBox.critical(self, "Sample data", f"Could not write the sample file: {e}"); return
-        pipe = Pipeline(self.doc.pipeline.name); pipe.path = self.doc.path
+        pipe = Pipeline("Untitled")
         try:
             build_template(key, pipe, data)
         except Exception as e:  # noqa: BLE001
             QMessageBox.critical(self, "Template", str(e)); return
-        self.doc.replace_pipeline(pipe)
+        self.doc.replace_pipeline(pipe)             # the files it saves wait for the project to be saved: they go next to it
         self.doc.undo.resetClean()
         self.doc.schedule_auto_run()
         self.status.showMessage(f"Sample data saved to {data}", 8000)
@@ -816,7 +1177,11 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(350, self._hide_progress)      # let the full bar be seen, then hide
         self._refresh_mode()
         failed = [k for k, s in results.items() if s.status == "failed" and k in self.doc.pipeline.nodes]
-        if ok:
+        if self.doc.last_run_outcome == "stopped":
+            self.status.showMessage("Stopped", 5000)
+        elif self.doc.last_run_outcome == "crashed":
+            pass                                         # "Run failed: …" is already on the status line
+        elif ok:
             secs = time.monotonic() - getattr(self, "_t0", time.monotonic())
             self.status.showMessage(f"Done in {secs:.1f} s" if secs >= 1 else "Done", 5000)
         else:
@@ -837,13 +1202,6 @@ class MainWindow(QMainWindow):
     def show_help(self, section: str = "") -> None:
         from .helpdialog import HelpDialog
         HelpDialog(self, section).show()
-
-    def _maybe_tour(self, force: bool = False) -> None:
-        if self._disposed or (not force and self.settings.value("tour_shown")):
-            return
-        self.settings.setValue("tour_shown", True)
-        from .helpdialog import TourDialog
-        TourDialog(self).show()
 
     def show_log(self) -> None:
         from ..logsetup import log_path

@@ -57,7 +57,7 @@ class StepPicker(QFrame):
                            f"QListWidget {{ background: {T.panel}; }}")
         self.setFixedSize(380, 460)
         lay = QVBoxLayout(self); lay.setContentsMargins(8, 8, 8, 8); lay.setSpacing(6)
-        self.search = QLineEdit(); self.search.setPlaceholderText("Search steps — e.g. filter, average, chart")
+        self.search = QLineEdit(); self.search.setPlaceholderText("Search steps, like filter, average or chart")
         self.search.setClearButtonEnabled(True)
         self.list = QListWidget(); self.list.setUniformItemSizes(False)
         self.list.setSpacing(0); self.list.setItemDelegate(StepDelegate(self.list)); self.list.setMouseTracking(True)

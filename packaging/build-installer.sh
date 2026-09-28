@@ -9,6 +9,7 @@ cd "$(dirname "$0")/.."
 
 PY=${PY:-python3}
 VERSION=$("$PY" -c "import re,pathlib;print(re.search(r'__version__ = \"([^\"]+)\"', pathlib.Path('dancr/__init__.py').read_text()).group(1))")
+[[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "version $VERSION is not X.Y.Z, which Windows file versions need"; exit 1; }
 APPDIR=${APPDIR:-dist/DANCR}
 OUT=${OUT:-dist/DANCR-Setup-$VERSION.exe}
 ICON=${ICON:-packaging/icon.ico}

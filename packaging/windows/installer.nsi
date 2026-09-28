@@ -29,7 +29,7 @@ InstallDir "$LOCALAPPDATA\Programs\DANCR"
 InstallDirRegKey HKCU "Software\DANCR" "InstallDir"
 ShowInstDetails show
 ShowUninstDetails show
-VIProductVersion "2.0.0.0"
+VIProductVersion "${VERSION}.0"                 ; four numbers: build-installer.sh checks VERSION is X.Y.Z
 VIAddVersionKey "ProductName" "DANCR"
 VIAddVersionKey "FileDescription" "DANCR Setup"
 VIAddVersionKey "FileVersion" "${VERSION}"

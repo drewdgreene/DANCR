@@ -10,13 +10,15 @@ from PySide6.QtWidgets import (QGraphicsView, QGraphicsScene, QGraphicsObject, Q
                                QWidget, QGraphicsSceneMouseEvent, QInputDialog, QToolButton, QHBoxLayout, QLabel)
 
 from ..core import registry, PipelineError
-from ..core.model import Edge, Node, Note
+from ..core.model import Edge, Node, Note, Answer
 from ..core.nodes.load import CSV_EXT, EXCEL_EXT, PARQUET_EXT
 from .document import Document
+from .common import listen
 from .theme import T, category_color
 from .icons import paint as paint_icon, icon, node_icon_name
 
 NODE_W, NODE_H = 236, 78
+ANSWER_W, ANSWER_H = 230, 70
 PORT_R = 6
 PORT_HIT = 18
 NODE_MIME = "application/x-dancr-node-type"
@@ -33,11 +35,11 @@ def _font(size: float, bold: bool = False) -> QFont:
 
 
 class PortItem(QGraphicsObject):
-    def __init__(self, node_item: "NodeItem", name: str, label: str, is_output: bool, index: int, count: int, optional: bool = False) -> None:
+    def __init__(self, node_item: "NodeItem", name: str, label: str, is_output: bool, index: int, count: int) -> None:
         super().__init__(node_item)
         self.node_item = node_item
         self.name, self.label, self.is_output = name, label, is_output
-        self.index, self.count, self.optional = index, count, optional
+        self.index, self.count = index, count
         self.setAcceptHoverEvents(True)
         self.setZValue(2)
         self.hot = False
@@ -140,7 +142,7 @@ class NodeItem(QGraphicsObject):
         self.setZValue(1)
         self.setPos(node.x, node.y)
         nt = registry.get(node.type)
-        self.inputs = [PortItem(self, i.name, i.label, False, k, len(nt.inputs), i.optional) for k, i in enumerate(nt.inputs)]
+        self.inputs = [PortItem(self, i.name, i.label, False, k, len(nt.inputs)) for k, i in enumerate(nt.inputs)]
         self.output = PortItem(self, "out", "Output", True, 0, 1)
         self.plus = PlusButton(self)
         self._hover = False
@@ -224,7 +226,7 @@ class NodeItem(QGraphicsObject):
         elif self.status == "running":
             color, txt = T.accent, "running…"
         elif self.status == "stale":
-            color, txt = T.warn, "changed — run again"
+            color, txt = T.warn, "changed, run again"
         else:
             color, txt = T.faint, "not run yet"
         painter.setPen(Qt.NoPen); painter.setBrush(QColor(color))
@@ -393,11 +395,111 @@ class NoteItem(QGraphicsObject):
             self.canvas.doc.remove_note(self.note_id)
 
 
+class AnswerItem(QGraphicsObject):
+    """A guided answer: an unconnected card that points at the step whose output answers a question.
+
+    It is not part of the dataflow (no ports, no wires). Click it to see its result; drag to move;
+    right-click to change the question or delete it."""
+
+    def __init__(self, canvas: "CanvasScene", answer: Answer) -> None:
+        super().__init__()
+        self.canvas, self.answer_id = canvas, answer.id
+        self.setFlags(QGraphicsItem.ItemIsMovable | QGraphicsItem.ItemIsSelectable | QGraphicsItem.ItemSendsGeometryChanges)
+        self.setZValue(1.5)
+        self.setPos(answer.x, answer.y)
+        self.setAcceptHoverEvents(True)
+        self.setCursor(Qt.PointingHandCursor)
+        self._hover = False
+        self._press = QPointF()
+
+    @property
+    def answer(self) -> Answer | None:
+        return self.canvas.doc.pipeline.answer(self.answer_id)
+
+    def boundingRect(self) -> QRectF:
+        return QRectF(0, 0, ANSWER_W, ANSWER_H)
+
+    def shape(self) -> QPainterPath:
+        p = QPainterPath(); p.addRoundedRect(self.boundingRect(), 8, 8)
+        return p
+
+    def paint(self, painter: QPainter, option, widget=None) -> None:
+        a = self.answer
+        if a is None:
+            return
+        painter.setRenderHint(QPainter.Antialiasing)
+        rect = self.boundingRect()
+        accent = QColor(T.accent)
+        painter.setPen(QPen(accent if self.isSelected() else (QColor(T.accent) if self._hover else QColor(T.border)), 2 if self.isSelected() else 1))
+        tint = QColor(accent); tint.setAlpha(34 if T.dark else 22)
+        painter.setBrush(QColor(T.node)); painter.drawRoundedRect(rect, 8, 8)
+        painter.setBrush(tint); painter.drawRoundedRect(rect, 8, 8)
+        paint_icon(painter, "sparkle", accent.name(), QRectF(12, 13, 20, 20))
+        f = _font(10.5, True); painter.setFont(f); painter.setPen(QColor(T.text))
+        painter.drawText(QRectF(40, 11, ANSWER_W - 50, 20), Qt.AlignLeft | Qt.AlignVCenter, _elide(a.title, f, ANSWER_W - 52))
+        f2 = _font(8.5); painter.setFont(f2); painter.setPen(QColor(T.muted))
+        painter.drawText(QRectF(40, 32, ANSWER_W - 50, 15), Qt.AlignLeft | Qt.AlignVCenter, "Answer. Click to see or change it")
+        p = self.canvas.doc.pipeline
+        st = self.canvas.doc.state(a.terminal) if a.terminal in p.nodes else None
+        status = st.status if st else "idle"
+        if status == "failed":
+            color, txt = T.danger, "failed"
+        elif status == "running":
+            color, txt = T.accent, "running…"
+        elif status == "done" and st is not None and st.rows is not None:
+            color, txt = T.ok, f"{st.rows:,} rows"
+        elif status == "stale":
+            color, txt = T.warn, "changed, run again"
+        else:
+            color, txt = T.faint, "not run yet"
+        painter.setPen(Qt.NoPen); painter.setBrush(QColor(color))
+        painter.drawEllipse(QPointF(46, ANSWER_H - 15), 3.5, 3.5)
+        painter.setPen(QColor(color if status in ("failed", "stale") else T.muted))
+        painter.drawText(QRectF(54, ANSWER_H - 24, ANSWER_W - 62, 18), Qt.AlignLeft | Qt.AlignVCenter, txt)
+
+    def hoverEnterEvent(self, e) -> None:
+        self._hover = True; self.update()
+
+    def hoverLeaveEvent(self, e) -> None:
+        self._hover = False; self.update()
+
+    def mousePressEvent(self, e: QGraphicsSceneMouseEvent) -> None:
+        self._press = e.scenePos()
+        super().mousePressEvent(e)
+
+    def mouseReleaseEvent(self, e: QGraphicsSceneMouseEvent) -> None:
+        moved = (e.scenePos() - self._press).manhattanLength() > 4
+        super().mouseReleaseEvent(e)
+        a = self.answer
+        if a and (a.x, a.y) != (self.x(), self.y()):
+            self.canvas.doc.edit_answer(self.answer_id, x=self.x(), y=self.y())
+        if not moved and e.button() == Qt.LeftButton:
+            self.canvas.answerActivated.emit(self.answer_id)
+
+    def contextMenuEvent(self, e) -> None:
+        m = QMenu(); m.setAttribute(Qt.WA_DeleteOnClose)
+        show = m.addAction(icon("table", T.text), "Show the result")
+        change = m.addAction(icon("sliders", T.text), "Change the question…")
+        m.addSeparator()
+        delete = m.addAction(icon("trash", T.text), "Delete this answer…")
+        r = m.exec(e.screenPos())
+        if r == show:
+            self.canvas.answerActivated.emit(self.answer_id)
+        elif r == change:
+            self.canvas.answerChangeRequested.emit(self.answer_id)
+        elif r == delete:
+            self.canvas.answerDeleteRequested.emit(self.answer_id)
+
+
 class CanvasScene(QGraphicsScene):
     nodeActivated = Signal(str)
+    answerActivated = Signal(str)
+    answerChangeRequested = Signal(str)
+    answerDeleteRequested = Signal(str)
     selectionChangedTo = Signal(object)
     status = Signal(str)
     addAfterRequested = Signal(str, QPoint)     # node id, screen pos
+    runRequested = Signal(object)               # step ids to run up to, or None for everything (the window checks first)
 
     def __init__(self, doc: Document, parent=None) -> None:
         super().__init__(parent)
@@ -405,37 +507,43 @@ class CanvasScene(QGraphicsScene):
         self.nodes: dict[str, NodeItem] = {}
         self.edges: dict[tuple, EdgeItem] = {}
         self.notes: dict[str, NoteItem] = {}
+        self.answers: dict[str, "AnswerItem"] = {}
         self._temp: QGraphicsPathItem | None = None
         self._drag_from: PortItem | None = None
         self._reroute_edge: Edge | None = None     # an existing edge being dragged to a new input
         self._reroute_item: EdgeItem | None = None
         self.setSceneRect(-6000, -6000, 12000, 12000)
         self.selectionChanged.connect(self._on_selection)
-        doc.nodeAdded.connect(self._add_node)
-        doc.nodeRemoved.connect(self._remove_node)
-        doc.nodeChanged.connect(self._node_changed)
-        doc.nodeMoved.connect(self._node_moved)
-        doc.edgeAdded.connect(self._add_edge)
-        doc.edgeRemoved.connect(self._remove_edge)
-        doc.noteAdded.connect(self._add_note)
-        doc.noteRemoved.connect(self._remove_note)
-        doc.noteChanged.connect(lambda nid: self.notes[nid].update() if nid in self.notes else None)
-        doc.reloaded.connect(self.rebuild)
-        doc.statesChanged.connect(self.refresh_states)
-        doc.nodeState.connect(self._node_state)
+        listen(self, doc.nodeAdded, self._add_node)
+        listen(self, doc.nodeRemoved, self._remove_node)
+        listen(self, doc.nodeChanged, self._node_changed)
+        listen(self, doc.nodeMoved, self._node_moved)
+        listen(self, doc.edgeAdded, self._add_edge)
+        listen(self, doc.edgeRemoved, self._remove_edge)
+        listen(self, doc.noteAdded, self._add_note)
+        listen(self, doc.noteRemoved, self._remove_note)
+        listen(self, doc.noteChanged, lambda nid: self.notes[nid].update() if nid in self.notes else None)
+        listen(self, doc.answerAdded, self._add_answer)
+        listen(self, doc.answerRemoved, self._remove_answer)
+        listen(self, doc.answerChanged, lambda aid: self.answers[aid].update() if aid in self.answers else None)
+        listen(self, doc.reloaded, self.rebuild)
+        listen(self, doc.statesChanged, self.refresh_states)
+        listen(self, doc.nodeState, self._node_state)
         self.rebuild()
 
     # ---- sync with document
     def rebuild(self) -> None:
         self.blockSignals(True)
         self.clear()
-        self.nodes.clear(); self.edges.clear(); self.notes.clear()
+        self.nodes.clear(); self.edges.clear(); self.notes.clear(); self.answers.clear()
         for n in self.doc.pipeline.nodes.values():
             self._add_node(n.id)
         for e in self.doc.pipeline.edges:
             self._add_edge(e)
         for n in self.doc.pipeline.notes:
             self._add_note(n.id)
+        for a in self.doc.pipeline.answers:
+            self._add_answer(a.id)
         self.blockSignals(False)
         self.refresh_states()
         self.selectionChangedTo.emit(None)
@@ -491,6 +599,40 @@ class CanvasScene(QGraphicsScene):
         if item:
             self.removeItem(item)
 
+    def _add_answer(self, aid: str) -> None:
+        answer = self.doc.pipeline.answer(aid)
+        if answer is None or aid in self.answers:
+            return
+        item = AnswerItem(self, answer)
+        self.answers[aid] = item
+        self.addItem(item)
+
+    def _remove_answer(self, aid: str) -> None:
+        item = self.answers.pop(aid, None)
+        if item:
+            self.removeItem(item)
+
+    def selected_answer_ids(self) -> list[str]:
+        return [i.answer_id for i in self.selectedItems() if isinstance(i, AnswerItem)]
+
+    def select_answer(self, aid: str | None) -> None:
+        self.clearSelection()
+        if aid and aid in self.answers:
+            self.answers[aid].setSelected(True)
+
+    def highlight_branch(self, nids: set[str]) -> None:
+        """Dim everything not in the branch, so one answer's pipeline stands out in a busy project."""
+        for nid, item in self.nodes.items():
+            item.setOpacity(1.0 if nid in nids else 0.28)
+        for (src, dst, _port), edge in self.edges.items():
+            edge.setOpacity(1.0 if (src in nids and dst in nids) else 0.2)
+
+    def clear_highlight(self) -> None:
+        for item in self.nodes.values():
+            item.setOpacity(1.0)
+        for edge in self.edges.values():
+            edge.setOpacity(1.0)
+
     def _apply_state(self, nid: str) -> None:
         st = self.doc.state(nid)
         self.nodes[nid].set_state(st.status, st.rows, st.error)
@@ -520,6 +662,8 @@ class CanvasScene(QGraphicsScene):
                 item.set_problem("connect " + (", ".join(s.label.lower() for s in missing) if len(nt.inputs) > 1 else "an input"))
             elif probs:
                 item.set_problem(probs[0])
+            elif nid in self.doc.held:
+                item.set_problem("changed elsewhere. Run to save its file")
             else:
                 item.set_problem(None)
 
@@ -628,13 +772,12 @@ class CanvasScene(QGraphicsScene):
                 if item is not None:                        # dropped back where it was: no change
                     item.setVisible(True)
                 return
-            self.doc.undo.beginMacro("Move connection")     # detach here, attach there, as one undo step
-            self.doc.disconnect(edge)
             try:
-                self.doc.connect(edge.source, target.node_item.node_id, target.name)
-            except PipelineError as e:
+                self.doc.move_edge(edge, target.node_item.node_id, target.name)
+            except PipelineError as e:                      # not allowed: the connection stays where it was
+                if item is not None:
+                    item.setVisible(True)
                 self.status.emit(str(e))
-            self.doc.undo.endMacro()
             return
         if not src or not target:
             return
@@ -659,7 +802,7 @@ class CanvasScene(QGraphicsScene):
         run_here.setEnabled(not self.doc.running)
         r = m.exec(screen_pos)
         if r == run_here:
-            self.doc.run(targets=[nid])
+            self.runRequested.emit([nid])
         elif r == show:
             self.nodeActivated.emit(nid)
         elif r == add_after:
@@ -671,25 +814,30 @@ class CanvasScene(QGraphicsScene):
         elif r == dup:
             self.doc.duplicate_nodes(self.selected_node_ids() or [nid])
         elif r == disc:
-            for e in [e for e in self.doc.pipeline.edges if e.source == nid or e.target == nid]:
-                self.doc.disconnect(e)
+            with self.doc.macro("Disconnect all"):
+                for e in [e for e in self.doc.pipeline.edges if e.source == nid or e.target == nid]:
+                    self.doc.disconnect(e)
         elif r == delete:
             self.doc.remove_nodes(self.selected_node_ids() or [nid])
 
     def delete_selection(self) -> None:
+        answer_ids = self.selected_answer_ids()
+        if answer_ids:
+            for aid in answer_ids:
+                self.answerDeleteRequested.emit(aid)
+            return
         ids = self.selected_node_ids()
         edges = [i.edge for i in self.selectedItems() if isinstance(i, EdgeItem)]
         notes = [i.note_id for i in self.selectedItems() if isinstance(i, NoteItem)]
         if ids or edges or notes:
-            self.doc.undo.beginMacro("Delete")
-            for e in edges:
-                if e.source not in ids and e.target not in ids:
-                    self.doc.disconnect(e)
-            if ids:
-                self.doc.remove_nodes(ids)
-            for n in notes:
-                self.doc.remove_note(n)
-            self.doc.undo.endMacro()
+            with self.doc.macro("Delete"):
+                for e in edges:
+                    if e.source not in ids and e.target not in ids:
+                        self.doc.disconnect(e)
+                if ids:
+                    self.doc.remove_nodes(ids)
+                for n in notes:
+                    self.doc.remove_note(n)
 
     def drawBackground(self, painter: QPainter, rect: QRectF) -> None:
         painter.fillRect(rect, QColor(T.canvas))
@@ -728,7 +876,7 @@ class CanvasView(QGraphicsView):
         self._pan_start = QPointF()
         self._pan_moved = False
         self._build_overlay()
-        scene.changed.connect(lambda _: self._update_empty())
+        listen(self, scene.changed, lambda _: self._update_empty())
         self._update_empty()
 
     # ---- overlay: zoom buttons + empty state
@@ -757,7 +905,7 @@ class CanvasView(QGraphicsView):
         self.empty.move((self.width() - self.empty.width()) // 2, (self.height() - self.empty.height()) // 2)
 
     def _update_empty(self) -> None:
-        self.empty.setVisible(not self.canvas.nodes and not self.canvas.notes)
+        self.empty.setVisible(not self.canvas.nodes and not self.canvas.notes and not self.canvas.answers)
 
     # ---- zoom / pan
     def zoom_by(self, f: float) -> None:
@@ -777,7 +925,7 @@ class CanvasView(QGraphicsView):
         e.accept()
 
     def fit_all(self) -> None:
-        items = [i for i in self.canvas.items() if isinstance(i, (NodeItem, NoteItem))]
+        items = [i for i in self.canvas.items() if isinstance(i, (NodeItem, NoteItem, AnswerItem))]
         if not items:
             self.resetTransform(); self.centerOn(0, 0); return
         r = items[0].sceneBoundingRect()
@@ -870,13 +1018,13 @@ class CanvasView(QGraphicsView):
         if item is not None and not isinstance(item, PortItem):
             super().contextMenuEvent(e); return
         pos = self.mapToScene(e.pos())
-        m = QMenu(self)
+        m = QMenu(self); m.setAttribute(Qt.WA_DeleteOnClose)
         add = m.addAction(icon("plus", T.text), "Add a step here…")
         add.triggered.connect(lambda: self.addStepRequested.emit(e.globalPos(), pos))
         note = m.addAction(icon("note-pencil", T.text), "Add a note here")
         note.triggered.connect(lambda: self.addNoteRequested.emit(pos))
         m.addSeparator()
         fit = m.addAction(icon("arrows-out", T.text), "Fit everything in view"); fit.triggered.connect(self.fit_all)
-        run = m.addAction(icon("play", T.text), "Run everything"); run.triggered.connect(lambda: self.canvas.doc.run())
+        run = m.addAction(icon("play", T.text), "Run everything"); run.triggered.connect(lambda: self.canvas.runRequested.emit(None))
         run.setEnabled(not self.canvas.doc.running)
         m.exec(e.globalPos())

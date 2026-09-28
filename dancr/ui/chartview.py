@@ -16,14 +16,15 @@ from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel, QToolButton, QFileDialog, QStackedLayout, QMenu, QLineEdit, QInputDialog
 
-from ..core.expr import _kind_of_dtype, NUM, TIME, STR, BOOL
+from ..core.expr import kind_of_dtype, NUM, TIME, STR, BOOL
 from ..core.executor import Executor
 from ..core.fits import KINDS as FIT_KINDS
 from ..views import lod
 from ..views.chartquery import ChartData, ChartError, query_panels, limit_values, MAX_PANELS
+from ..views.palette import SERIES_COLORS, series_color
 from .document import Document
-from .theme import T, SERIES_COLORS
-from .common import page_header
+from .theme import T
+from .common import page_header, listen
 from .workers import Serial
 from .icons import icon
 from .flow import FlowLayout
@@ -52,8 +53,8 @@ class Panel:
     items: list = field(default_factory=list)
     series: list = field(default_factory=list)      # (label, xs, ys) for hover readouts
     date_axis: bool = False
-    utc_offset: int = 0                             # seconds east of UTC shown on the axis (the column's own zone)
-    tz_aware: bool = False
+    tz: str | None = None                           # the column's zone: every label and readout uses its offset then
+    offset: int = 0                                 # the zone's offset (seconds) at the data the axis was made for
 
 
 def _log10(v: np.ndarray) -> np.ndarray:
@@ -70,6 +71,31 @@ def _zone_offset(tz: str, at: float | None) -> int:
         return 0
 
 
+class ZonedDateAxis(pg.DateAxisItem):
+    """A date axis whose labels are wall times in a time zone, with that zone's offset at each tick, so a
+    range across a daylight-saving change is labelled right on both sides (pyqtgraph's own axis uses one
+    fixed offset)."""
+
+    def __init__(self, tz: str | None, at: float | None = None, **kw: Any) -> None:
+        # ticks fall on the zone's midnights at the data shown (``at``), not at today's offset: January data seen in
+        # summer would otherwise have every day tick an hour off, labelled with the day before
+        super().__init__(orientation="bottom", utcOffset=-_zone_offset(tz, at) if tz else 0, **kw)
+        self.tz = tz
+
+    def tickStrings(self, values, scale, spacing):  # noqa: N802 - pyqtgraph's name
+        spec = next((s for s in self.zoomLevel.tickSpecs if s.spacing == spacing), None)
+        if spec is None or self.tz is None:
+            return super().tickStrings(values, scale, spacing)
+        out = []
+        for v in values:
+            try:
+                text = datetime.fromtimestamp(v, ZoneInfo(self.tz)).strftime(spec.format)
+            except (ValueError, OSError, OverflowError):
+                out.append(""); continue
+            out.append(text[:-3] if "%f" in spec.format else (text.lstrip("0") if "%Y" in spec.format else text))
+        return out
+
+
 class ChartView(QWidget):
     addToReport = Signal(str)
 
@@ -83,7 +109,7 @@ class ChartView(QWidget):
         self._schema_src: str | None = None  # the table ``schema`` describes
         self.rows = 0
         self.preview = False
-        self._serial = Serial()
+        self._serial = Serial(self)
         self._suppress = False
         self._last_range: tuple[float, float] | None = None
         self._bounds: dict[str, tuple[float, float, int]] = {}
@@ -110,6 +136,14 @@ class ChartView(QWidget):
         self.info = QLabel(""); self.info.setObjectName("muted")
         for w in (self.kind_chip, self.x_chip, self.y_chip, self.color_chip, self.split_chip, self.limit_chip, self.fit_chip, self.mean_chip):
             c.addWidget(w)
+        # one menu per chip, rebuilt in _fill_chips: creating fresh QMenus on every refresh would leak them
+        self.kind_menu = QMenu(self); self.kind_chip.setMenu(self.kind_menu)
+        self.x_menu = QMenu(self); self.x_chip.setMenu(self.x_menu)
+        self.y_menu = QMenu(self); self.y_chip.setMenu(self.y_menu)
+        self.color_menu = QMenu(self); self.color_chip.setMenu(self.color_menu)
+        self.split_menu = QMenu(self); self.split_chip.setMenu(self.split_menu)
+        self.limit_menu = QMenu(self); self.limit_chip.setMenu(self.limit_menu)
+        self.fit_menu = QMenu(self); self.fit_chip.setMenu(self.fit_menu)
         c.addWidget(self.fit_btn); c.addWidget(self.info)
         lay.addWidget(chips)
         holder = QWidget(); self.stack = QStackedLayout(holder); self.stack.setStackingMode(QStackedLayout.StackAll)
@@ -125,12 +159,15 @@ class ChartView(QWidget):
         self._timer = QTimer(self); self._timer.setSingleShot(True); self._timer.setInterval(90); self._timer.timeout.connect(lambda: self._query(full=False))
         self.hint = QLabel("Drag to pan · scroll to zoom · right-drag to zoom into a box · double-click to fit · click a legend entry to hide it"); self.hint.setObjectName("faint"); self.hint.setWordWrap(True)
         self.hint.setContentsMargins(10, 2, 10, 3); lay.addWidget(self.hint)
-        doc.nodeChanged.connect(lambda nid: self.refresh() if nid == self.nid else None)
-        doc.statesChanged.connect(self._maybe_refresh)
-        doc.inputsChanged.connect(self.refresh)
-        doc.columnsChanged.connect(self.refresh)
-        doc.runFinished.connect(lambda ok, r: self.refresh())
-        doc.reloaded.connect(self.clear)
+        listen(self, doc.nodeChanged, lambda nid: self.refresh() if nid == self.nid else None)
+        listen(self, doc.statesChanged, self._maybe_refresh)
+        listen(self, doc.inputsChanged, self.refresh)
+        listen(self, doc.columnsChanged, self.refresh)
+        listen(self, doc.runFinished, lambda ok, r: self.refresh())
+        listen(self, doc.reloaded, self.clear)
+        # rewiring the chart's input changes what it draws, even when no state hash changed
+        listen(self, doc.edgeAdded, lambda e: self.refresh() if e.target == self.nid else None)
+        listen(self, doc.edgeRemoved, lambda e: self.refresh() if e.target == self.nid else None)
 
     # ------------------------------------------------------------ panels
     @property
@@ -165,10 +202,11 @@ class ChartView(QWidget):
 
     def _set_date_axis(self, p: Panel, on: bool, tz: str | None = None, at: float | None = None) -> None:
         """A date axis in the column's own time zone (naive columns are shown as they are)."""
-        offset = _zone_offset(tz, at) if (on and tz) else 0
-        if on != p.date_axis or offset != p.utc_offset:
-            p.date_axis, p.utc_offset, p.tz_aware = on, offset, bool(on and tz)
-            axis = pg.DateAxisItem(orientation="bottom", utcOffset=-offset) if on else pg.AxisItem(orientation="bottom")
+        tz = tz if on else None
+        offset = _zone_offset(tz, at) if tz else 0
+        if on != p.date_axis or tz != p.tz or offset != p.offset:
+            p.date_axis, p.tz, p.offset = on, tz, offset
+            axis = (ZonedDateAxis(tz, at) if tz else pg.DateAxisItem(orientation="bottom", utcOffset=0)) if on else pg.AxisItem(orientation="bottom")
             axis.setTextPen(QColor(T.muted)); axis.setPen(QColor(T.border))
             p.plot.setAxisItems({"bottom": axis})
 
@@ -208,10 +246,15 @@ class ChartView(QWidget):
             return
         text = self.title.text().strip()
         node = self.doc.pipeline.nodes[self.nid]
-        if text != (node.params.get("title") or "") and text != node.title:
-            self._set({"title": text})
-        if text and text != node.title:
-            self.doc.rename(self.nid, text)
+        if not text or (text == (node.params.get("title") or "") and text == node.title):
+            return
+        # the chart's title (drawn on it) and the step's name follow what was typed, as one undo step;
+        # typing the step's own name back works too
+        with self.doc.macro("Chart title"):
+            if text != (node.params.get("title") or ""):
+                self._set({"title": text})
+            if text != node.title:
+                self.doc.rename(self.nid, text)
 
     def _maybe_refresh(self) -> None:
         if self.nid and self.src:
@@ -252,12 +295,22 @@ class ChartView(QWidget):
         else:
             self._set_overlay("Waiting for the run to finish…" if self.doc.running else "Building a preview…")
 
-            def work():
-                df, _res, _kind = self.doc.executor.preview(src, Executor.PREVIEW_ROWS)
-                return df
+            executor = self.doc.snapshot_executor()   # a copy: the project may change or be replaced meanwhile
 
-            def done(df):
+            def work():
+                try:
+                    df, _res, _kind = executor.preview(src, Executor.PREVIEW_ROWS)
+                    return df, None
+                except Exception as e:  # noqa: BLE001 - a preview that cannot be built is not a failure of the app
+                    from ..core.executor import friendly_error
+                    return None, friendly_error(e)
+
+            def done(r):
                 if nid != self.nid or src != self.src:
+                    return
+                df, err = r
+                if err is not None:
+                    self._set_overlay(f"Couldn't build a preview: {err}")
                     return
                 self._got_frame(df.lazy(), dict(df.schema), len(df), preview=True)
             self._serial.submit(work, done, self._set_overlay)
@@ -282,19 +335,19 @@ class ChartView(QWidget):
         p = self._params()
         kind = p.get("kind", "line")
         self.kind_chip.setText(dict(KIND_LABELS).get(kind, "Line")); self.kind_chip.setIcon(icon({"line": "chart-line", "scatter": "chart-scatter", "histogram": "rows", "bar": "table"}.get(kind, "chart-line"), T.muted, 14))
-        m = QMenu(self)
+        m = self.kind_menu; m.clear()
         for k, label in KIND_LABELS:
             a = m.addAction(label); a.setCheckable(True); a.setChecked(k == kind); a.triggered.connect(lambda _=False, k=k: self._set({"kind": k}))
         self.kind_chip.setMenu(m)
         schema = self.schema                         # filled by the worker; empty until the table has been read
-        nums = [c for c, dt in schema.items() if _kind_of_dtype(dt) == NUM]
-        axes = [c for c, dt in schema.items() if _kind_of_dtype(dt) in (NUM, TIME)]
-        cats = [c for c, dt in schema.items() if _kind_of_dtype(dt) in (STR, BOOL)] or list(schema)
+        nums = [c for c, dt in schema.items() if kind_of_dtype(dt) == NUM]
+        axes = [c for c, dt in schema.items() if kind_of_dtype(dt) in (NUM, TIME)]
+        cats = [c for c, dt in schema.items() if kind_of_dtype(dt) in (STR, BOOL)] or list(schema)
         title = self.doc.pipeline.column_title
         # X
         xcol = p.get("x") or p.get("category") or ""
         self.x_chip.setText("X: " + (title(xcol) if xcol else "automatic"))
-        xm = QMenu(self)
+        xm = self.x_menu; xm.clear()
         a = xm.addAction("automatic"); a.triggered.connect(lambda: self._set({"x": "", "category": ""}))
         for c in (axes if kind != "bar" else list(schema)):
             a = xm.addAction(title(c)); a.setCheckable(True); a.setChecked(c == xcol)
@@ -304,14 +357,14 @@ class ChartView(QWidget):
         if kind == "histogram":
             ycol = p.get("column") or ""
             self.y_chip.setText("Column: " + (title(ycol) if ycol else "choose"))
-            ym = QMenu(self)
+            ym = self.y_menu; ym.clear()
             for c in nums:
                 a = ym.addAction(title(c)); a.setCheckable(True); a.setChecked(c == ycol); a.triggered.connect(lambda _=False, c=c: self._set({"column": c}))
             self.y_chip.setMenu(ym)
         elif kind == "bar":
             vcol = p.get("value") or ""
             self.y_chip.setText(f"{p.get('stat', 'mean')} of " + (title(vcol) if vcol else "rows"))
-            ym = QMenu(self)
+            ym = self.y_menu; ym.clear()
             for c in nums:
                 a = ym.addAction(title(c)); a.setCheckable(True); a.setChecked(c == vcol); a.triggered.connect(lambda _=False, c=c: self._set({"value": c}))
             ym.addSeparator()
@@ -322,7 +375,7 @@ class ChartView(QWidget):
             series = [s for s in (p.get("series") or []) if s.get("column")]
             chosen = [s["column"] for s in series]
             self.y_chip.setText("Y: " + (", ".join(title(c) for c in chosen[:3]) + (f" +{len(chosen) - 3}" if len(chosen) > 3 else "") if chosen else "choose"))
-            ym = QMenu(self)
+            ym = self.y_menu; ym.clear()
             for c in nums:
                 a = ym.addAction(title(c)); a.setCheckable(True); a.setChecked(c in chosen)
                 a.triggered.connect(lambda on, c=c: self._toggle_series(c, on))
@@ -333,7 +386,7 @@ class ChartView(QWidget):
         # colour by / split by
         cb = p.get("color_by") or ""
         self.color_chip.setText("Colour by: " + (title(cb) if cb else "none")); self.color_chip.setVisible(kind in ("line", "scatter"))
-        cm = QMenu(self)
+        cm = self.color_menu; cm.clear()
         a = cm.addAction("none"); a.triggered.connect(lambda: self._set({"color_by": ""}))
         for c in cats:
             a = cm.addAction(title(c)); a.setCheckable(True); a.setChecked(c == cb); a.triggered.connect(lambda _=False, c=c: self._set({"color_by": c}))
@@ -341,7 +394,7 @@ class ChartView(QWidget):
         sb = p.get("split_by") or ""
         self.split_chip.setText("Split by: " + (title(sb) if sb else "none")); self.split_chip.setVisible(kind != "bar")
         self.split_chip.setToolTip("One panel per value of a category column, stacked with a shared X axis")
-        sm = QMenu(self)
+        sm = self.split_menu; sm.clear()
         a = sm.addAction("none"); a.triggered.connect(lambda: self._set({"split_by": ""}))
         for c in cats:
             a = sm.addAction(title(c)); a.setCheckable(True); a.setChecked(c == sb); a.triggered.connect(lambda _=False, c=c: self._set({"split_by": c}))
@@ -349,7 +402,7 @@ class ChartView(QWidget):
         # limits
         lims = p.get("limits") or []
         self.limit_chip.setText("Limit line" + (f": {', '.join(str(l.get('value')) for l in lims)}" if lims else "")); self.limit_chip.setVisible(kind != "bar")
-        lm = QMenu(self)
+        lm = self.limit_menu; lm.clear()
         a = lm.addAction("Add a limit line…"); a.triggered.connect(self._add_limit)
         for i, l in enumerate(lims):
             a = lm.addAction(f"Remove {l.get('label') or l.get('value')}"); a.triggered.connect(lambda _=False, i=i: self._set({"limits": [x for j, x in enumerate(lims) if j != i]}))
@@ -357,7 +410,7 @@ class ChartView(QWidget):
         # fit
         fk = p.get("fit") or ""
         self.fit_chip.setText("Fitted curve" + (f": {dict(FIT_KINDS).get(fk, fk)}" if fk else "")); self.fit_chip.setVisible(kind == "scatter")
-        fm = QMenu(self)
+        fm = self.fit_menu; fm.clear()
         a = fm.addAction("none"); a.triggered.connect(lambda: self._set({"fit": ""}))
         for k, label in FIT_KINDS:
             a = fm.addAction(label); a.setCheckable(True); a.setChecked(k == fk); a.triggered.connect(lambda _=False, k=k: self._set({"fit": k}))
@@ -367,7 +420,7 @@ class ChartView(QWidget):
     def _toggle_series(self, col: str, on: bool) -> None:
         series = [s for s in (self._params().get("series") or []) if s.get("column")]
         if on and col not in [s["column"] for s in series]:
-            series.append({"column": col, "color": SERIES_COLORS[len(series) % len(SERIES_COLORS)]})
+            series.append({"column": col, "color": series_color(len(series))})
         elif not on:
             series = [s for s in series if s["column"] != col]
         self._set({"series": series})
@@ -464,6 +517,8 @@ class ChartView(QWidget):
         mean_pen = pg.mkPen("#555", width=1, style=Qt.DashLine)
         limit_pen = pg.mkPen(T.danger, width=1.2, style=Qt.DotLine)
         x_tz = self.schema[cd.x].time_zone if (cd.x and isinstance(self.schema.get(cd.x), pl.Datetime)) else None
+        if cd.kind != "bar":
+            plot.getAxis("bottom").setTicks(None)       # a bar chart's category labels must not stay behind
         if cd.kind == "line":
             if cd.groups:
                 for gi, (g, d) in enumerate(cd.groups):
@@ -471,13 +526,13 @@ class ChartView(QWidget):
                         if len(s.x) == 0:
                             continue
                         xs, ys = lod.break_gaps(s.x, s.y) if spec.get("break_gaps", True) else (s.x, s.y)
-                        self._add_curve(p, xs, ys, SERIES_COLORS[gi % len(SERIES_COLORS)], g, symbols=(s.mode == "raw" and len(xs) <= 1500))
+                        self._add_curve(p, xs, ys, series_color(gi), g, symbols=(s.mode == "raw" and len(xs) <= 1500))
                         p.series.append((g, s.x, s.y))
             else:
                 specs = spec.get("series") or []
                 for i, s in enumerate(cd.line.series):
                     sp = specs[i] if i < len(specs) else {}
-                    color = sp.get("color") or SERIES_COLORS[i % len(SERIES_COLORS)]
+                    color = series_color(i, sp)
                     label = sp.get("label") or title(s.name)
                     if len(s.x) == 0:
                         continue
@@ -500,25 +555,28 @@ class ChartView(QWidget):
             yname = (spec.get("series") or [{}])[0]
             plot.setLabel("bottom", title(cd.x) if show_x_label else ""); plot.setLabel("left", spec.get("y_label") or yname.get("label") or title(cd.ys[0]))
             if cd.groups:
+                # Groups too big to plot raw fall back to a density grid; draw the combined cloud as a
+                # background so an all-density grouped scatter is not a blank panel.
+                if d.mode == "density" and any(gd.mode == "density" for _, gd in cd.groups):
+                    if log_y:
+                        notes.append("the density view can't be drawn on a log axis, so zoom in to see the points")
+                    else:
+                        self._add_density(p, d)
                 for gi, (g, gd) in enumerate(cd.groups):
                     if gd.mode == "raw":
-                        self._add_points(p, gd.x, gd.y, 5, SERIES_COLORS[gi % len(SERIES_COLORS)], g, log_y, notes)
+                        self._add_points(p, gd.x, gd.y, 5, series_color(gi), g, log_y, notes)
             elif d.mode == "raw":
                 self._add_points(p, d.x, d.y, 4, SERIES_COLORS[0], None, log_y, notes)
             elif log_y:
-                notes.append("the density view cannot be drawn on a log axis: zoom in to see the points")
+                notes.append("the density view can't be drawn on a log axis, so zoom in to see the points")
             else:
-                x0, x1, y0, y1 = d.extent
-                img = pg.ImageItem(np.log1p(d.density))
-                lut = pg.colormap.get("viridis").getLookupTable(nPts=256, alpha=True); lut[0, 3] = 0
-                img.setLookupTable(lut)
-                img.setRect(pg.QtCore.QRectF(x0, y0, x1 - x0, y1 - y0)); self._add(p, img)
+                self._add_density(p, d)
             for gi, (f, cx, cy) in enumerate(cd.fits):
                 if cx is None:
                     self._set_overlay(f"Fit: {f}")
                 else:
                     lab = (f"{f.group}: " if f.group is not None else "") + f.equation + (f"   R² = {f.r2:.3f}" if f.r2 is not None else "")
-                    self._add_curve(p, cx, cy, SERIES_COLORS[gi % len(SERIES_COLORS)] if cd.groups else T.text, lab, width=2.0)
+                    self._add_curve(p, cx, cy, series_color(gi) if cd.groups else T.text, lab, width=2.0)
             if cd.mean is not None:
                 self._add_hline(p, cd.mean, log_y, mean_pen, f"average {cd.mean:.4g}", T.muted, 0.05, notes)
             if full:
@@ -539,6 +597,11 @@ class ChartView(QWidget):
             self._set_date_axis(p, False)
             xs = np.arange(len(b.labels))
             self._add_bars(p, xs - 0.4, np.full(len(xs), 0.8), b.values, log_y, notes)
+            if b.errors is not None and log_y:
+                notes.append("error bars are not drawn on a log axis")
+            if b.errors is not None and not log_y:
+                self._add(p, pg.ErrorBarItem(x=xs.astype(float), y=np.asarray(b.values, dtype=float), top=b.errors, bottom=b.errors,
+                                             beam=0.25, pen=pg.mkPen(T.text, width=1.4)))
             plot.getAxis("bottom").setTicks([[(i, lab[:18]) for i, lab in enumerate(b.labels)]])
             plot.setLabel("left", f"{b.stat} of {title(cd.ys[0]) if cd.ys else 'rows'}"); plot.setLabel("bottom", title(cd.x))
             plot.autoRange()
@@ -546,6 +609,14 @@ class ChartView(QWidget):
             for lv, lab in limit_values(spec, inputs):
                 self._add_hline(p, lv, log_y, limit_pen, lab, T.danger, 0.95, notes)
         return cd.summary()
+
+    def _add_density(self, p: Panel, d) -> None:
+        """Draw a per-pixel density grid as a log-coloured image."""
+        x0, x1, y0, y1 = d.extent
+        img = pg.ImageItem(np.log1p(d.density))
+        lut = pg.colormap.get("viridis").getLookupTable(nPts=256, alpha=True); lut[0, 3] = 0
+        img.setLookupTable(lut)
+        img.setRect(pg.QtCore.QRectF(x0, y0, x1 - x0, y1 - y0)); self._add(p, img)
 
     def _add_points(self, p: Panel, x, y, size: int, color: str, name: str | None, log_y: bool, notes: list[str]) -> None:
         x = np.asarray(x, dtype=float); y = np.asarray(y, dtype=float)
@@ -594,15 +665,13 @@ class ChartView(QWidget):
 
     @staticmethod
     def _format_time(p: Panel, x: float) -> str:
-        """Wall time in the column's zone, with its offset when the column carries one (as the grid shows it)."""
+        """Wall time in the column's zone, with the offset in force at that moment (as the grid shows it)."""
         try:
-            text = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(x + p.utc_offset))
+            if p.tz:
+                return datetime.fromtimestamp(x, ZoneInfo(p.tz)).strftime("%Y-%m-%d %H:%M:%S%z")
+            return time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(x))
         except (ValueError, OSError, OverflowError):
             return f"{x:.6g}"
-        if p.tz_aware:
-            sign = "+" if p.utc_offset >= 0 else "-"
-            text += f"{sign}{abs(p.utc_offset) // 3600:02d}{abs(p.utc_offset) % 3600 // 60:02d}"
-        return text
 
     def _hide_hover(self) -> None:
         for p in self.panels:
@@ -634,4 +703,4 @@ class ChartView(QWidget):
             return
         self._hide_hover()
         self._grab().export(copy=True)
-        self.doc.message.emit("Chart image copied — paste it into Word or an email")
+        self.doc.message.emit("Chart image copied. Paste it into Word or an email")

@@ -32,6 +32,13 @@ class NodeResult:
     frame: pl.LazyFrame
     report: dict[str, Any] = field(default_factory=dict)   # extra findings (fit coefficients, gap counts...)
     messages: list[str] = field(default_factory=list)      # human-readable notes for the log
+    files: list[Path] = field(default_factory=list)        # files this step wrote (rewritten if deleted or changed)
+
+
+def resolve_path(base: Path, path: str) -> Path:
+    """A path setting as a file path: ``~`` expanded, relative paths taken from the project folder."""
+    p = Path(path).expanduser()
+    return p if p.is_absolute() else (base / p)
 
 
 @dataclass
@@ -41,16 +48,35 @@ class Ctx:
     node_id: str
     node_title: str
     preview: bool = False           # True when computing a quick preview on a sample
+    sample: str = "all"             # in a preview, how the inputs were sampled: all (whole tables), spread, head
     cache_dir: Path | None = None
     logger: logging.Logger = log
     item_meta: list | None = None      # set by the executor for the report node
     inputs: dict[str, Any] | None = None            # named project inputs (belt area, permit limit, ...)
     upstream_meta: dict[str, list[dict]] | None = None   # {port: [{"title","node_type","params","messages","report"}]}
     columns: dict[str, dict] | None = None          # column registry: name -> {"label", "unit"}
+    output_root: Path | None = None                 # when set, steps may only write files inside it (MCP)
 
     def resolve(self, path: str) -> Path:
-        p = Path(path).expanduser()
-        return p if p.is_absolute() else (self.pipeline_dir / p)
+        """A path to read."""
+        return resolve_path(self.pipeline_dir, path)
+
+    def resolve_output(self, path: str) -> Path:
+        """A path to write. Refused outside ``output_root`` when one is set (symlinks and ``..`` included)."""
+        out = resolve_path(self.pipeline_dir, path)
+        if self.output_root is not None:
+            real = out.resolve()
+            if not real.is_relative_to(self.output_root):
+                raise ValueError(f"Can only save inside the project folder {self.output_root}, not {real}")
+            if in_dancr_folder(real, self.output_root):
+                raise ValueError(f"Won't save into DANCR's own .dancr folder: {real}")
+        return out
+
+
+def in_dancr_folder(real: Path, folder: Path) -> bool:
+    """Whether a resolved path inside `folder` lies in a .dancr folder (results, versions, locks), which only
+    DANCR writes. Any spelling of the name counts, as a Mac or Windows disk sees .DANCR as the same folder."""
+    return any(part.lower() == ".dancr" for part in real.relative_to(folder).parts)
 
 
 ApplyFn = Callable[[Ctx, dict[str, list[pl.LazyFrame]], dict[str, Any]], "pl.LazyFrame | NodeResult"]
@@ -69,6 +95,7 @@ class NodeType:
     summary: Callable[[dict[str, Any]], str] | None = None   # short subtitle for the canvas
     icon: str = ""                 # single glyph/emoji for palette
     materialize: bool = True       # write output to the cache; False for pure pass-through nodes
+    uses_labels: bool = False      # its result says columns by their labels and units: they are part of its cache hash
     route: Callable[[str, dict[str, list[str]]], str | None] | None = None   # (source node type, taken ports) -> port to use when none is given
     help_md: str = ""
 
@@ -156,7 +183,7 @@ class Registry:
         try:
             return self._types[key]
         except KeyError:
-            raise KeyError(f"Unknown node type {key!r}. Known: {sorted(self._types)}") from None
+            raise KeyError(f"Unknown step type {key!r}. Known: {sorted(self._types)}") from None
 
     def has(self, key: str) -> bool:
         self._ensure()

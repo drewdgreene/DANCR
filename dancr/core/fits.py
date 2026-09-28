@@ -121,27 +121,38 @@ def equation(kind: str, params: list[float], x: str = "x", y: str = "y") -> str:
     return kind
 
 
-def predict_by_group(fits: list[Fit], x: str, group: str | None) -> pl.Expr:
-    """One prediction expression for a table: per group when the fits were made per group."""
+def predict_by_group(fits: list[Fit], x: str, group: str | None, numeric: bool = False) -> pl.Expr:
+    """One prediction expression for a table: per group when the fits were made per group. ``numeric``: the
+    table's group column holds numbers."""
     if not group:
         return predict_expr(fits[0].kind, fits[0].params, pl.col(x))
-    e: pl.Expr = pl.lit(None).cast(pl.Float64)
-    key = pl.col(group).cast(pl.Utf8)
-    for f in fits:
-        e = pl.when(key == pl.lit(f.group)).then(predict_expr(f.kind, f.params, pl.col(x))).otherwise(e)
-    return e
+    return _per_group(fits, group, numeric, lambda f: predict_expr(f.kind, f.params, pl.col(x)), pl.lit(None).cast(pl.Float64))
 
 
-def outside_range_by_group(fits: list[Fit], x: str, group: str | None) -> pl.Expr:
+def outside_range_by_group(fits: list[Fit], x: str, group: str | None, numeric: bool = False) -> pl.Expr:
     """True where x is outside the range its fit was made on (per group when fitted per group)."""
     xe = pl.col(x).cast(pl.Float64)
     if not group:
         f = fits[0]
         return (xe < f.x_min) | (xe > f.x_max)
-    e: pl.Expr = pl.lit(False)
+    return _per_group(fits, group, numeric, lambda f: (xe < f.x_min) | (xe > f.x_max), pl.lit(False))
+
+
+def _per_group(fits: list[Fit], group: str, numeric: bool, value: Any, otherwise: pl.Expr) -> pl.Expr:
+    """``value(fit)`` on the rows of each fit's group. Groups are kept as text; a number column finds its fit
+    by value (fitted on 1.0 or "1", predicting for 1), a text column by the exact text ("01" is not "1")."""
+    from .dtypes import typed_value
+    e = otherwise
+    if numeric:
+        key = pl.col(group).cast(pl.Float64)
+        for f in fits:
+            n = typed_value(str(f.group)) if f.group is not None else None
+            if isinstance(n, (int, float)) and not isinstance(n, bool):
+                e = pl.when(key == float(n)).then(value(f)).otherwise(e)
+        return e
     key = pl.col(group).cast(pl.Utf8)
     for f in fits:
-        e = pl.when(key == pl.lit(f.group)).then((xe < f.x_min) | (xe > f.x_max)).otherwise(e)
+        e = pl.when(key == pl.lit(f.group)).then(value(f)).otherwise(e)
     return e
 
 
@@ -221,8 +232,9 @@ def _gauss_newton(lf: pl.LazyFrame, kind: str, params: list[float]) -> tuple[lis
 
     cur = sums(a, b)
     if cur["ss"] is None or not math.isfinite(cur["ss"]):
-        raise ValueError("Could not fit this shape: the values overflow (try a straight line or a power law)")
+        raise ValueError("Couldn't fit this shape because the values overflow. Try a straight line or a power law")
     converged = False
+    at_bound = False           # b held at its lower bound: a stall there is not a minimum
     passes = 0
     for passes in range(1, GN_ITERATIONS + 1):
         s11, s12, s22, g1, g2 = cur["s11"], cur["s12"], cur["s22"], cur["g1"], cur["g2"]
@@ -231,11 +243,15 @@ def _gauss_newton(lf: pl.LazyFrame, kind: str, params: list[float]) -> tuple[lis
         except np.linalg.LinAlgError:
             break
         na, nb = a + float(da), b + float(db)
-        if kind == "saturating":
-            na, nb = max(na, 0.0), max(nb, 1e-12)
+        if kind == "saturating":             # b > 0 keeps the curve's pole out of the data; a may be negative (falling)
+            at_bound = nb < 1e-12
+            nb = max(nb, 1e-12)
         nxt = sums(na, nb)
         if nxt["ss"] is not None and math.isfinite(nxt["ss"]) and nxt["ss"] < cur["ss"]:
-            negligible = (cur["ss"] - nxt["ss"]) <= 1e-12 * max(cur["ss"], 1e-300)
+            # settled when the error stops falling, or when the parameters stop moving: on near-exact data
+            # the error keeps falling by rounding noise long after the parameters are right
+            negligible = (cur["ss"] - nxt["ss"]) <= 1e-12 * max(cur["ss"], 1e-300) or \
+                (abs(nb - b) <= 1e-10 * max(abs(nb), 1e-12) and abs(na - a) <= 1e-10 * max(abs(na), 1e-12) and not at_bound)
             a, b, cur, lam = na, nb, nxt, max(lam / 3, 1e-9)
             if negligible:
                 converged = True
@@ -243,7 +259,7 @@ def _gauss_newton(lf: pl.LazyFrame, kind: str, params: list[float]) -> tuple[lis
         else:
             lam *= 10
             if lam > 1e8:
-                converged = True        # no step improves the fit any more: we are at the minimum
+                converged = not at_bound    # no step improves the fit any more: a minimum, unless held at a bound
                 break
     return [a, b], passes, converged
 
@@ -284,16 +300,29 @@ def fit_lazy(lf: pl.LazyFrame, kind: str, degree: int = 2) -> tuple[list[float],
             start = [float(_row(lf, [y.mean().alias("m")])["m"] or 1.0), 0.0]
         return _gauss_newton(lf, kind, start)
     if kind == "saturating":
-        m = _row(lf, [y.max().alias("ymax"), x.mean().alias("xmean"), pl.len().alias("n")])
+        m = _row(lf, [y.max().alias("ymax"), y.min().alias("ymin"), x.mean().alias("xmean"), pl.len().alias("n")])
         if int(m["n"]) < 2:
             raise ValueError("Need at least two points to fit")
-        return _gauss_newton(lf, kind, [float(m["ymax"] or 1.0) * 1.2, max(float(m["xmean"] or 1.0), 1e-9)])
+        ymax, ymin = float(m["ymax"] or 1.0), float(m["ymin"] or 0.0)
+        level = ymax if abs(ymax) >= abs(ymin) else ymin      # the level the curve heads for: up, or down for falling data
+        return _gauss_newton(lf, kind, [level * 1.2 or 1.0, max(float(m["xmean"] or 1.0), 1e-9)])
     raise ValueError(f"Unknown fit kind {kind!r}")
 
 
 def _prepared(lf: pl.LazyFrame, x: str, y: str, group: str | None) -> pl.LazyFrame:
     cols = [pl.col(x).cast(pl.Float64).alias(X), pl.col(y).cast(pl.Float64).alias(Y)] + ([pl.col(group).cast(pl.Utf8).alias(group)] if group else [])
     return lf.select(cols).filter(pl.col(X).is_finite() & pl.col(Y).is_finite())
+
+
+def _require_spread(lf: pl.LazyFrame) -> tuple[float, float]:
+    """The x range of the data, refusing too few points or one x value only: every shape would then 'fit'
+    with any parameters at all (an exact test: a centred sum of squares can come out a hair above 0)."""
+    m = _row(lf, [pl.len().alias("n"), pl.col(X).min().alias("lo"), pl.col(X).max().alias("hi")])
+    if int(m["n"]) < 2 or m["lo"] is None:
+        raise ValueError("Need at least two points to fit")
+    if m["lo"] == m["hi"]:
+        raise ValueError("All x values are the same, so no curve can be fitted")
+    return float(m["lo"]), float(m["hi"])
 
 
 def _require_positive_x(lf: pl.LazyFrame, kind: str) -> None:
@@ -304,18 +333,30 @@ def _require_positive_x(lf: pl.LazyFrame, kind: str) -> None:
             raise ValueError(f"A {shape} fit needs all x values above zero ({k:,} rows are 0 or below). Filter them out first.")
 
 
+GROUP_IN_MEMORY = 20_000_000     # up to this many rows, a per-group fit reads x, y and the group once, into memory
+
+
 def fit_frame(lf: pl.LazyFrame, x: str, y: str, kind: str = "linear", degree: int = 2, group: str | None = None) -> list[Fit]:
     """Fit on every row; one Fit per group (or one overall). Group values are handled as text."""
     base = _prepared(lf, x, y, group)
     if group:
-        keys = base.select(pl.col(group).drop_nulls().unique().sort()).collect(engine=STREAM)[group].to_list()
-        parts = [(k, base.filter(pl.col(group) == k)) for k in keys]
+        rows = int(base.select(pl.len()).collect(engine=STREAM).item())
+        if rows <= GROUP_IN_MEMORY:
+            # read the three columns once and split them: filtering the whole table once per group, on every pass of
+            # the fit, costs groups × passes full scans
+            split = base.select(X, Y, group).filter(pl.col(group).is_not_null()).collect(engine=STREAM) \
+                .partition_by(group, as_dict=True, maintain_order=False)
+            parts = sorted(((k[0], df.lazy()) for k, df in split.items()), key=lambda kv: str(kv[0]))
+        else:
+            keys = base.select(pl.col(group).drop_nulls().unique().sort()).collect(engine=STREAM)[group].to_list()
+            parts = [(k, base.filter(pl.col(group) == k)) for k in keys]
     else:
         parts = [(None, base)]
     fits: list[Fit] = []
     errors: list[str] = []
     for key, part in parts:
         try:
+            lo, hi = _require_spread(part)
             _require_positive_x(part, kind)
             params, passes, converged = fit_lazy(part, kind, degree)
         except ValueError as e:
@@ -324,9 +365,8 @@ def fit_frame(lf: pl.LazyFrame, x: str, y: str, kind: str = "linear", degree: in
                 continue
             raise
         r2, rmse, n = _score(part, kind, params)
-        ext = _row(part, [pl.col(X).min().alias("lo"), pl.col(X).max().alias("hi")])
         fits.append(Fit(kind, [float(p) for p in params], r2, rmse, n, x, y, key, equation(kind, params, x, y),
-                        float(ext["lo"]), float(ext["hi"]), passes, converged))
+                        lo, hi, passes, converged))
     if not fits:
         raise ValueError("Nothing could be fitted (not enough valid points)" + (": " + "; ".join(errors[:3]) if errors else ""))
     return fits
@@ -336,6 +376,7 @@ def fit_arrays(kind: str, xs: np.ndarray, ys: np.ndarray, degree: int = 2) -> tu
     """Fit in-memory arrays (same engine); returns (params, predicted ys)."""
     lf = pl.DataFrame({X: np.asarray(xs, dtype=float), Y: np.asarray(ys, dtype=float)}).lazy()
     lf = lf.filter(pl.col(X).is_finite() & pl.col(Y).is_finite())
+    _require_spread(lf)
     _require_positive_x(lf, kind)
     params, _, _ = fit_lazy(lf, kind, degree)
     return params, predict_arrays(kind, params, np.asarray(xs, dtype=float))

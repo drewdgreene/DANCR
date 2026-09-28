@@ -1,6 +1,8 @@
 """Report: several charts and tables on one page (HTML, plus a PDF) for sending to a colleague."""
 from __future__ import annotations
 
+import os
+
 import base64
 import html
 
@@ -12,6 +14,7 @@ from typing import Any
 import polars as pl
 
 from ..params import Param
+from ._common import private_temp
 from ..registry import NodeType, InputSpec, Ctx, NodeResult, registry
 from ..dtypes import strip_time_zones
 
@@ -31,7 +34,8 @@ def _table_html(df: pl.DataFrame, max_rows: int, total: int | None = None) -> st
     return f"<table><thead><tr>{head}</tr></thead><tbody>{''.join(rows)}</tbody></table>{more}"
 
 
-def _item_html(i: int, lf: pl.LazyFrame, meta: dict[str, Any], params: dict[str, Any], columns: dict[str, dict] | None) -> list[str]:
+def _item_html(i: int, lf: pl.LazyFrame, meta: dict[str, Any], params: dict[str, Any], columns: dict[str, dict] | None,
+               project_inputs: dict[str, Any] | None = None) -> list[str]:
     from ...views.render import render_chart
     from ...views.stats import column_summary
     max_rows = int(params.get("max_rows") or 30)
@@ -40,8 +44,10 @@ def _item_html(i: int, lf: pl.LazyFrame, meta: dict[str, Any], params: dict[str,
     parts.append(f"<h2>{heading}</h2>")
     rep = meta.get("report") or {}
     if meta.get("node_type") == "check_limits" and rep.get("verdict"):
-        cls = "pass" if rep["verdict"] == "PASS" else "fail"
-        parts.append(f"<p class='verdict {cls}'>{rep['verdict']}: {rep.get('outside', 0):,} of {rep.get('rows', 0):,} rows outside {html.escape(str(rep.get('limit', '')))}</p>")
+        cls = {"PASS": "pass", "FAIL": "fail"}.get(rep["verdict"], "none")
+        what = (f"{rep.get('outside', 0):,} of {rep.get('checked', 0):,} values outside" if cls != "none"
+                else "no row has a value to check against")
+        parts.append(f"<p class='verdict {cls}'>{rep['verdict']}: {what} {html.escape(str(rep.get('limit', '')))}</p>")
     for m in meta.get("messages") or []:
         parts.append(f"<p class='muted'>{html.escape(str(m))}</p>")
     shown = {k: v for k, v in rep.items() if k not in ("fits", "parameters") and not isinstance(v, (list, dict))}
@@ -51,7 +57,7 @@ def _item_html(i: int, lf: pl.LazyFrame, meta: dict[str, Any], params: dict[str,
         with tempfile.TemporaryDirectory() as td:
             png = Path(td) / "c.png"
             try:
-                render_chart(lf, meta.get("params") or {}, png, width=1400, height=620, columns=columns)
+                render_chart(lf, meta.get("params") or {}, png, width=1400, height=620, columns=columns, inputs=project_inputs)
                 data = base64.b64encode(png.read_bytes()).decode()
                 parts.append(f"<img src='data:image/png;base64,{data}' alt='{heading}'>")
             except Exception as e:
@@ -60,7 +66,7 @@ def _item_html(i: int, lf: pl.LazyFrame, meta: dict[str, Any], params: dict[str,
         n = int(lf.select(pl.len()).collect(engine="streaming")[0, 0])
         df = strip_time_zones(lf.head(max_rows).collect(engine="streaming"))
         if columns:
-            df = df.rename({c: _title(c, columns) for c in df.columns if _title(c, columns) != c})
+            df = df.rename(_display_names(df.columns, columns))
         parts.append(f"<p class='muted'>{n:,} rows × {len(df.columns)} columns</p>")
         parts.append(_table_html(df, max_rows, n))
         if n > max_rows and params.get("include_stats", True):
@@ -73,13 +79,12 @@ def _item_html(i: int, lf: pl.LazyFrame, meta: dict[str, Any], params: dict[str,
 
 
 def _title(c: str, columns: dict[str, dict] | None) -> str:
-    m = (columns or {}).get(c) or {}
-    label = m.get("label") or c
-    return f"{label} ({m['unit']})" if m.get("unit") else label
+    from ...views.table import column_title
+    return column_title(c, columns)
 
 
 def build_report(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, Any], item_meta: list[dict[str, Any]],
-                 columns: dict[str, dict] | None = None) -> str:
+                 columns: dict[str, dict] | None = None, project_inputs: dict[str, Any] | None = None) -> str:
     """Return a self-contained HTML document. item_meta: one dict per input in order with keys
     title, node_type, params (the chart node's params if it is a chart), messages, report.
     `blocks` (optional) orders text and items: [{"type": "text", "text": ...}, {"type": "item", "index": 0}, ...]."""
@@ -96,10 +101,16 @@ def build_report(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[s
     if notes:
         parts.append("<div class='notes'>" + "".join(f"<p>{html.escape(line)}</p>" for line in notes.splitlines() if line.strip()) + "</div>")
     frames = inputs.get("items") or []
+    # A block names its item by source node id, which survives connections being reordered or
+    # re-added; older projects stored a positional index, so fall back to that.
+    node_index = {m.get("node"): i for i, m in enumerate(item_meta) if m.get("node")}
     verdicts = [(m.get("title"), (m.get("report") or {}).get("verdict")) for m in item_meta if (m.get("report") or {}).get("verdict")]
     if verdicts:
-        overall = "PASS" if all(v == "PASS" for _, v in verdicts) else "FAIL"
-        parts.append(f"<p class='verdict {'pass' if overall == 'PASS' else 'fail'}'>Overall: {overall}</p>")
+        found = {v for _, v in verdicts}
+        # a check that had nothing to compare is neither a pass nor a fail
+        overall = "FAIL" if "FAIL" in found else ("PASS" if found == {"PASS"} else "NOT EVERYTHING CHECKED")
+        cls = {"PASS": "pass", "FAIL": "fail"}.get(overall, "none")
+        parts.append(f"<p class='verdict {cls}'>Overall: {overall}</p>")
     blocks = params.get("blocks") or [{"type": "item", "index": i} for i in range(len(frames))]
     used = set()
     for b in blocks:
@@ -109,20 +120,23 @@ def build_report(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[s
         elif b.get("type") == "heading":
             parts.append(f"<h2>{html.escape(str(b.get('text') or ''))}</h2>")
         else:
-            try:
-                i = int(b.get("index", -1))
-            except (TypeError, ValueError):
-                continue
-            if 0 <= i < len(frames):
+            i = node_index.get(b.get("node")) if b.get("node") is not None else None
+            if i is None:
+                try:
+                    i = int(b.get("index", -1))
+                except (TypeError, ValueError):
+                    continue
+            if i is not None and 0 <= i < len(frames):
                 used.add(i)
-                parts += _item_html(i, frames[i], item_meta[i] if i < len(item_meta) else {}, params, columns)
+                parts += _item_html(i, frames[i], item_meta[i] if i < len(item_meta) else {}, params, columns, project_inputs)
     for i in range(len(frames)):
         if i not in used:
-            parts += _item_html(i, frames[i], item_meta[i] if i < len(item_meta) else {}, params, columns)
+            parts += _item_html(i, frames[i], item_meta[i] if i < len(item_meta) else {}, params, columns, project_inputs)
     css = """
     .company { font-size: 13px; letter-spacing: 1px; text-transform: uppercase; color: #555; margin-bottom: 0; }
     .verdict { font-weight: 700; padding: 6px 10px; border-radius: 4px; display: inline-block; }
     .verdict.pass { background: #dcfce7; color: #166534; } .verdict.fail { background: #fee2e2; color: #991b1b; }
+    .verdict.none { background: #f1f5f9; color: #334155; }
     .text p { margin: 6px 0; }
     body { font-family: -apple-system, 'Segoe UI', 'Adwaita Sans', 'Noto Sans', Helvetica, Arial, sans-serif; color: #1c1c1e; max-width: 1100px; margin: 32px auto; padding: 0 24px; line-height: 1.45; }
     h1 { font-size: 26px; margin-bottom: 4px; } h2 { font-size: 18px; margin-top: 36px; border-bottom: 1px solid #ddd; padding-bottom: 4px; }
@@ -143,32 +157,57 @@ def _apply(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, An
     path = (params.get("path") or "").strip()
     if not path:
         raise ValueError("Choose where to save the report (a .html file)")
-    out = ctx.resolve(path)
+    out = ctx.resolve_output(path)
     if out.suffix.lower() not in (".html", ".htm"):
         raise ValueError("Save the report as a .html file (it opens in any browser and prints to PDF)")
     if ctx.preview:
-        return NodeResult(frames[0], messages=[f"Will write {out.name} when the pipeline runs"])
+        return NodeResult(frames[0], messages=[f"Will write {out.name} when the project runs"])
     meta = getattr(ctx, "item_meta", None) or []
-    doc = build_report(ctx, inputs, params, meta, getattr(ctx, "columns", None))
+    doc = build_report(ctx, inputs, params, meta, getattr(ctx, "columns", None), ctx.inputs)
     out.parent.mkdir(parents=True, exist_ok=True)
-    tmp = out.with_name(f".{out.name}.tmp")
+    tmp = private_temp(out)
     try:
-        tmp.write_text(doc, encoding="utf-8")
-        tmp.replace(out)
+        with open(tmp, "x", encoding="utf-8") as f:          # "x": never write through a file (or link) already there
+            f.write(doc)
+        os.replace(tmp, out)
     finally:
         tmp.unlink(missing_ok=True)
     msgs = [f"Saved report to {out}"]
     rep: dict[str, Any] = {"path": str(out), "items": len(frames)}
+    files = [out]
     if params.get("pdf", True):
         from ...views.pdf import html_to_pdf
         try:
-            pdf = html_to_pdf(doc, out.with_suffix(".pdf"))
+            target = ctx.resolve_output(str(out.with_suffix(".pdf")))     # the PDF is a file the step writes too
+            tmp_pdf = private_temp(target)
+            try:
+                html_to_pdf(doc, tmp_pdf)
+                os.replace(tmp_pdf, target)
+            finally:
+                tmp_pdf.unlink(missing_ok=True)
+            pdf = target
             msgs.append(f"PDF: {pdf}")
             rep["pdf"] = str(pdf)
+            files.append(Path(pdf))
         except Exception as e:  # PDF is a convenience; never fail the report for it
             ctx.logger.warning("PDF not written for %s: %s", out, e)
             msgs.append(f"PDF not written ({e})")
-    return NodeResult(frames[0], messages=msgs, report=rep)
+    return NodeResult(frames[0], messages=msgs, report=rep, files=files)
+
+
+def _display_names(names: list[str], columns: dict) -> dict[str, str]:
+    """Column headings by display label; two columns with the same label keep their names beside it."""
+    titles = {c: _title(c, columns) for c in names}
+    counts: dict[str, int] = {}
+    for t in titles.values():
+        counts[t] = counts.get(t, 0) + 1
+    out = {}
+    for c, t in titles.items():
+        if counts[t] > 1 and t != c:
+            t = f"{t} [{c}]"
+        if t != c:
+            out[c] = t
+    return out
 
 
 registry.register(NodeType(

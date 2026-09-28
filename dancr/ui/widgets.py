@@ -5,18 +5,19 @@ from pathlib import Path
 from typing import Any, Callable
 
 import polars as pl
-from PySide6.QtCore import Qt, Signal, QTimer
+from PySide6.QtCore import Qt, Signal, QTimer, QStringListModel
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (QWidget, QHBoxLayout, QVBoxLayout, QLineEdit, QSpinBox, QDoubleSpinBox, QCheckBox, QComboBox,
                                QPushButton, QToolButton, QLabel, QListWidget, QListWidgetItem, QPlainTextEdit, QFileDialog,
                                QGridLayout, QRadioButton, QSizePolicy, QColorDialog, QCompleter)
 
 from ..core.params import Param
-from ..core.expr import _kind_of_dtype, check_formula, function_docs, NUM, STR, TIME, BOOL
+from ..core.expr import kind_of_dtype, check_formula, function_docs, NUM, STR, TIME, BOOL
 from ..core.conditions import OPS, ops_for_kind
-from ..core.timeutil import parse_duration
+from ..core.timeutil import parse_duration, parse_bucket
 from ..core.nodes._common import STAT_CHOICES
-from .theme import T, SERIES_COLORS
+from .theme import T
+from ..views.palette import series_color
 from .icons import icon
 from .openonclick import open_list_on_click
 
@@ -27,7 +28,7 @@ KIND_ICON = {NUM: "#", STR: "Aa", TIME: "◷", BOOL: "✓", "duration": "Δ", "a
 def kind_of(schema: Schema | None, col: str) -> str:
     if not schema or col not in schema:
         return "any"
-    return _kind_of_dtype(schema[col])
+    return kind_of_dtype(schema[col])
 
 
 def columns_for(schema: Schema | None, group: str) -> list[str]:
@@ -36,7 +37,7 @@ def columns_for(schema: Schema | None, group: str) -> list[str]:
     if group == "any":
         return list(schema)
     want = {"numeric": NUM, "temporal": TIME, "string": STR, "bool": BOOL}[group]
-    return [c for c, dt in schema.items() if _kind_of_dtype(dt) == want]
+    return [c for c, dt in schema.items() if kind_of_dtype(dt) == want]
 
 
 class ParamWidget(QWidget):
@@ -92,6 +93,7 @@ class TextWidget(ParamWidget):
 class DurationWidget(TextWidget):
     def __init__(self, param: Param, parent=None) -> None:
         super().__init__(param, parent)
+        self._parse = parse_bucket if param.kind == "bucket" else parse_duration
         self.edit.setPlaceholderText(param.placeholder or "e.g. 30s, 5m, 1h, 1d")
         self.edit.textChanged.connect(self._validate)
 
@@ -99,7 +101,7 @@ class DurationWidget(TextWidget):
         ok = True
         if text.strip():
             try:
-                parse_duration(text)
+                self._parse(text)
             except ValueError:
                 ok = False
         self.edit.setStyleSheet("" if ok else "QLineEdit { border: 1px solid #ef4444; }")
@@ -109,7 +111,7 @@ class DurationWidget(TextWidget):
         if not t:
             return None
         try:
-            parse_duration(t); return None
+            self._parse(t); return None
         except ValueError as e:
             return str(e)
 
@@ -290,6 +292,11 @@ class ColumnCombo(QComboBox):
         self.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
         self.setMinimumContentsLength(6)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        # one completer for the widget's life: set_columns only swaps its model, so refreshes do not leak
+        self._completer = QCompleter(self)
+        self._completer.setCaseSensitivity(Qt.CaseInsensitive)
+        self._completer.setFilterMode(Qt.MatchContains)
+        self.setCompleter(self._completer)
         if allow_blank:
             self.lineEdit().setPlaceholderText("automatic")
 
@@ -304,10 +311,7 @@ class ColumnCombo(QComboBox):
             self.addItem(f"{KIND_ICON.get(kind_of(schema, c), '?')}  {c}", c)
         self.setCurrentText(cur)
         self.blockSignals(False)
-        comp = QCompleter([c for c in columns_for(schema, group)], self)
-        comp.setCaseSensitivity(Qt.CaseInsensitive)
-        comp.setFilterMode(Qt.MatchContains)
-        self.setCompleter(comp)
+        self._completer.setModel(QStringListModel([c for c in columns_for(schema, group)], self._completer))
 
     def column(self) -> str:
         i = self.currentIndex()
@@ -492,15 +496,17 @@ class FormulaEditor(QWidget):
         err = check_formula(t, self.schema)
         if err:
             self.msg.setText(f"⚠ {err}"); self.msg.setStyleSheet("color: #ef4444;")
-        else:
-            from ..core.expr import compile_formula
-            try:
-                _, kind, used = compile_formula(t, self.schema)
-                self.msg.setText(f"✓ gives a {kind}" + (f" · uses {', '.join(sorted(used))}" if used else ""))
-            except Exception:
-                self.msg.setText("✓")
-            self.msg.setStyleSheet(f"color: {T.muted};")
-        return err
+            return err
+        from ..core.expr import compile_formula
+        try:
+            _, kind, used = compile_formula(t, self.schema)
+        except Exception as e:  # check_formula passed but compiling did not: show the real reason, not a tick
+            err = str(e) or "Could not check this formula"
+            self.msg.setText(f"⚠ {err}"); self.msg.setStyleSheet("color: #ef4444;")
+            return err
+        self.msg.setText(f"✓ gives a {kind}" + (f" · uses {', '.join(sorted(used))}" if used else ""))
+        self.msg.setStyleSheet(f"color: {T.muted};")
+        return None
 
 
 class ExprWidget(ParamWidget):
@@ -538,12 +544,14 @@ class RowListWidget(ParamWidget):
     add_text = "+ Add"
     spacing = 4
     keep_one_blank = False          # show one empty row when the value is empty
+    can_add = True                  # False when rows come from elsewhere (the table's cell menu)
 
     def __init__(self, param: Param, parent=None) -> None:
         super().__init__(param, parent)
         self.lay = QVBoxLayout(self); self.lay.setContentsMargins(0, 0, 0, 0); self.lay.setSpacing(self.spacing)
         self.rows: list[QWidget] = []
         self.add_btn = QPushButton(self.add_text); self.add_btn.clicked.connect(lambda: (self.add_row(self.empty_item()), self.changed.emit()))
+        self.add_btn.setVisible(self.can_add)
         self.lay.addWidget(self.add_btn)
 
     def empty_item(self) -> Any:
@@ -909,7 +917,7 @@ class SeriesWidget(RowListWidget):
     keep_one_blank = True
 
     def build_row(self, item: dict) -> SeriesRow:
-        return SeriesRow(item, self.schema, self.param.column_group, SERIES_COLORS[len(self.rows) % len(SERIES_COLORS)])
+        return SeriesRow(item, self.schema, self.param.column_group, series_color(len(self.rows)))
 
     def value(self) -> Any:
         return [r.item() for r in self.rows if r.col.column()]
@@ -942,44 +950,43 @@ class LimitsWidget(RowListWidget):
 
 
 # ---------------------------------------------------------------- fixes (cell corrections)
-class FixesWidget(ParamWidget):
+class FixRow(_Row):
+    """One correction: where, what it was, what it is now, and why."""
+
+    def __init__(self, item: dict) -> None:
+        super().__init__()
+        self._item = dict(item)
+        h = QHBoxLayout(self); h.setContentsMargins(0, 0, 0, 0); h.setSpacing(4)
+        was = "empty" if item.get("was") in (None, "") else str(item.get("was"))
+        new = "empty" if item.get("value") in (None, "") else str(item.get("value"))
+        lab = QLabel(f"Row {int(item.get('row', 0)):,}, <b>{item.get('column')}</b>: {was} → {new}" + (f"<br><span style='color:{T.muted}'>{item['note']}</span>" if item.get("note") else ""))
+        lab.setWordWrap(True); lab.setTextFormat(Qt.RichText)
+        h.addWidget(lab, 1); h.addWidget(self._remove_button("Remove this correction"), 0, Qt.AlignTop)
+
+    def item(self) -> dict:
+        return dict(self._item)
+
+
+class FixesWidget(RowListWidget):
     """The list of corrections made from the table's cell menu; each can be removed here."""
+    spacing = 3
+    can_add = False
 
     def __init__(self, param: Param, parent=None) -> None:
         super().__init__(param, parent)
-        self.lay = QVBoxLayout(self); self.lay.setContentsMargins(0, 0, 0, 0); self.lay.setSpacing(3)
-        self._fixes: list[dict[str, Any]] = []
         self.hint = QLabel("Right-click a cell in the table and choose Fix this value to add one."); self.hint.setObjectName("muted"); self.hint.setWordWrap(True)
-        self.lay.addWidget(self.hint)
+        self.lay.insertWidget(0, self.hint)
+        self.changed.connect(self._sync_hint)
 
-    def _rebuild(self) -> None:
-        while self.lay.count() > 1:
-            w = self.lay.takeAt(1).widget()
-            if w:
-                w.deleteLater()
-        for i, f in enumerate(self._fixes):
-            w = QWidget(); h = QHBoxLayout(w); h.setContentsMargins(0, 0, 0, 0); h.setSpacing(4)
-            was = "empty" if f.get("was") in (None, "") else str(f.get("was"))
-            new = "empty" if f.get("value") in (None, "") else str(f.get("value"))
-            lab = QLabel(f"Row {int(f.get('row', 0)):,}, <b>{f.get('column')}</b>: {was} → {new}" + (f"<br><span style='color:{T.muted}'>{f['note']}</span>" if f.get("note") else ""))
-            lab.setWordWrap(True); lab.setTextFormat(Qt.RichText)
-            rm = QToolButton(); rm.setObjectName("quiet"); rm.setIcon(icon("x", T.muted)); rm.setToolTip("Remove this correction")
-            rm.clicked.connect(lambda _=False, i=i: self._remove(i))
-            h.addWidget(lab, 1); h.addWidget(rm, 0, Qt.AlignTop)
-            self.lay.addWidget(w)
-        self.hint.setVisible(not self._fixes)
-
-    def _remove(self, i: int) -> None:
-        del self._fixes[i]; self._rebuild(); self.changed.emit()
-
-    def value(self) -> Any:
-        return [dict(f) for f in self._fixes]
+    def build_row(self, item: Any) -> QWidget:
+        return FixRow(item)
 
     def set_value(self, v: Any) -> None:
-        v = [dict(f) for f in (v or [])]
-        if v == self._fixes:
-            return
-        self._fixes = v; self._rebuild()
+        super().set_value(v)
+        self._sync_hint()
+
+    def _sync_hint(self) -> None:
+        self.hint.setVisible(not self.rows)
 
 
 # ---------------------------------------------------------------- factory
@@ -999,7 +1006,7 @@ def make_widget(param: Param, node_type_key: str, suggest: Callable[[str], list[
         return ChoiceWidget(param)
     if k == "path":
         return PathWidget(param, save=(node_type_key in ("export", "report", "workbook")))
-    if k == "duration":
+    if k in ("duration", "bucket"):
         return DurationWidget(param)
     if k == "column":
         return ColumnWidget(param)

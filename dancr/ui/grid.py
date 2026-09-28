@@ -11,12 +11,14 @@ from PySide6.QtGui import QColor, QFont, QBrush, QKeySequence, QAction, QGuiAppl
 from PySide6.QtWidgets import (QTableView, QAbstractItemView, QMenu, QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QLabel,
                                QToolButton, QStackedLayout)
 
-from ..views.table import TablePager, format_value
+from ..views.table import TablePager, format_value, column_title
 from ..views.stats import quick_column_info
 from ..core.expr import NUM, TIME, STR, BOOL
 from .theme import T
 from .icons import icon
-from .workers import Task, view_pool
+from .workers import Task, Serial, alive, view_pool
+
+COPY_MAX_ROWS = 200_000
 
 log = logging.getLogger("dancr.ui")
 MAX_TABLE_ROWS = 50_000_000     # QHeaderView length is a 32-bit int
@@ -29,6 +31,14 @@ def fmt_number(v: float, decimals: int | None) -> str:
     if decimals is not None:
         return f"{v:,.{decimals}f}"
     return format_value(v)
+
+
+def _clip(v: Any) -> str:
+    """One cell as clipboard text: blank for a blank cell, numbers in full, no tabs or line breaks inside."""
+    if v is None or (isinstance(v, float) and v != v):
+        return ""
+    text = format_value(v) if not isinstance(v, (int, float, str)) or isinstance(v, bool) else str(v)
+    return text.replace("\t", " ").replace("\r", " ").replace("\n", " ")
 
 
 class TableModel(QAbstractTableModel):
@@ -73,7 +83,7 @@ class TableModel(QAbstractTableModel):
         pager, gen = self.pager, self._generation
 
         def done(df):
-            if gen != self._generation or self.pager is not pager:
+            if not alive(self) or gen != self._generation or self.pager is not pager:
                 return
             pager.store_page(p, df)
             self._pending.discard(p)
@@ -83,8 +93,9 @@ class TableModel(QAbstractTableModel):
                 self.dataChanged.emit(self.index(top, 0), self.index(bottom, max(0, self.columnCount() - 1)))
         t = Task(pager.fetch_page, p)
         t.waits_for_run = False
+        t.quick = True
         t.signals.done.connect(done)
-        t.signals.failed.connect(lambda m: self._pending.discard(p))
+        t.signals.failed.connect(lambda m: self._pending.discard(p) if alive(self) else None)
         self._keep.add(t)
         t.signals.finished.connect(lambda t=t: self._keep.discard(t))
         view_pool().start(t)
@@ -222,6 +233,7 @@ class Grid(QWidget):
     columnAction = Signal(str, str)          # action, column
     cellAction = Signal(str, int, str, object)   # action, row (1-based), column, value
     chartColumns = Signal(list)              # selected numeric columns -> chart these
+    notice = Signal(str)                     # a short message for the status bar
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -256,7 +268,8 @@ class Grid(QWidget):
         a = QAction(self); a.setShortcut(QKeySequence.Find); a.setShortcutContext(Qt.WidgetWithChildrenShortcut); a.triggered.connect(self.show_find); self.addAction(a)
         c = QAction(self); c.setShortcut(QKeySequence.Copy); c.setShortcutContext(Qt.WidgetWithChildrenShortcut); c.triggered.connect(self.copy_selection); self.table.addAction(c)
         self._lf: pl.LazyFrame | None = None
-        self._keep: set[Task] = set()
+        self._find = Serial(self, waits_for_run=False)     # the latest search wins, whatever order searches finish in
+        self._copy = Serial(self, waits_for_run=False)
 
     # ---- content
     def set_content(self, lf: pl.LazyFrame | None, rows: int | None, in_memory: bool, column_stats: dict | None, column_meta: dict | None,
@@ -293,7 +306,7 @@ class Grid(QWidget):
         if col is None or not self.model.pager:
             return
         kind = self.model.pager.kinds.get(col, "any")
-        m = QMenu(self)
+        m = QMenu(self); m.setAttribute(Qt.WA_DeleteOnClose)     # a parented menu is not freed on its own
         def add(text, action, ic=None):
             a = m.addAction(icon(ic, T.text, 14), text) if ic else m.addAction(text)
             a.triggered.connect(lambda: self.columnAction.emit(action, col))
@@ -314,16 +327,24 @@ class Grid(QWidget):
         add("Copy column name", "copyname", "copy")
         m.exec(self.table.horizontalHeader().mapToGlobal(pos))
 
+    def can_fix_values(self) -> bool:
+        """Only a step's computed rows can be corrected: a preview shows a sample of them, so its row numbers
+        are not the rows a correction would change."""
+        return self.model.pager is not None and not self.model.in_memory
+
     def _cell_menu(self, pos: QPoint) -> None:
         idx = self.table.indexAt(pos)
         if not idx.isValid() or not self.model.pager:
             return
         col = self.model.pager.columns[idx.column()]
         value = self.model.raw(idx.row(), idx.column())
-        m = QMenu(self)
+        m = QMenu(self); m.setAttribute(Qt.WA_DeleteOnClose)
         a = m.addAction(icon("copy", T.text, 14), "Copy"); a.triggered.connect(self.copy_selection)
         f = m.addAction(icon("note-pencil", T.text, 14), "Fix this value…"); f.triggered.connect(lambda: self.cellAction.emit("fix", idx.row() + 1, col, value))
-        sel_cols = sorted({i.column() for i in self.table.selectionModel().selectedIndexes()})
+        if not self.can_fix_values():
+            f.setEnabled(False)
+            f.setText("Fix this value… (run this step first, since the preview only shows a sample)")
+        sel_cols = self.selected_span()[1]
         nums = [self.model.pager.columns[i] for i in sel_cols if self.model.pager.kinds.get(self.model.pager.columns[i]) == NUM]
         if len(nums) >= 1:
             m.addSeparator()
@@ -335,26 +356,70 @@ class Grid(QWidget):
         m.exec(self.table.viewport().mapToGlobal(pos))
 
     # ---- clipboard
+    def selected_span(self) -> tuple[list[int] | range, list[int]]:
+        """The selected rows and columns, read from the selection's ranges: a whole column of 50 million rows is
+        one range, not 50 million indexes. Rows are one range when they are contiguous."""
+        sm = self.table.selectionModel()
+        ranges = list(sm.selection()) if sm is not None else []
+        if not ranges:
+            return [], []
+        cols = sorted({c for r in ranges for c in range(r.left(), r.right() + 1)})
+        spans = sorted((r.top(), r.bottom()) for r in ranges)
+        if len(spans) == 1 or all(b[0] <= a[1] + 1 for a, b in zip(spans, spans[1:])):
+            return range(spans[0][0], max(b for _, b in spans) + 1), cols
+        rows: set[int] = set()
+        for top, bottom in spans:
+            rows.update(range(top, min(bottom + 1, top + COPY_MAX_ROWS + 1)))
+            if len(rows) > COPY_MAX_ROWS:
+                break
+        return sorted(rows), cols
+
+    def has_selection(self) -> bool:
+        sm = self.table.selectionModel()
+        return sm is not None and sm.hasSelection()
+
     def copy_selection(self) -> None:
         if not self.model.pager:
             return
-        sel = self.table.selectionModel().selectedIndexes()
-        if not sel:
+        rows, cols = self.selected_span()
+        if not cols:
             return
-        rows = sorted({i.row() for i in sel}); cols = sorted({i.column() for i in sel})
-        if len(rows) > 200_000:
-            rows = rows[:200_000]
-        header = [str(self.model.headerData(c, Qt.Horizontal)) for c in cols]
-        lines = ["\t".join(header)]
-        for r in rows:
-            lines.append("\t".join(str(self.model.data(self.model.index(r, c), Qt.DisplayRole)) for c in cols))
-        QGuiApplication.clipboard().setText("\n".join(lines))
+        self._copy_rows(rows, cols)
 
     def copy_all_visible(self) -> None:
-        """Copy the first page(s) of the table as tab-separated text."""
+        """Copy the table (up to COPY_MAX_ROWS rows) without selecting every row: selecting 50 million rows
+        would build a QModelIndex for each one and exhaust memory."""
         if not self.model.pager:
             return
-        self.table.selectAll(); self.copy_selection(); self.table.clearSelection()
+        self._copy_rows(range(min(self.model.rowCount(), COPY_MAX_ROWS)), list(range(self.model.columnCount())))
+
+    def _copy_rows(self, rows: list[int] | range, cols: list[int]) -> None:
+        """Tab-separated text of these rows and columns, read from the table itself on a worker (the grid only
+        holds the pages on screen), with every value in full: blank cells stay blank, numbers keep all digits."""
+        pager = self.model.pager
+        if pager is None or not rows or not cols:
+            return
+        clipped = len(rows) > COPY_MAX_ROWS
+        rows = rows[:COPY_MAX_ROWS]
+        names = [pager.columns[c] for c in cols]
+        header = "\t".join(_clip(column_title(n, self.model.column_meta)) for n in names)   # names and units, no type marks
+        lo, hi = rows[0], rows[-1]
+        contiguous = isinstance(rows, range) or hi - lo + 1 == len(rows)
+
+        def work():
+            lf = pager.lf.select(names)
+            if contiguous:
+                df = lf.slice(lo, hi - lo + 1).collect(engine="streaming")
+            else:
+                df = lf.with_row_index("__dancr_r").filter(pl.col("__dancr_r").is_in(list(rows))).drop("__dancr_r").collect(engine="streaming")
+            return "\n".join([header] + ["\t".join(_clip(v) for v in r) for r in df.iter_rows()]), df.height
+
+        def done(r):
+            text, n = r
+            QGuiApplication.clipboard().setText(text)
+            self.notice.emit(f"Copied {n:,} rows" + (f" (the first {COPY_MAX_ROWS:,} of the selection)" if clipped else ""))
+        self.notice.emit(f"Copying {len(rows):,} rows…")
+        self._copy.submit(work, done, lambda m: self.notice.emit(f"Could not copy: {m}"))
 
     # ---- find / jump
     def show_find(self) -> None:
@@ -398,7 +463,4 @@ class Grid(QWidget):
             idx = self.model.index(min(r, self.model.rowCount() - 1), 0)
             self.table.scrollTo(idx, QAbstractItemView.PositionAtCenter)
             self.table.setCurrentIndex(idx); self.table.selectRow(idx.row())
-        t = Task(work); t.waits_for_run = False
-        t.signals.done.connect(done); t.signals.failed.connect(lambda m: self.find_status.setText(m[:60]) if self.model.pager is pager else None)
-        self._keep.add(t); t.signals.finished.connect(lambda t=t: self._keep.discard(t))
-        view_pool().start(t)
+        self._find.submit(work, done, lambda m: self.find_status.setText(m[:60]) if self.model.pager is pager else None)

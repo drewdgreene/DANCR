@@ -24,6 +24,12 @@ run_gate = threading.Event()
 run_gate.set()
 
 
+def alive(obj: QObject) -> bool:
+    """False once Qt has deleted the widget behind ``obj`` (a result may arrive after its window closed)."""
+    import shiboken6
+    return shiboken6.isValid(obj)
+
+
 class Task(QRunnable):
     """Run fn(*args) in a pool; results come back on the GUI thread via signals.
     ``cancelled`` is honoured before the work starts and before any result is delivered."""
@@ -34,6 +40,7 @@ class Task(QRunnable):
         self.signals = TaskSignals()
         self.cancelled = False
         self.waits_for_run = True
+        self.quick = False             # a short read someone is waiting on (a page of the grid): never queued behind long queries
         self.setAutoDelete(False)
 
     @Slot()
@@ -44,8 +51,8 @@ class Task(QRunnable):
                     return
                 r = self.fn(*self.args, **self.kwargs)
             except Exception as e:  # noqa: BLE001
-                log.error("Background task %s failed:\n%s", getattr(self.fn, "__qualname__", self.fn), traceback.format_exc())
                 if not self.cancelled:
+                    log.error("Background task %s failed:\n%s", getattr(self.fn, "__qualname__", self.fn), traceback.format_exc())
                     self.signals.failed.emit(str(e) or type(e).__name__)
             else:
                 if not self.cancelled:
@@ -60,11 +67,19 @@ class ViewPool(QThreadPool):
     """A small pool for previews, chart queries, page fetches and searches.
 
     Tasks with ``waits_for_run`` are held here while a run executes and started when it ends, so a
-    waiting task never occupies a thread and page fetches or searches keep flowing during a run."""
+    waiting task never occupies a thread and page fetches or searches keep flowing during a run.
+
+    ``quick`` tasks (grid pages) run on threads of their own: a query already running cannot be interrupted,
+    so describing or charting a huge table (or several superseded ones still finishing) must never leave
+    the rows on screen waiting for a free thread."""
+
+    QUICK_THREADS = 2
 
     def __init__(self) -> None:
         super().__init__()
         self.setMaxThreadCount(min(4, os.cpu_count() or 1))
+        self._quick = QThreadPool()
+        self._quick.setMaxThreadCount(self.QUICK_THREADS)
         self._held: list[Task] = []
         self._active: set[Task] = set()
 
@@ -74,14 +89,17 @@ class ViewPool(QThreadPool):
             return
         self._active.add(task)
         task.signals.finished.connect(lambda t=task: self._active.discard(t))
-        super().start(task)
+        if task.quick:
+            self._quick.start(task)
+        else:
+            super().start(task)
 
     def take(self, task: Task) -> bool:
         """Remove a task that has not started; True if it was removed."""
         if task in self._held:
             self._held.remove(task)
             return True
-        if self.tryTake(task):
+        if (self._quick if task.quick else super()).tryTake(task):
             self._active.discard(task)
             return True
         return False
@@ -103,8 +121,8 @@ class ViewPool(QThreadPool):
         self._held = []
         for t in list(self._active):
             t.cancelled = True
-        self.clear()
-        self.waitForDone(wait_ms)
+        self.clear(); self._quick.clear()
+        self.waitForDone(wait_ms); self._quick.waitForDone(wait_ms)
         run_gate.set()
 
 
@@ -120,24 +138,42 @@ def view_pool() -> ViewPool:
 
 class Serial:
     """Keeps only the latest task of a kind: earlier results are ignored. Tasks that have not started
-    (queued or held for a run) are dropped when a newer one arrives."""
+    (queued or held for a run) are dropped when a newer one arrives. Nothing is delivered once ``owner``
+    (the widget that shows the results) has been deleted."""
 
-    def __init__(self) -> None:
+    def __init__(self, owner: QObject | None = None, waits_for_run: bool = True) -> None:
+        self._alive = True
+        if owner is not None:
+            owner.destroyed.connect(self._owner_gone)
         self._current: Task | None = None
         self._inflight: set[Task] = set()
         self.pool = view_pool()
+        self.waits_for_run = waits_for_run     # False for reads that never touch a result being written
 
     def submit(self, fn: Callable[..., Any], on_done: Callable[[Any], None], on_fail: Callable[[str], None] | None = None, *args: Any, **kwargs: Any) -> Task:
         self.cancel()
         t = Task(fn, *args, **kwargs)
+        t.waits_for_run = self.waits_for_run
         self._current = t
         self._inflight.add(t)
-        t.signals.done.connect(on_done)
+        # an older task's result may already be queued on the GUI thread when a newer task replaces it
+        # (the node or project changed meanwhile): deliver only the current task's outcome
+        t.signals.done.connect(lambda r, t=t: on_done(r) if self._delivers(t) else None)
         if on_fail:
-            t.signals.failed.connect(on_fail)
+            t.signals.failed.connect(lambda m, t=t: on_fail(m) if self._delivers(t) else None)
         t.signals.finished.connect(lambda t=t: self._inflight.discard(t))
         self.pool.start(t)
         return t
+
+    def _delivers(self, t: Task) -> bool:
+        return self._alive and t is self._current and not t.cancelled
+
+    def _owner_gone(self, *_: Any) -> None:
+        self._alive = False
+        try:
+            self.cancel()
+        except RuntimeError:        # the pool itself is gone (the app is exiting)
+            pass
 
     def cancel(self) -> None:
         if self._current is not None:
@@ -158,14 +194,17 @@ class RunThread(QThread):
         self.force = force
         self.cancel = threading.Event()
         self.results: dict = {}
+        self.outcome = "done"          # done | stopped (the person stopped it) | crashed (a DANCR error)
 
     def run(self) -> None:
         from ..core.executor import ExecutionCancelled
         try:
             self.results = self.executor.run(targets=self.targets, on_event=self._emit, cancel=self.cancel, force=self.force)
         except ExecutionCancelled:
+            self.outcome = "stopped"
             self.event.emit({"type": "run_cancelled"})
         except Exception as e:  # noqa: BLE001
+            self.outcome = "crashed"
             self.failed.emit(f"{e}\n{traceback.format_exc()}")
 
     def _emit(self, e: dict) -> None:

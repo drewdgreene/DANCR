@@ -1,22 +1,23 @@
 """Time-series operations for data with a date/time column."""
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 
 import polars as pl
 
 from ..params import Param
 from ..registry import NodeType, InputSpec, Ctx, NodeResult, registry
-from ..timeutil import parse_duration, format_seconds
-from ._common import first_input, schema_of, require_column, temporal_columns, build_aggregations, stat_expr, STAT_HELP, STAT_CHOICES
+from ..timeutil import parse_duration, parse_bucket, format_seconds
+from ._common import first_input, schema_of, require_column, number_param, temporal_columns, build_aggregations, stat_expr, check_stats, STAT_HELP, column_title
 from ..expr import TIME, NUM
 from ..dtypes import is_date, align_time_column, temp_name
+from ..findings import finding
 
 
 def _time_col(schema: dict[str, pl.DataType], params: dict[str, Any], key: str = "time_column") -> str:
     name = params.get(key) or next(iter(temporal_columns(schema)), None)
     if not name:
-        raise ValueError("This table has no date/time column. Use 'Change type' to turn a column into a date/time first.")
+        raise ValueError("This table has no date/time column. Use 'Fix numbers and dates' to turn a column into a date/time first.")
     return require_column(schema, name, "time column", TIME)
 
 
@@ -28,39 +29,71 @@ def _with_time(lf: pl.LazyFrame, schema: dict[str, pl.DataType], t: str) -> pl.L
     return lf
 
 
+def _counts_blank_times(port: str = "in", key: str = "time_column", when: Callable[[dict[str, Any]], bool] | None = None):
+    """Wrap a step that leaves out rows without a time: on a real run it says how many it left out."""
+    def wrap(fn):
+        def apply(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, Any]) -> NodeResult:
+            res = fn(ctx, inputs, params)
+            lf = (inputs.get(port) or [None])[0]
+            if ctx.preview or lf is None or (when is not None and not when(params)):
+                return res
+            t = _time_col(schema_of(lf), params, key)
+            n = int(lf.select(pl.col(t).null_count()).collect(engine="streaming")[0, 0])
+            if n:
+                res.messages.append(f"{n:,} rows with a blank {t} were left out because they can't be placed in time")
+            return res
+        apply.__name__ = fn.__name__
+        return apply
+    return wrap
+
+
 # ------------------------------------------------------------ time buckets
 def _time_buckets(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, Any]) -> NodeResult:
     lf = first_input(inputs)
     schema = schema_of(lf)
     t = _time_col(schema, params)
     lf = _with_time(lf, schema, t)
-    every, secs = parse_duration(params.get("every") or "1m")
+    every, secs = parse_bucket(params.get("every") or "1m")
     only = [require_column(schema, c, "column", NUM) for c in (params.get("columns") or [])]
-    aggs = build_aggregations(schema, params.get("aggregations"), exclude=[t],
-                              default_stats=tuple(params.get("default_stats") or ["mean"]), only=only or None)
+    by = [require_column(schema, c, "group column") for c in (params.get("by") or [])]
+    if t in by:
+        raise ValueError("Rows are already grouped by the time column. Choose another column to group by")
+    aggs = build_aggregations(schema, params.get("aggregations"), exclude=[t, *by],
+                              default_stats=tuple(params.get("default_stats") or ["mean"]), only=only or None, order_by=t)
     if not aggs:
         raise ValueError("There are no number columns to summarise")
     count_col = (params.get("count_column") or "").strip()
     if count_col:
         if count_col == t or count_col in {a.meta.output_name() for a in aggs}:
-            raise ValueError(f"The count column cannot be called {count_col!r}: that name is already used in the output")
+            raise ValueError(f"The count column can't be called {count_col!r} because that name is already used in the output")
         aggs.append(pl.len().alias(count_col))
     bucket = pl.col(t).dt.truncate(every).alias(t)
-    out = lf.group_by(bucket).agg(aggs).sort(t)
-    return NodeResult(out, messages=[f"Grouped rows into {every} buckets by {t}"])
+    out = lf.group_by([bucket, *by]).agg(aggs).sort([t, *by], nulls_last=True)
+    report: dict[str, Any] = {}
+    try:
+        stats = out.select([pl.len().alias("n"), pl.col(t).min().alias("lo"), pl.col(t).max().alias("hi")]) \
+                   .collect(engine="streaming").row(0, named=True)
+        n = int(stats["n"] or 0)
+        span = f" from {stats['lo']} to {stats['hi']}" if n and stats["lo"] is not None else ""
+        report = {"buckets": n, "every": every,
+                  "finding": finding("summary", f"{n:,} {every} bucket{'' if n == 1 else 's'}{span}", magnitude=n, exact=True)}
+    except Exception:  # noqa: BLE001 - a finding is a bonus; the buckets are the result
+        pass
+    return NodeResult(out, report=report, messages=[f"Grouped rows into {every} buckets by {t}" + (f" and {', '.join(by)}" if by else "")])
 
 
 registry.register(NodeType(
     key="time_buckets", label="Average over time", category="Time", icon="◷",
     description="Group rows into time buckets (every second, minute, hour...) and summarise each bucket. "
-                "The fastest way to shrink millions of rows into something you can chart and reason about.",
-    apply=_time_buckets,
+                "Use it to shrink millions of rows into something you can chart.",
+    apply=_counts_blank_times()(_time_buckets),
     summary=lambda p: f"every {p.get('every') or '1m'}",
     params=[
-        Param("every", "Bucket size", "duration", default="1m", required=True, placeholder="e.g. 1s, 1m, 15m, 1h, 1d"),
+        Param("every", "Bucket size", "bucket", default="1m", required=True, placeholder="e.g. 1s, 1m, 15m, 1h, 1d, 1mo, 1y"),
         Param("columns", "Columns to summarise", "columns", column_group="numeric", default=[],
               help="Empty = every number column"),
         Param("default_stats", "Statistics", "text_list", default=["mean"], help=STAT_HELP),
+        Param("by", "Also split by", "columns", default=[], help="One row per bucket and value (per day and per store)"),
         Param("time_column", "Time column", "column", column_group="temporal", help="Blank = first date/time column", advanced=True),
         Param("aggregations", "Choose statistics column by column", "aggregations", default=[], column_group="numeric", advanced=True),
         Param("count_column", "Add a column counting rows per bucket", "text", default="", advanced=True, placeholder="e.g. count"),
@@ -69,6 +102,8 @@ registry.register(NodeType(
 
 
 # ------------------------------------------------------------------ rolling
+ROLLING_STATS = ("mean", "median", "min", "max", "std", "sum")
+
 def _rolling(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, Any]) -> NodeResult:
     lf = first_input(inputs)
     schema = schema_of(lf)
@@ -77,6 +112,8 @@ def _rolling(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, 
         raise ValueError("Choose the column(s) to smooth")
     cols = [require_column(schema, c, "column", NUM) for c in cols]
     stat = params.get("stat") or "mean"
+    if stat not in ROLLING_STATS:
+        raise ValueError(f"Unknown statistic {stat!r} for a rolling window. Use: {', '.join(ROLLING_STATS)}")
     window = str(params.get("window") or "20").strip()
     replace = bool(params.get("replace") or False)
     centered = bool(params.get("centered", True))
@@ -84,7 +121,7 @@ def _rolling(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, 
     if not replace:
         clash = [name(c) for c in cols if name(c) in schema]
         if clash:
-            raise ValueError(f"There is already a column called {clash[0]!r}; tick 'Replace the original columns' or rename it first")
+            raise ValueError(f"There is already a column called {clash[0]!r}. Tick 'Replace the original columns' or rename it first")
     exprs = []
     if window.isdigit():
         n = int(window)
@@ -96,21 +133,23 @@ def _rolling(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, 
     t = _time_col(schema, params)
     every, secs = parse_duration(window)
     lf = _with_time(lf, schema, t).sort(t)
-    by = t
-    if centered:
-        # a window ending half a span later is centred on each row
-        by = temp_name("centre", schema)
-        lf = lf.with_columns((pl.col(t) + pl.duration(microseconds=int(secs * 1e6 / 2))).alias(by))
-    for c in cols:
-        exprs.append(getattr(pl.col(c), f"rolling_{stat}_by")(by=by, window_size=every, closed="right").alias(name(c)))
-    out = lf.with_columns(exprs)
-    return NodeResult(out.drop(by) if by != t else out)
+    if not centered:            # the span that ends at each row: (t - window, t]
+        for c in cols:
+            exprs.append(getattr(pl.col(c), f"rolling_{stat}_by")(by=t, window_size=every, closed="right").alias(name(c)))
+        return NodeResult(lf.with_columns(exprs))
+    # centred on each row: [t - window/2, t + window/2]. One output row per input row, in the same order.
+    half = f"-{int(round(secs * 1e6 / 2))}us"
+    win = lf.rolling(index_column=t, period=every, offset=half, closed="both").agg(
+        [getattr(pl.col(c), stat)().alias(name(c)) for c in cols])
+    base = lf.drop(cols) if replace else lf
+    out = pl.concat([base, win.drop(t)], how="horizontal", strict=True)
+    return NodeResult(out.select(list(schema)) if replace else out)
 
 
 registry.register(NodeType(
     key="rolling", label="Smooth out noise", category="Time", icon="〰",
     description="Rolling average, median, min, max or standard deviation over a number of rows or a time span.",
-    apply=_rolling,
+    apply=_counts_blank_times(when=lambda p: not str(p.get("window") or "20").strip().isdigit())(_rolling),
     summary=lambda p: f"rolling {p.get('stat', 'mean')} over {p.get('window', 20)}",
     params=[
         Param("columns", "Columns", "columns", column_group="numeric", default=[], required=True),
@@ -125,7 +164,7 @@ registry.register(NodeType(
 
 
 # ----------------------------------------------------------- rate of change
-def _rate(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, Any]) -> pl.LazyFrame:
+def _rate(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, Any]) -> NodeResult:
     lf = first_input(inputs)
     schema = schema_of(lf)
     cols = params.get("columns") or []
@@ -137,21 +176,25 @@ def _rate(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, Any
     if per not in ("s", "m", "h", "d"):
         raise ValueError("'Per' must be second, minute, hour or day")
     div = {"s": 1e6, "m": 60e6, "h": 3600e6, "d": 86400e6}[per]
-    n = max(1, int(params.get("span") or 1))
+    n = int(number_param(params, "span", 1, "The span", whole=True, at_least=1))
     lf = _with_time(lf, schema, t).sort(t)
     dt = (pl.col(t) - pl.col(t).shift(n)).dt.total_microseconds().cast(pl.Float64) / div
+    unit = {"s": "second", "m": "minute", "h": "hour", "d": "day"}[per]
+    clash = [f"{c}_per_{unit}" for c in cols if f"{c}_per_{unit}" in schema]
+    if clash:
+        raise ValueError(f"There is already a column called {clash[0]!r}. Rename it first")
     exprs = []
     for c in cols:
         dy = pl.col(c).cast(pl.Float64) - pl.col(c).cast(pl.Float64).shift(n)
         rate = pl.when(dt > 0).then(dy / dt).otherwise(None)
-        exprs.append(rate.alias(f"{c}_per_{ {'s': 'second', 'm': 'minute', 'h': 'hour', 'd': 'day'}[per] }"))
-    return lf.with_columns(exprs)
+        exprs.append(rate.alias(f"{c}_per_{unit}"))
+    return NodeResult(lf.with_columns(exprs))
 
 
 registry.register(NodeType(
     key="rate_of_change", label="Rate of change", category="Time", icon="∂",
     description="How fast a value is changing per second, minute, hour or day.",
-    apply=_rate,
+    apply=_counts_blank_times()(_rate),
     summary=lambda p: f"{', '.join(p.get('columns') or [])} per {p.get('per', 's')}",
     params=[
         Param("columns", "Columns", "columns", column_group="numeric", default=[], required=True),
@@ -180,7 +223,7 @@ def _gaps(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, Any
         if len(d) == 0:
             raise ValueError("Not enough distinct timestamps to work out the normal spacing. Set 'Normal spacing' by hand.")
         exp_s = float(d.median()) / 1e6
-    factor = float(params.get("factor") or 1.5)
+    factor = number_param(params, "factor", 1.5, "The gap factor", above=0)
     thresh_us = int(exp_s * factor * 1e6)
     dt = (pl.col(t) - pl.col(t).shift(1)).dt.total_microseconds()
     out = (lf.select([
@@ -192,14 +235,23 @@ def _gaps(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, Any
                  (pl.col("__dt").cast(pl.Float64) / 1e6).alias("gap_seconds"),
                  pl.max_horizontal((pl.col("__dt").cast(pl.Float64) / 1e6 / exp_s).round(0) - 1, pl.lit(1)).cast(pl.Int64).alias("missing_readings")])
              .drop("__dt"))
-    return NodeResult(out, report={"expected_spacing_s": exp_s, "threshold_s": exp_s * factor},
-                      messages=[f"Normal spacing is {format_seconds(exp_s)}; a gap is anything over {format_seconds(exp_s * factor)}"])
+    stats = out.select([pl.len().alias("n"), pl.col("gap_seconds").max().alias("longest")]).collect(engine="streaming").row(0, named=True)
+    n = int(stats["n"] or 0)
+    longest = float(stats["longest"] or 0.0)
+    if n:
+        say = (f"{n} gap{'' if n == 1 else 's'} in {column_title(ctx, t)}; the longest is {format_seconds(longest)} "
+               f"(normal spacing {format_seconds(exp_s)})")
+    else:
+        say = f"No gaps in {column_title(ctx, t)}: every reading is within {format_seconds(exp_s * factor)} of the one before"
+    return NodeResult(out, report={"expected_spacing_s": exp_s, "threshold_s": exp_s * factor, "gaps": n,
+                                   "longest_gap_s": longest, "finding": finding("gaps", say, magnitude=longest, exact=True)},
+                      messages=[f"Normal spacing is {format_seconds(exp_s)}. A gap is anything over {format_seconds(exp_s * factor)}"])
 
 
 registry.register(NodeType(
-    key="find_gaps", label="Find gaps", category="Time", icon="⌷",
+    key="find_gaps", uses_labels=True, label="Find gaps", category="Time", icon="⌷",
     description="List the places where the data stops and restarts. Output is one row per gap.",
-    apply=_gaps,
+    apply=_counts_blank_times()(_gaps),
     summary=lambda p: f"gaps > {p.get('factor', 1.5)}× normal spacing" if not p.get("expected") else f"spacing {p['expected']}",
     params=[
         Param("time_column", "Time column", "column", column_group="temporal"),
@@ -215,23 +267,27 @@ def _regular_grid(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[
     schema = schema_of(lf)
     t = _time_col(schema, params)
     lf = _with_time(lf, schema, t).sort(t)
-    tdt = pl.Datetime("us") if is_date(schema[t]) else schema[t]
     every, secs = parse_duration(params.get("every") or "1s")
     bounds = lf.select(pl.col(t).min().alias("lo"), pl.col(t).max().alias("hi")).collect(engine="streaming")
-    lo, hi = bounds["lo"][0], bounds["hi"][0]
-    if lo is None:
+    if bounds["lo"][0] is None:
         raise ValueError("The time column is empty")
-    n_ticks = int((hi - lo).total_seconds() / secs) + 1 if secs > 0 else float("inf")
+    step_us = int(round(secs * 1e6))
+    # ticks fall on whole multiples of the spacing (12:00:00, 12:00:01 … not 12:00:00.120, 12:00:01.120 …), so two
+    # tables put on the same grid line up tick for tick; the first tick is the first such time at or after the data.
+    # All of it is worked out by Polars in the column's own zone: a day is a calendar day (midnight to midnight
+    # across a daylight-saving change) and an hour a real hour, where Python's arithmetic on zoned times would
+    # count wall-clock time and lose or add ticks around the change
+    bounds = bounds.with_columns(pl.col("lo").dt.truncate(every).alias("first"))
+    bounds = bounds.with_columns(pl.when(pl.col("first") < pl.col("lo")).then(pl.col("first").dt.offset_by(every))
+                                 .otherwise(pl.col("first")).alias("first"))
+    lo, hi = bounds["first"][0], bounds["hi"][0]
+    if bounds.select(pl.col("first") > pl.col("hi")).item():
+        raise ValueError(f"The data spans less than one {every} step, so there is no tick to put it on")
+    # whole microseconds, not seconds as floats: 0.3 s / 0.1 s is 2.9999… and would lose the last tick
+    n_ticks = int(bounds.select((pl.col("hi").dt.epoch("us") - pl.col("first").dt.epoch("us")) // step_us + 1).item())
     if n_ticks > 200_000_000:
         raise ValueError(f"A {every} spacing over this time span would create {n_ticks:,.0f} rows. Use a larger spacing.")
-    idx = temp_name("tick", schema)
-    step_us = int(round(secs * 1e6))
-    start = pl.lit(lo).cast(pl.Datetime("us"))
-    grid = (pl.LazyFrame().select(pl.int_range(0, n_ticks, dtype=pl.Int64).alias(idx))
-              .select((start + pl.duration(microseconds=pl.col(idx) * step_us)).alias(t)))
-    if isinstance(tdt, pl.Datetime) and tdt.time_zone:
-        grid = grid.with_columns(align_time_column(pl.col(t), pl.Datetime("us"), tdt).alias(t))
-    grid = grid.with_columns(pl.col(t).cast(tdt))
+    grid = bounds.lazy().select(pl.datetime_range(pl.col("first").first(), pl.col("hi").first(), every, closed="both").alias(t))
     method = params.get("method") or "nearest"
     if method in ("nearest", "backward", "forward"):
         out = grid.join_asof(lf, on=t, strategy=method)
@@ -248,7 +304,7 @@ def _regular_grid(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[
 registry.register(NodeType(
     key="regular_grid", label="Even out the timing", category="Time", icon="▦",
     description="Resample onto evenly spaced timestamps (every second, minute...). Useful before comparing two series recorded at different times.",
-    apply=_regular_grid,
+    apply=_counts_blank_times()(_regular_grid),
     summary=lambda p: f"every {p.get('every') or '1s'}, {p.get('method', 'nearest')}",
     params=[
         Param("time_column", "Time column", "column", column_group="temporal"),
@@ -281,13 +337,13 @@ def _around(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, A
         raise ValueError("'Which side' must be before, after or around")
     cols = [require_column(ls, c, "column", NUM) for c in (params.get("columns") or [])] or [c for c in ls if ls[c].is_numeric() and c != lt]
     stats = params.get("stats") or ["mean"]
-    valid = {v for v, _ in STAT_CHOICES}
-    for stt in stats:
-        if stt not in valid:
-            raise ValueError(f"Unknown statistic {stt!r}. Use: {', '.join(sorted(valid))}")
+    check_stats(stats)
     taken = {**ss, **ls}
     key, s_time, anchor = temp_name("sample", taken), temp_name("sample_time", taken), temp_name("anchor", taken)
-    s_sorted = _with_time(samples, ss, st).sort(st).with_row_index(key).with_columns([pl.col(key).cast(pl.Int64), pl.col(st).alias(s_time)])
+    # every sample stays in the output; one without a time simply gets no statistics
+    s_all = samples.with_columns(pl.col(st).cast(pl.Datetime("us"))) if is_date(ss[st]) else samples
+    s_all = s_all.sort(st, nulls_last=True).with_row_index(key).with_columns([pl.col(key).cast(pl.Int64), pl.col(st).alias(s_time)])
+    s_sorted = s_all.filter(pl.col(st).is_not_null())
     l_sorted = _with_time(log, ls, lt).sort(lt)
     if ls[lt] != ss[st]:
         l_sorted = l_sorted.with_columns(align_time_column(pl.col(lt), ls[lt], ss[st]).alias(lt))
@@ -303,7 +359,9 @@ def _around(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, A
         half = pl.duration(microseconds=w_us // 2)
         inside = (pl.col(lt) >= pl.col(s_time) - half) & (pl.col(lt) <= pl.col(s_time) + half)
         strategy, step, shift_us = "forward", 1, -(w_us // 2)
-    k = _max_overlap(s_sorted.select(pl.col(s_time).cast(pl.Datetime("us"))).collect(engine="streaming")[s_time], w_us)
+    # a centred window is closed at both ends, so samples exactly one window apart share log rows
+    k = _max_overlap(s_sorted.select(pl.col(s_time).cast(pl.Datetime("us"))).collect(engine="streaming")[s_time],
+                     2 * (w_us // 2) if side == "around" else w_us, closed=(side == "around"))
     if k > MAX_OVERLAP:
         raise ValueError(f"Up to {k:,} samples fall inside one {window} window. Use a shorter window, or 'Average over time' on the log instead.")
     l_anch = l_sorted.with_columns((pl.col(lt) + pl.duration(microseconds=shift_us)).cast(tdt).alias(anchor))
@@ -315,19 +373,24 @@ def _around(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, A
         cand = nearest.with_columns((pl.col(key) + step * j).alias(key)) if j else nearest   # a missing neighbour simply does not join
         pieces.append(cand.join(lookup, on=key, how="inner").filter(inside).select([pl.col(key), *cols]))
     joined = pl.concat(pieces) if len(pieces) > 1 else pieces[0]
-    aggs = [stat_expr(c, stt).alias(f"{c}_{stt}" if len(stats) > 1 else c) for c in cols for stt in stats]
+    names = {(c, stt): f"{c}_{stt}" if len(stats) > 1 else c for c in cols for stt in stats}
+    aggs = [stat_expr(c, stt).alias(names[c, stt]) for c in cols for stt in stats]
     summary = joined.group_by(key).agg(aggs)
-    out = s_sorted.join(summary, on=key, how="left", maintain_order="left").drop([key, s_time])
+    out = s_all.join(summary, on=key, how="left", maintain_order="left").drop([key, s_time])
+    counts = [names[c, stt] for c in cols for stt in stats if stt in ("count", "n_unique")]
+    if counts:                                      # no log rows in the window: a count of 0, not a blank
+        out = out.with_columns([pl.col(n).fill_null(0) for n in counts])
     where = {"before": "before it", "after": "after it", "around": "around it"}[side]
     return NodeResult(out, messages=[f"For each sample, {', '.join(stats)} of {', '.join(cols)} over the {window} {where}"])
 
 
-def _max_overlap(times: pl.Series, w_us: int) -> int:
-    """The most samples any window of length w can contain (two pointers over the sorted sample times)."""
+def _max_overlap(times: pl.Series, w_us: int, closed: bool = False) -> int:
+    """The most samples any window of length w can contain (two pointers over the sorted sample times).
+    ``closed``: a window that includes both ends holds samples exactly w apart."""
     ts = times.drop_nulls().dt.timestamp("us").to_list()
     best, lo = 1, 0
     for hi in range(len(ts)):
-        while ts[hi] - ts[lo] >= w_us:
+        while ts[hi] - ts[lo] > w_us if closed else ts[hi] - ts[lo] >= w_us:
             lo += 1
         best = max(best, hi - lo + 1)
     return best
@@ -336,7 +399,7 @@ def _max_overlap(times: pl.Series, w_us: int) -> int:
 registry.register(NodeType(
     key="summarise_around", label="Summarise around each sample", category="Time", icon="⧖",
     description="For each row of a short table (weekly samples, say), average a continuous log over the window before, after or around it. Joins sparse samples to dense logs.",
-    apply=_around,
+    apply=_counts_blank_times(port="log", key="log_time")(_around),
     inputs=[InputSpec("samples", "Samples"), InputSpec("log", "Log")],
     summary=lambda p: f"{', '.join(p.get('stats') or ['mean'])} over {p.get('window') or '1d'} {p.get('side') or 'before'} each sample",
     params=[

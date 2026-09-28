@@ -7,7 +7,7 @@ from typing import Any
 
 import polars as pl
 
-from ..core.expr import _kind_of_dtype
+from ..core.expr import kind_of_dtype
 
 
 class TablePager:
@@ -17,7 +17,7 @@ class TablePager:
         self.max_pages = max_pages
         self.schema = dict(lf.collect_schema())
         self.columns = list(self.schema)
-        self.kinds = {c: _kind_of_dtype(dt) for c, dt in self.schema.items()}
+        self.kinds = {c: kind_of_dtype(dt) for c, dt in self.schema.items()}
         self._rows = rows
         self._pages: OrderedDict[int, pl.DataFrame] = OrderedDict()
 
@@ -65,6 +65,16 @@ class TablePager:
         if df is None:
             return False, None
         return True, (df[r, col] if r < len(df) else None)
+
+
+def column_title(name: str | None, columns: dict[str, dict] | None = None) -> str:
+    """A column's display name with its unit, e.g. 'Value (units)'. The one place this is formatted,
+    shared by the headless renderer and reports."""
+    if not name:
+        return ""
+    m = (columns or {}).get(name) or {}
+    label = m.get("label") or name
+    return f"{label} ({m['unit']})" if m.get("unit") else label
 
 
 def format_value(v: Any) -> str:

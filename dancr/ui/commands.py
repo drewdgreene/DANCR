@@ -8,10 +8,14 @@ from typing import TYPE_CHECKING
 from PySide6.QtGui import QUndoCommand
 
 from ..core import PipelineError
-from ..core.model import Node, Edge, Note, Input
+from ..core.model import Node, Edge, Note, Input, Answer
 
 if TYPE_CHECKING:
     from .document import Document
+
+# Commands that hold settings implement ``rebase(fn)``: after Save As into another folder, fn(type, params)
+# rewrites path settings so undo and redo still point at the same files. Nodes that are in the project
+# right now were already rewritten by the save and are left alone.
 
 
 class AddNode(QUndoCommand):
@@ -19,6 +23,10 @@ class AddNode(QUndoCommand):
         super().__init__(f"Add {node.title}")
         self.doc, self.node, self.connect_from, self.port = doc, node, connect_from, port
         self.edge: Edge | None = None
+
+    def rebase(self, fn) -> None:
+        if self.doc.pipeline.nodes.get(self.node.id) is not self.node:
+            self.node.params = fn(self.node.type, self.node.params)
 
     def redo(self) -> None:
         p = self.doc.pipeline
@@ -46,17 +54,25 @@ class RemoveNodes(QUndoCommand):
         super().__init__("Delete")
         self.doc = doc
         self.nodes = [doc.pipeline.nodes[i] for i in ids]
-        self.edges: list[Edge] = []
+        # per removed node, its connections with their places in the edge list: the order of a step's
+        # inputs (stack, workbook, report) is the order of the list, so undo puts each one back in place
+        self.removed: list[list[tuple[int, Edge]]] = []
+
+    def rebase(self, fn) -> None:
+        for n in self.nodes:
+            if self.doc.pipeline.nodes.get(n.id) is not n:
+                n.params = fn(n.type, n.params)
 
     def redo(self) -> None:
         p = self.doc.pipeline
-        self.edges = []
+        self.removed = []
         for n in self.nodes:
             if n.id not in p.nodes:
                 continue
+            placed = [(i, e) for i, e in enumerate(p.edges) if e.source == n.id or e.target == n.id]
             for e in p.remove_node(n.id):
-                self.edges.append(e)
                 self.doc.edgeRemoved.emit(e)
+            self.removed.append(placed)
             self.doc.nodeRemoved.emit(n.id)
         self.doc.refresh_states()
 
@@ -65,10 +81,11 @@ class RemoveNodes(QUndoCommand):
         for n in self.nodes:
             p.nodes[n.id] = n
             self.doc.nodeAdded.emit(n.id)
-        for e in self.edges:
-            if e.key() not in {x.key() for x in p.edges} and e.source in p.nodes and e.target in p.nodes:
-                p.edges.append(e)
-                self.doc.edgeAdded.emit(e)
+        for placed in reversed(self.removed):
+            for i, e in placed:
+                if e.key() not in {x.key() for x in p.edges} and e.source in p.nodes and e.target in p.nodes:
+                    p.edges.insert(min(i, len(p.edges)), e)
+                    self.doc.edgeAdded.emit(e)
         self.doc.refresh_states()
 
 
@@ -76,7 +93,11 @@ class SetParams(QUndoCommand):
     def __init__(self, doc: Document, nid: str, old: dict, new: dict, keys: set[str]) -> None:
         super().__init__(f"Edit {doc.pipeline.nodes[nid].title}")
         self.doc, self.nid, self.old, self.new, self.keys = doc, nid, old, new, keys
+        self.type = doc.pipeline.nodes[nid].type
         self.at = time.time()
+
+    def rebase(self, fn) -> None:
+        self.old, self.new = fn(self.type, self.old), fn(self.type, self.new)
 
     def id(self) -> int:
         return 1001
@@ -110,6 +131,7 @@ class Rename(QUndoCommand):
         if self.nid in self.doc.pipeline.nodes:
             self.doc.pipeline.nodes[self.nid].title = title
             self.doc.nodeChanged.emit(self.nid)
+            self.doc.refresh_states()          # titles shape what file-writing steps write
 
     def redo(self) -> None:
         self._apply(self.new)
@@ -141,23 +163,35 @@ class Connect(QUndoCommand):
     def __init__(self, doc: Document, edge: Edge) -> None:
         super().__init__("Connect")
         self.doc, self.edge = doc, edge
+        self.index: int | None = None       # where the edge sat when it was detached, so it comes back in place
 
-    def redo(self) -> None:
+    def _attach(self) -> None:
+        p = self.doc.pipeline
         try:
-            e = self.doc.pipeline.connect(self.edge.source, self.edge.target, self.edge.port)
+            e = p.connect(self.edge.source, self.edge.target, self.edge.port)
         except PipelineError:
             return
+        if self.index is not None and p.edges and p.edges[-1] is e:
+            p.edges.insert(min(self.index, len(p.edges) - 1), p.edges.pop())
         self.edge = e
         self.doc.edgeAdded.emit(e)
         self.doc.refresh_states()
 
-    def undo(self) -> None:
-        try:
-            self.doc.pipeline.disconnect(self.edge.source, self.edge.target, self.edge.port)
-        except PipelineError:
+    def _detach(self) -> None:
+        p = self.doc.pipeline
+        idx = next((i for i, e in enumerate(p.edges) if e.key() == self.edge.key()), None)
+        if idx is None:
             return
+        self.index = idx
+        p.disconnect(self.edge.source, self.edge.target, self.edge.port)
         self.doc.edgeRemoved.emit(self.edge)
         self.doc.refresh_states()
+
+    def redo(self) -> None:
+        self._attach()
+
+    def undo(self) -> None:
+        self._detach()
 
 
 class Disconnect(Connect):
@@ -166,10 +200,10 @@ class Disconnect(Connect):
         self.setText("Disconnect")
 
     def redo(self) -> None:
-        Connect.undo(self)
+        self._detach()
 
     def undo(self) -> None:
-        Connect.redo(self)
+        self._attach()
 
 
 class AddNote(QUndoCommand):
@@ -248,6 +282,61 @@ class SetColumns(QUndoCommand):
     def _apply(self, cols: dict) -> None:
         self.doc.pipeline.columns = json.loads(json.dumps(cols))
         self.doc.columnsChanged.emit()
+        self.doc.refresh_states()          # labels shape what file-writing steps write
+
+    def redo(self) -> None:
+        self._apply(self.after)
+
+    def undo(self) -> None:
+        self._apply(self.before)
+
+
+class AddAnswer(QUndoCommand):
+    def __init__(self, doc: Document, answer: Answer) -> None:
+        super().__init__(f"Add answer {answer.title}")
+        self.doc, self.answer = doc, answer
+
+    def redo(self) -> None:
+        if not any(a.id == self.answer.id for a in self.doc.pipeline.answers):
+            self.doc.pipeline.answers.append(self.answer)
+        self.doc.answerAdded.emit(self.answer.id)
+        self.doc.refresh_states()
+
+    def undo(self) -> None:
+        if any(a.id == self.answer.id for a in self.doc.pipeline.answers):
+            self.doc.pipeline.answers.remove(self.answer)
+            self.doc.answerRemoved.emit(self.answer.id)
+        self.doc.refresh_states()
+
+
+class RemoveAnswer(QUndoCommand):
+    def __init__(self, doc: Document, answer: Answer) -> None:
+        super().__init__(f"Delete answer {answer.title}")
+        self.doc, self.answer = doc, answer
+
+    def redo(self) -> None:
+        if any(a.id == self.answer.id for a in self.doc.pipeline.answers):
+            self.doc.pipeline.answers.remove(self.answer)
+            self.doc.answerRemoved.emit(self.answer.id)
+
+    def undo(self) -> None:
+        if not any(a.id == self.answer.id for a in self.doc.pipeline.answers):
+            self.doc.pipeline.answers.append(self.answer)
+            self.doc.answerAdded.emit(self.answer.id)
+
+
+class EditAnswer(QUndoCommand):
+    def __init__(self, doc: Document, answer_id: str, before: dict, after: dict, text: str = "Change answer") -> None:
+        super().__init__(text)
+        self.doc, self.answer_id, self.before, self.after = doc, answer_id, before, after
+
+    def _apply(self, fields: dict) -> None:
+        answer = self.doc.pipeline.answer(self.answer_id)
+        if answer is None:
+            return
+        for k, v in fields.items():
+            setattr(answer, k, v)
+        self.doc.answerChanged.emit(self.answer_id)
 
     def redo(self) -> None:
         self._apply(self.after)

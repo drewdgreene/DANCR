@@ -19,6 +19,8 @@ NODE_ICONS = {
     "summarize": "sigma", "group_summary": "table", "chart": "chart-line", "export": "download-simple",
     "report": "article", "fit_curve": "chart-scatter", "predict": "trend-up", "check_limits": "check-circle",
     "enter_data": "note-pencil", "fix_values": "note-pencil", "summarise_around": "clock", "workbook": "table",
+    "compare_groups": "columns", "check_data": "warning-circle", "associations": "chart-scatter", "contribution": "sigma",
+    "compare_periods": "clock-counter-clockwise", "forecast": "trend-up", "unpivot": "rows",
 }
 
 

@@ -7,7 +7,7 @@ from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel, QTableWidget, QTable
 
 from .document import Document
 from .theme import T
-from .common import page_header
+from .common import page_header, listen
 from .icons import icon
 
 TYPES = [("text", "text"), ("number", "number"), ("datetime", "date / time"), ("bool", "true / false")]
@@ -38,8 +38,14 @@ class EnterDataView(QWidget):
         self.table.itemChanged.connect(self._item_changed)
         a = QAction(self); a.setShortcut(QKeySequence.Paste); a.setShortcutContext(Qt.WidgetWithChildrenShortcut); a.triggered.connect(self.paste); self.table.addAction(a)
         d = QAction(self); d.setShortcut(QKeySequence.Delete); d.setShortcutContext(Qt.WidgetWithChildrenShortcut); d.triggered.connect(self._clear_selection); self.table.addAction(d)
-        doc.nodeChanged.connect(lambda nid: self.refill() if nid == self.nid and not self._timer.isActive() else None)
-        doc.reloaded.connect(lambda: self.set_node(None))
+        listen(self, doc.nodeChanged, lambda nid: self.refill() if nid == self.nid and not self._timer.isActive() else None)
+        listen(self, doc.reloaded, lambda: self.set_node(None))
+        listen(self, doc.flushRequested, self._flush)
+
+    def _flush(self) -> None:
+        if self._timer.isActive():
+            self._timer.stop()
+            self._commit()
 
     def set_node(self, nid: str | None) -> None:
         if self._timer.isActive():
@@ -102,9 +108,7 @@ class EnterDataView(QWidget):
         if not ok or not name.strip():
             return
         cols = list(self._params().get("columns") or []) + [{"name": name.strip(), "type": "text"}]
-        self._commit()
-        self.doc.set_params(self.nid, {"columns": cols})
-        self.refill()
+        self._set_columns(cols, "Add column")
 
     def _rename_column(self, idx: int) -> None:
         cols = [dict(c) for c in (self._params().get("columns") or [])]
@@ -113,14 +117,14 @@ class EnterDataView(QWidget):
         name, ok = QInputDialog.getText(self, "Rename column", "Column name:", text=cols[idx].get("name", ""))
         if ok and name.strip():
             cols[idx]["name"] = name.strip()
-            self._commit(); self.doc.set_params(self.nid, {"columns": cols}); self.refill()
+            self._set_columns(cols, "Rename column")
 
     def _header_menu(self, pos) -> None:
         idx = self.table.horizontalHeader().logicalIndexAt(pos)
         cols = [dict(c) for c in (self._params().get("columns") or [])]
         if idx < 0 or idx >= len(cols):
             return
-        m = QMenu(self)
+        m = QMenu(self); m.setAttribute(Qt.WA_DeleteOnClose)
         m.addAction("Rename…").triggered.connect(lambda: self._rename_column(idx))
         tm = m.addMenu("Type")
         for k, label in TYPES:
@@ -135,7 +139,14 @@ class EnterDataView(QWidget):
         if idx >= len(cols):
             return
         cols[idx]["type"] = kind
-        self._commit(); self.doc.set_params(self.nid, {"columns": cols}); self.refill()
+        self._set_columns(cols, "Change column type")
+
+    def _set_columns(self, cols: list[dict], text: str) -> None:
+        """Typed cells and the new columns go in as one undo step."""
+        with self.doc.macro(text):
+            self._commit()
+            self.doc.set_params(self.nid, {"columns": cols})
+        self.refill()
 
     def _remove_column(self, idx: int) -> None:
         cols = [dict(c) for c in (self._params().get("columns") or [])]
@@ -158,6 +169,10 @@ class EnterDataView(QWidget):
         text = QGuiApplication.clipboard().text()
         if not text.strip() or self.nid is None:
             return
+        with self.doc.macro("Paste"):                    # the columns and the cells are one undo step
+            self._paste(text)
+
+    def _paste(self, text: str) -> None:
         lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
         while lines and lines[0].strip() == "":
             lines.pop(0)
@@ -194,7 +209,5 @@ class EnterDataView(QWidget):
 
     @staticmethod
     def _numberish(v: str) -> bool:
-        try:
-            float(v.strip().replace(",", "")); return True
-        except ValueError:
-            return False
+        from ..core.dtypes import typed_value
+        return typed_value(v) is not None

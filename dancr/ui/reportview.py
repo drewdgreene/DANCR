@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineE
 
 from .document import Document
 from .theme import T
-from .common import page_header, status_dot
+from .common import page_header, status_dot, listen
 from .icons import icon, node_icon_name
 from .external import open_external
 
@@ -60,17 +60,23 @@ class ReportView(QWidget):
         rm = QPushButton("Remove"); rm.clicked.connect(self._remove_block)
         btns.addWidget(add_h); btns.addWidget(add_t); btns.addWidget(rm); btns.addStretch()
         r.addWidget(lab); r.addWidget(hint); r.addWidget(self.blocks, 1); r.addLayout(btns)
-        tip = QLabel("To add a chart or table: open it and press <b>Add to report</b>, or connect it to this step in the Map."); tip.setObjectName("muted"); tip.setWordWrap(True)
+        tip = QLabel("To add a chart or table, open it and press <b>Add to report</b>, or connect it to this step in the Map."); tip.setObjectName("muted"); tip.setWordWrap(True)
         r.addWidget(tip)
         split.addWidget(right); split.setSizes([420, 520])
-        doc.nodeChanged.connect(lambda nid: self.refill() if nid == self.nid and not self._timer.isActive() else None)
-        doc.edgeAdded.connect(lambda e: self.refill() if e.target == self.nid else None)
-        doc.edgeRemoved.connect(lambda e: self.refill() if e.target == self.nid else None)
-        doc.nodeState.connect(lambda nid, st: self._refresh_status() if nid == self.nid else None)
-        doc.statesChanged.connect(self._refresh_status)
-        doc.runFinished.connect(lambda *_: self._refresh_status())
-        doc.runStarted.connect(self._refresh_status)
-        doc.reloaded.connect(lambda: self.set_node(None))
+        listen(self, doc.nodeChanged, lambda nid: self.refill() if nid == self.nid and not self._timer.isActive() else None)
+        listen(self, doc.edgeAdded, lambda e: self.refill() if e.target == self.nid else None)
+        listen(self, doc.edgeRemoved, lambda e: self.refill() if e.target == self.nid else None)
+        listen(self, doc.nodeState, lambda nid, st: self._refresh_status() if nid == self.nid else None)
+        listen(self, doc.statesChanged, self._refresh_status)
+        listen(self, doc.runFinished, lambda *_: self._refresh_status())
+        listen(self, doc.runStarted, self._refresh_status)
+        listen(self, doc.reloaded, lambda: self.set_node(None))
+        listen(self, doc.flushRequested, self._flush)
+
+    def _flush(self) -> None:
+        if self._timer.isActive():
+            self._timer.stop()
+            self._commit_text()
 
     def set_node(self, nid: str | None) -> None:
         if self._timer.isActive():
@@ -99,10 +105,18 @@ class ReportView(QWidget):
             self.notes.setPlainText(p.get("notes") or "")
         self.path.setText(p.get("path") or ""); self.pdf.setChecked(bool(p.get("pdf", True)))
         items = self._items()
-        blocks = list(p.get("blocks") or [])
-        seen = {b.get("index") for b in blocks if b.get("type") not in ("text", "heading")}
-        blocks = [b for b in blocks if b.get("type") in ("text", "heading") or (isinstance(b.get("index"), int) and 0 <= b["index"] < len(items))]
-        blocks += [{"type": "item", "index": i} for i in range(len(items)) if i not in seen]
+        blocks: list[dict] = []
+        seen: set[str] = set()
+        for b in p.get("blocks") or []:
+            if b.get("type") in ("text", "heading"):
+                blocks.append(dict(b)); continue
+            src = b.get("node")
+            if src is None:                       # migrate a block saved with a positional index
+                idx = b.get("index")
+                src = items[idx] if isinstance(idx, int) and 0 <= idx < len(items) else None
+            if src in items and src not in seen:
+                seen.add(src); blocks.append({"type": "item", "node": src})
+        blocks += [{"type": "item", "node": src} for src in items if src not in seen]
         self.blocks.clear()
         for b in blocks:
             if b.get("type") == "heading":
@@ -111,7 +125,7 @@ class ReportView(QWidget):
                 txt = (b.get("text") or "").strip().splitlines()
                 it = QListWidgetItem(icon("text-aa", T.muted, 16), (txt[0][:80] if txt else "(text)"))
             else:
-                n = self.doc.pipeline.nodes.get(items[b["index"]])
+                n = self.doc.pipeline.nodes.get(b.get("node"))
                 it = QListWidgetItem(icon(node_icon_name(n.type) if n else "table", T.muted, 16), (n.title if n else "?") + (" (chart)" if n and n.type == "chart" else " (table)"))
             it.setData(Qt.UserRole, dict(b))
             self.blocks.addItem(it)
@@ -148,9 +162,10 @@ class ReportView(QWidget):
         if self.notes.toPlainText() != (p.get("notes") or ""):
             changes["notes"] = self.notes.toPlainText()
         if changes:
-            self._set(changes)
-            if "title" in changes and changes["title"].strip():
-                self.doc.rename(self.nid, changes["title"].strip())
+            with self.doc.macro("Edit report"):         # the settings and the step's name: one undo step
+                self._set(changes)
+                if "title" in changes and changes["title"].strip():
+                    self.doc.rename(self.nid, changes["title"].strip())
 
     def _blocks_from_list(self) -> list[dict]:
         return [self.blocks.item(i).data(Qt.UserRole) for i in range(self.blocks.count())]
@@ -188,8 +203,9 @@ class ReportView(QWidget):
             blocks = self._blocks_from_list(); del blocks[row]
             self._set({"blocks": blocks}); self.refill()
         else:
-            items = self._items()
-            src = items[b["index"]]
+            src = b.get("node")
+            if src is None:
+                return
             for e in list(self.doc.pipeline.edges):
                 if e.target == self.nid and e.source == src:
                     self.doc.disconnect(e)

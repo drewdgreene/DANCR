@@ -21,6 +21,7 @@ KINDS = {
     "columns",       # list of column names
     "path",          # file path (str)
     "duration",      # str like "1m", "30s", "2h", "1d" (Polars duration syntax)
+    "bucket",        # a duration, or calendar months, quarters and years ("1mo", "1q", "1y")
     "expr",          # formula text in the DANCR expression language
     "conditions",    # {"match": "all"|"any", "rules": [{"column","op","value","value2"}]}
     "aggregations",  # [{"column": str, "stats": [str], "alias": str|None}]
@@ -76,6 +77,14 @@ class Param:
     def default_value(self) -> Any:
         return copy.deepcopy(self.default)
 
+    def _check_range(self, value: float) -> float:
+        """Enforce the declared bounds here, not only in the GUI, so every interface is protected."""
+        if self.min is not None and value < self.min:
+            raise ValueError(f"{self.label}: must be at least {self.min:g}")
+        if self.max is not None and value > self.max:
+            raise ValueError(f"{self.label}: must be at most {self.max:g}")
+        return value
+
     def coerce(self, value: Any) -> Any:
         """Coerce a loosely-typed value (from JSON, CLI or a form) to this param's type.
         None means "use the default"."""
@@ -84,18 +93,19 @@ class Param:
         k = self.kind
         try:
             if k == "int":
-                return int(value)
+                return self._check_range(_whole_number(value))
             if k == "float":
-                return float(value)
+                return self._check_range(_finite_number(value))
             if k == "bool":
                 if isinstance(value, str):
-                    return value.strip().lower() in ("1", "true", "yes", "on", "y")
+                    from .dtypes import text_to_bool
+                    return text_to_bool(value)
                 return bool(value)
-            if k == "duration":
+            if k in ("duration", "bucket"):
                 text = str(value).strip()
                 if text:
-                    from .timeutil import parse_duration
-                    parse_duration(text)   # raises with a helpful message
+                    from .timeutil import parse_duration, parse_bucket
+                    (parse_bucket if k == "bucket" else parse_duration)(text)   # raises with a helpful message
                 return text
             if k in ("text", "path", "expr", "column"):
                 return str(value)
@@ -116,7 +126,7 @@ class Param:
                     raise ValueError(f"{self.label}: expected a list of names")
                 return [str(v) for v in value]
             return self._coerce_structured(value)
-        except (TypeError, ValueError) as e:
+        except (TypeError, ValueError, OverflowError) as e:
             msg = str(e)
             raise ValueError(msg if msg.startswith(self.label + ":") else f"{self.label}: {msg}") from e
 
@@ -164,3 +174,72 @@ class Param:
         if self.advanced:
             d["advanced"] = True
         return d
+
+
+def _finite_number(value: Any) -> float:
+    """A setting that is a number: typed text is read as everywhere else ('1,5' is 1.5); NaN and
+    infinity are refused."""
+    from .dtypes import number_from_text
+    if isinstance(value, bool):
+        raise ValueError(f"{value!r} is not a number")
+    return number_from_text(value, "value") if not isinstance(value, (int, float)) or value != value or abs(value) == float("inf") \
+        else float(value)
+
+
+def _whole_number(value: Any) -> int:
+    """A setting that is a whole number. 2.9 is refused rather than silently becoming 2."""
+    if isinstance(value, bool):
+        raise ValueError(f"{value!r} is not a whole number")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        from .dtypes import typed_value
+        n = typed_value(value)
+        if n is None:
+            raise ValueError(f"{value!r} is not a whole number")
+        value = n
+        if isinstance(value, int):
+            return value
+    f = _finite_number(value)
+    if not f.is_integer():
+        raise ValueError(f"{value!r} is not a whole number")
+    return int(f)
+
+
+
+# ------------------------------------------------------------------ project inputs
+# How a setting names a project input, one rule everywhere (formulas, filter values, limits, ranges, chart
+# lines): the input's name, in any case, as a whole word of a setting's text. The executor finds the inputs a
+# step names with ``inputs_named`` and hands the step only those, and only their values go into its cache
+# key, so a step can never read an input its cache key leaves out.
+
+def find_input(inputs: dict[str, Any] | None, text: Any) -> tuple[str, Any] | None:
+    """(name, value) of the input a piece of settings text names, or None."""
+    if not inputs or not isinstance(text, str):
+        return None
+    key = text.strip().lower()
+    for name, value in inputs.items():
+        if name.lower() == key:
+            return name, value
+    return None
+
+
+def inputs_named(inputs: dict[str, Any] | None, *settings: Any) -> dict[str, Any]:
+    """The inputs whose names appear as a whole word in the text values (not the keys) of ``settings``."""
+    import re
+    if not inputs:
+        return {}
+    texts = [t.lower() for s in settings for t in _string_values(s)]
+    return {name: value for name, value in inputs.items()
+            if any(re.search(r"(?<!\w)" + re.escape(name.lower()) + r"(?!\w)", t) for t in texts)}
+
+
+def _string_values(obj: Any) -> list[str]:
+    """Every text value in a settings value, however deeply nested (dict keys are names, not values)."""
+    if isinstance(obj, str):
+        return [obj]
+    if isinstance(obj, dict):
+        return [t for v in obj.values() for t in _string_values(v)]
+    if isinstance(obj, (list, tuple)):
+        return [t for v in obj for t in _string_values(v)]
+    return []

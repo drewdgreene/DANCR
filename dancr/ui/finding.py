@@ -46,6 +46,26 @@ class Stat(QWidget):
         lay.addWidget(v); lay.addWidget(l)
 
 
+def _trust_bits(st, node_type: str) -> list[str]:
+    """Small honest facts about how much a result knows: how many rows, whether it is exact or sampled, and
+    how many keys actually matched. Shown quietly under the finding, never as a claim stronger than the truth."""
+    rep = st.report or {}
+    f = rep.get("finding") or {}
+    bits: list[str] = []
+    if st.rows is not None:
+        bits.append(f"{st.rows:,} rows")
+    if isinstance(f, dict) and f:
+        bits.append("exact" if f.get("exact", True) else "from a sample")
+    mp = rep.get("match_percent")
+    if isinstance(mp, (int, float)):
+        bits.append(f"{mp:.0f}% of keys matched")
+    if isinstance(f, dict) and f.get("kind") == "quality":
+        dup = f.get("detail", {}).get("duplicate_rows") if isinstance(f.get("detail"), dict) else None
+        if dup:
+            bits.append(f"{int(dup):,} duplicate rows")
+    return bits
+
+
 class FindingCard(QFrame):
     """Shows the finding of a step (fit equation and quality, pass/fail verdict, gaps, saved files, notes)."""
 
@@ -103,6 +123,15 @@ class FindingCard(QFrame):
         rep = st.report or {}
         msgs = list(st.messages or [])
         shown = False
+        special = node_type in ("fit_curve", "check_limits", "find_gaps", "predict")
+        fnd = (rep.get("finding") or {}).get("statement") if st.status == "done" else None
+        if fnd and not special:
+            self._heading("Found")
+            self._big(html.escape(str(fnd)))
+            shown = True
+            if node_type == "compare_groups":        # every number's result, and what else it noticed
+                for m in msgs:
+                    self._text(m, muted=False)
         if st.status == "done" and node_type == "fit_curve" and rep.get("fits"):
             self._heading("Result · " + {"linear": "straight line", "polynomial": "curve", "saturating": "levels off", "exponential": "exponential",
                                          "power": "power law", "logarithmic": "logarithmic"}.get(rep.get("kind", ""), rep.get("kind", "")))
@@ -117,12 +146,15 @@ class FindingCard(QFrame):
             shown = True
         elif st.status == "done" and node_type == "check_limits" and rep.get("verdict"):
             ok = rep["verdict"] == "PASS"
-            color = T.ok if ok else T.danger
+            color = {"PASS": T.ok, "FAIL": T.danger}.get(rep["verdict"], T.warn)     # nothing checked is not a failure
             self._heading("Result", color)
             self._big(rep["verdict"], size=15, color=color)
-            n, bad = int(rep.get("rows") or 0), int(rep.get("outside") or 0)
-            self._stats([(f"{bad:,}", "outside"), (f"{rep.get('outside_percent', 0):.2f}%", "of rows"), (f"{n:,}", "checked")])
-            self._text(f"Limit: {rep.get('limit', '')}." + (" Every row is within it." if ok else (f" About 1 in {round(n / bad)} rows is outside." if bad and n / bad >= 2 else "")))
+            n, bad = int(rep.get("checked") or 0), int(rep.get("outside") or 0)
+            self._stats([(f"{bad:,}", "outside"), (f"{rep.get('outside_percent', 0):.2f}%", "of values"), (f"{n:,}", "checked")])
+            if rep["verdict"] not in ("PASS", "FAIL"):
+                self._text(f"Limit: {rep.get('limit', '')}. No row has a value to check.")
+            else:
+                self._text(f"Limit: {rep.get('limit', '')}." + (" Every row is within it." if ok else (f" About 1 in {round(n / bad)} rows is outside." if bad and n / bad >= 2 else "")))
             shown = True
         elif st.status == "done" and node_type == "find_gaps":
             self._heading("Result")
@@ -151,4 +183,8 @@ class FindingCard(QFrame):
                 shown = True
             if shown:
                 self.lay.insertWidget(0, QLabel(""))
+        bits = _trust_bits(st, node_type)
+        if bits and st.status == "done":
+            self._text(" · ".join(bits), muted=True)
+            shown = True
         self.setVisible(shown)

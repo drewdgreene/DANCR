@@ -1,5 +1,10 @@
-"""Headless chart rendering to PNG (matplotlib, Agg). Used by the CLI, MCP and reports."""
+"""Headless chart rendering to PNG (matplotlib, Agg). Used by the CLI, MCP and reports.
+
+Each chart is its own Figure on its own Agg canvas, never pyplot's shared state, so charts can be drawn
+on several threads at once (the MCP server runs tools in parallel)."""
 from __future__ import annotations
+
+import functools
 
 from pathlib import Path
 from typing import Any
@@ -8,39 +13,39 @@ import numpy as np
 import polars as pl
 
 from .chartquery import ChartData, query_panels, limit_values
-
-PALETTE = ["#2f80ed", "#eb5757", "#27ae60", "#f2994a", "#9b51e0", "#00a3bf", "#e91e63", "#795548"]
+from .palette import SERIES_COLORS as PALETTE, series_color
+from .table import column_title
 
 
 def _mpl():
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
+    from matplotlib.figure import Figure
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
     import matplotlib.dates as mdates
-    return plt, mdates
+    return Figure, FigureCanvasAgg, mdates
 
 
 def _title(c: str | None, columns: dict[str, dict] | None) -> str:
-    if not c:
-        return ""
-    m = (columns or {}).get(c) or {}
-    label = m.get("label") or c
-    return f"{label} ({m['unit']})" if m.get("unit") else label
+    return column_title(c, columns)
 
 
 def render_chart(lf: pl.LazyFrame, params: dict[str, Any], out: Path | str, width: int = 1400, height: int = 700,
                  x_range: tuple[float, float] | None = None, dpi: int = 100, columns: dict[str, dict] | None = None,
                  inputs: dict[str, Any] | None = None) -> Path:
-    plt, mdates = _mpl()
+    from ..core.nodes.outputs import validate_chart
+    schema = dict(lf.collect_schema())
+    validate_chart(schema, params)
+    Figure, FigureCanvasAgg, mdates = _mpl()
     out = Path(out)
     title = params.get("title") or ""
-    schema = dict(lf.collect_schema())
     panels = query_panels(lf, schema, params, x_range=x_range, width_px=width, height_px=height)
-    fig, axes = plt.subplots(len(panels), 1, figsize=(width / dpi, (height if len(panels) == 1 else height * 0.55 * len(panels)) / dpi),
-                             dpi=dpi, sharex=(len(panels) > 1), squeeze=False)
+    fig = Figure(figsize=(width / dpi, (height if len(panels) == 1 else height * 0.55 * len(panels)) / dpi), dpi=dpi)
+    FigureCanvasAgg(fig)
+    axes = fig.subplots(len(panels), 1, sharex=(len(panels) > 1), squeeze=False)
     axes = [a[0] for a in axes]
     for i, ((label, cd), ax) in enumerate(zip(panels, axes)):
-        sub = _draw_panel(ax, cd, params, columns, inputs, mdates)
+        x_dt = schema.get(cd.x) if cd.x else None
+        tz = x_dt.time_zone if isinstance(x_dt, pl.Datetime) else None
+        sub = _draw_panel(ax, cd, params, columns, inputs, mdates, tz)
         if label is not None:
             ax.set_title(label, fontsize=9, color="#555", loc="left")
         if i < len(panels) - 1:
@@ -54,12 +59,13 @@ def render_chart(lf: pl.LazyFrame, params: dict[str, Any], out: Path | str, widt
     fig.tight_layout()
     out.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out)
-    plt.close(fig)
     return out
 
 
-def _draw_panel(ax, cd: ChartData, params: dict[str, Any], columns, inputs, mdates) -> str:
-    """Draw one queried panel into `ax`; returns the small info text."""
+def _draw_panel(ax, cd: ChartData, params: dict[str, Any], columns, inputs, mdates, tz: str | None = None) -> str:
+    """Draw one queried panel into `ax`; returns the small info text. Times are drawn as wall times in the
+    column's zone (``tz``), as the table shows them."""
+    _to_dates = functools.partial(_wall_times, tz=tz)
     specs = params.get("series") or []
     breaks = params.get("break_gaps", True)
     if cd.kind == "line":
@@ -72,7 +78,7 @@ def _draw_panel(ax, cd: ChartData, params: dict[str, Any], columns, inputs, mdat
             for i, s in enumerate(cd.line.series):
                 spec = specs[i] if i < len(specs) else {}
                 xs, yv = lod_break(s.x, s.y, breaks)
-                ax.plot(_to_dates(xs) if cd.line.axis.kind == "time" else xs, yv, lw=0.8, color=spec.get("color") or PALETTE[i % len(PALETTE)],
+                ax.plot(_to_dates(xs) if cd.line.axis.kind == "time" else xs, yv, lw=0.8, color=series_color(i, spec),
                         label=spec.get("label") or _title(s.name, columns))
         if cd.mean is not None:
             ax.axhline(cd.mean, color="#555", lw=0.9, ls="--", label=f"average {cd.mean:.4g}")
@@ -84,14 +90,17 @@ def _draw_panel(ax, cd: ChartData, params: dict[str, Any], columns, inputs, mdat
     elif cd.kind == "scatter":
         d = cd.scatter
         if cd.groups:
+            # Groups too big to plot raw fall back to a density grid; draw the combined cloud as a
+            # background so an all-density grouped scatter is not a blank panel.
+            if d.mode == "density" and any(gd.mode == "density" for _, gd in cd.groups):
+                _draw_density(ax, d, tz)
             for gi, (g, gd) in enumerate(cd.groups):
                 if gd.mode == "raw":
                     ax.scatter(_to_dates(gd.x) if gd.x_kind == "time" else gd.x, gd.y, s=5, alpha=0.6, color=PALETTE[gi % len(PALETTE)], label=g)
         elif d.mode == "raw":
             ax.scatter(_to_dates(d.x) if d.x_kind == "time" else d.x, d.y, s=4, alpha=0.6, color=PALETTE[0])
         else:
-            x0, x1, y0, y1 = d.extent
-            ax.imshow(np.log1p(d.density.T), origin="lower", aspect="auto", extent=(x0, x1, y0, y1), cmap="viridis")
+            _draw_density(ax, d, tz)
         for gi, (f, cx, cy) in enumerate(cd.fits):
             if cx is None:
                 ax.text(0.01, 0.99, f"fit: {f}", transform=ax.transAxes, va="top", fontsize=8, color="#b00")
@@ -105,14 +114,20 @@ def _draw_panel(ax, cd: ChartData, params: dict[str, Any], columns, inputs, mdat
         h = cd.hist
         ax.bar(h.edges[:-1], h.counts, width=np.diff(h.edges), align="edge", color=PALETTE[0], edgecolor="white", linewidth=0.3)
         ax.set_xlabel(_title(cd.ys[0], columns)); ax.set_ylabel("count")
+        from matplotlib.ticker import MaxNLocator
+        ax.yaxis.set_major_locator(MaxNLocator(integer=True))       # counts are whole numbers
         for lv, lab in limit_values(params, inputs):
             ax.axvline(lv, color="#dc2626", lw=1.1, ls=":", label=lab)
     else:
         b = cd.bar
-        ax.bar(range(len(b.labels)), b.values, color=PALETTE[0])
+        ax.bar(range(len(b.labels)), b.values, color=PALETTE[0], yerr=b.errors, capsize=5 if b.errors is not None else 0,
+               error_kw={"elinewidth": 1.2, "ecolor": "#333"})
         ax.set_xticks(range(len(b.labels)))
-        ax.set_xticklabels(b.labels, rotation=45, ha="right", fontsize=8)
+        ax.set_xticklabels(b.labels, rotation=45 if len(b.labels) > 4 else 0, ha="right" if len(b.labels) > 4 else "center", fontsize=8)
         ax.set_ylabel(f"{b.stat} of {cd.ys[0] if cd.ys else 'rows'}")
+        if b.error:
+            from .lod import ERROR_WORDS
+            ax.text(0.99, 0.99, f"error bars: {ERROR_WORDS[b.error]}", transform=ax.transAxes, ha="right", va="top", fontsize=8, color="#555")
     if cd.kind in ("line", "scatter"):
         for lv, lab in limit_values(params, inputs):
             ax.axhline(lv, color="#dc2626", lw=1.1, ls=":", label=lab)
@@ -130,8 +145,25 @@ def lod_break(x: np.ndarray, y: np.ndarray, breaks: bool) -> tuple[np.ndarray, n
     return lod.break_gaps(x, y) if breaks else (x, y)
 
 
-def _to_dates(x: np.ndarray) -> np.ndarray:
+def _draw_density(ax, d, tz: str | None = None) -> None:
+    """Draw a per-pixel density grid as a log-coloured image; a time x in the same date units the raw points use."""
+    x0, x1, y0, y1 = d.extent
+    if getattr(d, "x_kind", None) == "time":
+        import matplotlib.dates as mdates
+        x0, x1 = (float(v) for v in mdates.date2num(_wall_times(np.array([x0, x1]), tz)))
+        ax.xaxis_date()
+        ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(ax.xaxis.get_major_locator()))
+    ax.imshow(np.log1p(d.density.T), origin="lower", aspect="auto", extent=(x0, x1, y0, y1), cmap="viridis")
+
+
+def _wall_times(x: np.ndarray, tz: str | None = None) -> np.ndarray:
+    """Epoch seconds as datetimes: UTC for a naive column, the wall time in ``tz`` (with the offset of each
+    moment, across daylight-saving changes) for a zoned one."""
+    x = np.asarray(x, dtype=float)
     out = np.full(len(x), np.datetime64("NaT", "us"), dtype="datetime64[us]")
     ok = np.isfinite(x)
     out[ok] = (x[ok] * 1e6).astype("datetime64[us]")
+    if tz:
+        out = (pl.Series(out).dt.replace_time_zone("UTC").dt.convert_time_zone(tz).dt.replace_time_zone(None)
+               .to_numpy().astype("datetime64[us]"))
     return out

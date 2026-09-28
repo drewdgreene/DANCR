@@ -28,7 +28,7 @@ def make_probe_data(hours: float = 1.0, rate: float = 20.0, seed: int = 1, start
         "rate_hz": rate, "hours": hours, "start": start.isoformat(),
         "b_slope": 1.0025, "b_offset": -12.35, "drift_per_day": 0.02,
         "noise_a": 0.002, "noise_b": 0.015, "tide_amp": 0.9, "tide_period_h": 12.42,
-        "gaps": [], "spikes_b": 0, "rows_a": 0, "rows_b": 0,
+        "gaps": [], "gaps_b": [], "spikes_b": 0, "rows_a": 0, "rows_b": 0,
     }
     # gaps: fixed set based on seed
     n_gaps = max(1, int(hours / 12)) if hours >= 2 else 1
@@ -37,6 +37,10 @@ def make_probe_data(hours: float = 1.0, rate: float = 20.0, seed: int = 1, start
     for gs, gl in zip(gap_starts, gap_lens):
         truth["gaps"].append({"start_row": int(gs), "rows": int(gl), "start": (start + timedelta(seconds=gs / rate)).isoformat(),
                               "seconds": float(gl / rate)})
+        # probe B misses a shorter stretch that starts a little later (37 readings) inside each of A's gaps
+        gs_b, gl_b = int(gs) + 37, int(gl) // 2
+        truth["gaps_b"].append({"start_row": gs_b, "rows": gl_b, "start": (start + timedelta(seconds=gs_b / rate)).isoformat(),
+                                "seconds": float(gl_b / rate)})
     chunk = int(chunk_hours * 3600 * rate)
     rows_a = rows_b = 0
     spikes = 0
@@ -51,17 +55,16 @@ def make_probe_data(hours: float = 1.0, rate: float = 20.0, seed: int = 1, start
         # spikes in B
         k = rng.random(len(idx)) < 1e-5
         b[k] += rng.choice([-1, 1], k.sum()) * rng.uniform(2, 8, k.sum())
-        spikes += int(k.sum())
         keep = np.ones(len(idx), bool)
         for g in truth["gaps"]:
             keep &= ~((idx >= g["start_row"]) & (idx < g["start_row"] + g["rows"]))
         ts = np.array(start, dtype="datetime64[us]") + (t_s * 1e6).astype("timedelta64[us]")
         temp = 2.75 + 0.01 * np.sin(2 * np.pi * t_s / 86400.0)
         dfa = pl.DataFrame({"time": ts[keep], "pressure_psi": a[keep].astype(np.float64), "temp_c": temp[keep]})
-        # probe B has its own dropouts: shift gap by a bit and add one extra
         keep_b = np.ones(len(idx), bool)
-        for g in truth["gaps"]:
-            keep_b &= ~((idx >= g["start_row"] + 37) & (idx < g["start_row"] + 37 + g["rows"] // 2))
+        for g in truth["gaps_b"]:
+            keep_b &= ~((idx >= g["start_row"]) & (idx < g["start_row"] + g["rows"]))
+        spikes += int((k & keep_b).sum())               # only spikes in readings B actually has
         dfb = pl.DataFrame({"time": ts[keep_b], "pressure_psi": b[keep_b].astype(np.float64), "temp_c": (temp + 0.5)[keep_b]})
         rows_a += len(dfa)
         rows_b += len(dfb)

@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QTreeWidget, Q
 
 from ..core import registry
 from .document import Document
+from .common import listen
 from .theme import T, category_color, STATUS_COLORS
 from .icons import icon, node_icon_name
 
@@ -104,7 +105,9 @@ class RailTree(QTreeWidget):
                 if level == depth - 1:
                     last = index.row() == model.rowCount(index.parent()) - 1
                     painter.drawLine(x, top, x, mid if last else bottom)
-                    painter.drawLine(x, mid, rect.right(), mid)
+                    # stop the horizontal elbow at the item's expander, never across past the triangle
+                    end = max(x + 2, min(rect.right() - 2, ind * depth))
+                    painter.drawLine(x, mid, end, mid)
                 else:
                     anc = ancestors[level]
                     if anc.row() != model.rowCount(anc.parent()) - 1:
@@ -114,7 +117,7 @@ class RailTree(QTreeWidget):
 
 
 class Rail(QWidget):
-    selected = Signal(str, object)     # kind ("node" | "inputs" | "none"), id
+    selected = Signal(str, object)     # kind ("node" | "answer" | "inputs" | "none"), id
     deleteRequested = Signal()
 
     MODE_SETTING = "rail_mode"
@@ -127,6 +130,7 @@ class Rail(QWidget):
         if self.mode not in ("flow", "type"):
             self.mode = "flow"
         self._items: dict[str, QTreeWidgetItem] = {}
+        self._answer_items: dict[str, QTreeWidgetItem] = {}
         self._inputs_item: QTreeWidgetItem | None = None
         self._collapsed: set[str] = set()
         self._suppress = False
@@ -154,10 +158,10 @@ class Rail(QWidget):
         self.tree.itemExpanded.connect(lambda it: self._on_expanded(it, True))
         self.tree.itemCollapsed.connect(lambda it: self._on_expanded(it, False))
         for sig in (doc.nodeAdded, doc.nodeRemoved, doc.nodeChanged, doc.reloaded, doc.inputsChanged,
-                    doc.edgeAdded, doc.edgeRemoved):
-            sig.connect(lambda *_: self.refill())
-        doc.statesChanged.connect(self.refill_status)
-        doc.nodeState.connect(lambda *_: self.refill_status())
+                    doc.edgeAdded, doc.edgeRemoved, doc.answerAdded, doc.answerRemoved, doc.answerChanged):
+            listen(self, sig, lambda *_: self.refill())
+        listen(self, doc.statesChanged, self.refill_status)
+        listen(self, doc.nodeState, lambda *_: self.refill_status())
         self._update_mode_btn()
         self.refill()
 
@@ -213,7 +217,7 @@ class Rail(QWidget):
     def _build_flow(self) -> None:
         p = self.doc.pipeline
         if not p.nodes:
-            self._hint("no steps yet — open a data file")
+            self._hint("no steps yet. Open a data file")
             return
         order = {nid: i for i, nid in enumerate(p.topological_order())}
         incoming: dict[str, list] = {nid: [] for nid in p.nodes}
@@ -252,7 +256,7 @@ class Rail(QWidget):
 
     def _build_type(self) -> None:
         secs = self._section_items()
-        hints = {"tables": "none yet — open a data file", "charts": "none yet — right-click a column", "reports": "none yet"}
+        hints = {"tables": "none yet. Open a data file", "charts": "none yet. Right-click a column", "reports": "none yet"}
         for key, label in SECTIONS:
             self._header(label)
             for n in secs[key]:
@@ -269,11 +273,27 @@ class Rail(QWidget):
         it.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
         self._inputs_item = it
 
+    def _build_answers(self) -> None:
+        answers = self.doc.pipeline.answers
+        if not answers:
+            return
+        self._header("Answers")
+        for a in answers:
+            it = QTreeWidgetItem(self.tree)
+            it.setText(0, a.title)
+            it.setIcon(0, icon("sparkle", T.accent, 16))
+            st = self.doc.state(a.terminal).status if a.terminal in self.doc.pipeline.nodes else "idle"
+            it.setData(0, KIND_ROLE, "answer"); it.setData(0, ID_ROLE, a.id); it.setData(0, STATUS_ROLE, st)
+            it.setToolTip(0, "A guided answer. Click to see its result")
+            it.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+            self._answer_items[a.id] = it
+
     def refill(self) -> None:
         cur = self.current()
         self._suppress = True
         self.tree.clear()
-        self._items.clear(); self._inputs_item = None
+        self._items.clear(); self._inputs_item = None; self._answer_items = {}
+        self._build_answers()
         if self.mode == "type":
             self._build_type()
         else:
@@ -297,13 +317,18 @@ class Rail(QWidget):
         ident = it.data(0, ID_ROLE)
         if kind == "ref":
             return ("node", ident)
-        if kind in ("node", "inputs"):
+        if kind in ("node", "inputs", "answer"):
             return (kind, ident)
         return None
 
     def select(self, kind: str, ident: object, emit: bool = True) -> None:
         self._suppress = not emit
-        item = self._inputs_item if kind == "inputs" else self._items.get(str(ident))
+        if kind == "inputs":
+            item = self._inputs_item
+        elif kind == "answer":
+            item = self._answer_items.get(str(ident))
+        else:
+            item = self._items.get(str(ident))
         if item is not None:
             p = item.parent()
             while p is not None:

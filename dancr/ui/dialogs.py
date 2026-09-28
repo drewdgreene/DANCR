@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Callable
 
@@ -10,6 +11,7 @@ from PySide6.QtWidgets import (QFrame, QWidget, QHBoxLayout, QVBoxLayout, QLabel
                                QDialogButtonBox)
 
 from .document import Document
+from .workers import Serial
 from .theme import T
 from .icons import icon
 
@@ -48,24 +50,38 @@ class VersionsDialog(QDialog):
     def __init__(self, parent, doc: Document) -> None:
         super().__init__(parent)
         self.setWindowTitle("Earlier versions"); self.resize(520, 380)
-        self.doc = doc
         lay = QVBoxLayout(self)
-        lab = QLabel("DANCR keeps a copy of the project every time you save. Pick one to go back to it (your current version is kept too)."); lab.setWordWrap(True)
+        lab = QLabel("DANCR keeps a copy of the project every time it is saved. Pick one to go back to it (your current version is kept too)."); lab.setWordWrap(True)
         self.list = QListWidget()
-        for p in doc.versions():
-            stamp = p.stem[:10] + "  " + p.stem[11:].replace("-", ":")
-            try:
-                n = len(json.loads(p.read_text(encoding="utf-8")).get("nodes") or [])
-            except Exception:  # noqa: BLE001
-                n = 0
-            it = QListWidgetItem(icon("clock-counter-clockwise", T.muted, 16), f"{stamp}   ·   {n} steps"); it.setData(Qt.UserRole, str(p)); self.list.addItem(it)
+        versions = doc.versions()
+        for p in versions:
+            m = re.search(r"(\d{4}-\d{2}-\d{2})_(\d{2})-(\d{2})-(\d{2})", p.name)
+            when = f"{m.group(1)}  {m.group(2)}:{m.group(3)}:{m.group(4)}" if m else p.stem
+            stamp = when + ("   ·   autosave" if p.name.endswith(".auto.json") else "")
+            it = QListWidgetItem(icon("clock-counter-clockwise", T.muted, 16), stamp); it.setData(Qt.UserRole, str(p)); self.list.addItem(it)
+        if versions:                                  # step counts read on a worker: the files may be on a slow drive
+            self._counts = Serial(self, waits_for_run=False)
+            self._counts.submit(lambda: [_step_count(p) for p in versions], self._show_counts)
         if not self.list.count():
-            self.list.addItem("No earlier versions yet — they appear after you save.")
+            self.list.addItem("No earlier versions yet. They appear after you save.")
         bb = QDialogButtonBox(QDialogButtonBox.Cancel)
         self.restore = bb.addButton("Restore this version", QDialogButtonBox.AcceptRole)
         bb.accepted.connect(self.accept); bb.rejected.connect(self.reject)
         lay.addWidget(lab); lay.addWidget(self.list, 1); lay.addWidget(bb)
 
+    def _show_counts(self, counts: list[int | None]) -> None:
+        for i, n in enumerate(counts):
+            it = self.list.item(i)
+            if it is not None and n is not None:
+                it.setText(f"{it.text()}   ·   {n} steps")
+
     def chosen(self) -> Path | None:
         it = self.list.currentItem()
         return Path(it.data(Qt.UserRole)) if it and it.data(Qt.UserRole) else None
+
+
+def _step_count(path: Path) -> int | None:
+    try:
+        return len(json.loads(path.read_text(encoding="utf-8")).get("nodes") or [])
+    except (OSError, ValueError, AttributeError):
+        return None

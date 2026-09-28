@@ -18,27 +18,60 @@ from typing import Any
 import polars as pl
 
 from . import __version__
+from . import headless as hl
 from .core import Pipeline, PipelineError, registry
-from .core.executor import Executor, NodeState, ExecutionCancelled
+from .core.executor import Executor, NodeState
 
 
 class CliError(Exception):
     pass
 
 
+# Exit codes: 0 ok, 1 a step failed (dancr run), 2 a usage or input error with a message, 3 an internal error
+# (a DANCR bug; the traceback is in the log).
+EXIT_FAILED, EXIT_ERROR, EXIT_BUG = 1, 2, 3
+
+
+class _Parser(argparse.ArgumentParser):
+    """Argument errors in the same shape as every other error: JSON with --json (anywhere on the line)."""
+
+    def error(self, message: str) -> None:  # type: ignore[override]
+        if "--json" in sys.argv[1:]:
+            print(json.dumps({"error": f"{self.prog}: {message}"}))
+            sys.exit(EXIT_ERROR)
+        super().error(message)
+
+
 # ----------------------------------------------------------------- helpers
 def _load(path: str) -> Pipeline:
     p = Path(path)
     if not p.exists():
-        raise CliError(f"No such pipeline file: {p}. Create one with: dancr new {p}")
+        raise CliError(f"There's no project file at {p}. To create one, run dancr new {p}")
     return Pipeline.load(p)
+
+
+def _with_files(path: str, files: list[str] | None) -> Pipeline:
+    """The project with a load step for each file named, added under the lock (only when there are files).
+    The slow reading that follows is done without the lock, so nobody waits on it."""
+    if files:
+        with _editing(path) as p:
+            hl.add_files(p, _abs(files))
+        return p
+    return _load(path)
+
+
+def _editing(path: str):
+    """Load, change and save a project file holding its lock, so the window, an agent or another command never
+    saves over the change (and it never saves over theirs). Saved only when something changed."""
+    p = Path(path)
+    if not p.exists():
+        raise CliError(f"There's no project file at {p}. To create one, run dancr new {p}")
+    return hl.editing(p)
 
 
 def _check_node(p: Pipeline, node_id: str) -> str:
     """Every command that names a step validates it here, before anything else can produce a vaguer error."""
-    if node_id not in p.nodes:
-        raise CliError(f"No step called {node_id!r}. Steps: {list(p.nodes)}")
-    return node_id
+    return hl.require_node(p, node_id)
 
 
 def _parse_kv(items: list[str]) -> dict[str, Any]:
@@ -64,18 +97,13 @@ def _params_from_args(a: argparse.Namespace) -> dict[str, Any]:
     params = _parse_kv(getattr(a, "set", []) or [])
     if getattr(a, "params", None):
         try:
-            params.update(json.loads(a.params))
+            given = json.loads(a.params)
         except json.JSONDecodeError as e:
             raise CliError(f"--params is not valid JSON: {e}") from e
+        if not isinstance(given, dict):
+            raise CliError('--params must be a JSON object of settings, like \'{"path": "data.csv"}\'')
+        params.update(given)
     return params
-
-
-def _state_dict(p: Pipeline, st: NodeState) -> dict[str, Any]:
-    n = p.nodes[st.node_id]
-    d = st.to_dict()
-    d["title"] = n.title
-    d["type"] = n.type
-    return d
 
 
 def _print(a: argparse.Namespace, data: Any, text: str | None = None) -> None:
@@ -108,7 +136,7 @@ def cmd_nodes(a: argparse.Namespace) -> None:
     if a.type:
         types = [t for t in types if t.key == a.type or t.label.lower() == a.type.lower()]
         if not types:
-            raise CliError(f"No node type {a.type!r}")
+            raise CliError(f"No step type {a.type!r}")
     if a.json:
         _print(a, [t.to_json() for t in types])
         return
@@ -144,82 +172,55 @@ def cmd_formulas(a: argparse.Namespace) -> None:
 
 def cmd_new(a: argparse.Namespace) -> None:
     p = Path(a.pipeline)
-    if p.exists() and not a.force:
-        raise CliError(f"{p} already exists (use --force to overwrite)")
-    pipe = Pipeline(a.name or p.stem)
-    pipe.save(p)
+    with hl.project_lock(p):
+        if p.exists() and not a.force:
+            raise CliError(f"{p} already exists. Use --force to overwrite it")
+        pipe = Pipeline(a.name or p.stem)
+        pipe.save(p)
     _print(a, {"path": str(p), "name": pipe.name}, f"Created {p}")
 
 
 def cmd_add(a: argparse.Namespace) -> None:
-    p = _load(a.pipeline)
-    if not registry.has(a.type):
-        # try label match
-        match = [t for t in registry.all() if t.label.lower() == a.type.lower()]
-        if not match:
-            raise CliError(f"Unknown node type {a.type!r}. Run: dancr nodes")
-        a.type = match[0].key
-    params = _params_from_args(a)
-    for nid in [a.after, *(a.also_after or [])]:
-        if nid:
-            _check_node(p, nid)
-    x, y = 0.0, 0.0
-    if a.after:
-        src = p.nodes[a.after]
-        x, y = src.x + 260, src.y
-    else:
-        if p.nodes:
-            last = list(p.nodes.values())[-1]
-            x, y = last.x, last.y + 140
-    node = p.add_node(a.type, title=a.title, params=params, x=x, y=y, id=a.id)
-    if a.after:
-        p.connect(a.after, node.id, a.port)
-    for extra in a.also_after or []:
-        p.connect(extra, node.id)
-    p.save()
+    with _editing(a.pipeline) as p:
+        node = hl.add_step(p, a.type, _params_from_args(a), a.title, a.id, a.after, a.port, a.also_after)
     _print(a, node.to_dict(), f"Added {node.title} as {node.id}" + (f", connected from {a.after}" if a.after else ""))
 
 
 def cmd_set(a: argparse.Namespace) -> None:
-    p = _load(a.pipeline)
-    _check_node(p, a.node)
     params = _params_from_args(a)
-    if not params:
-        raise CliError("Nothing to set. Use key=value or --params '{...}'")
-    p.set_params(a.node, **params)
-    p.save()
+    with _editing(a.pipeline) as p:
+        _check_node(p, a.node)
+        if not params:
+            raise CliError("Nothing to set. Use key=value or --params '{...}'")
+        p.set_params(a.node, **params)
     _print(a, p.nodes[a.node].to_dict(), f"Updated {a.node}: {', '.join(params)}")
 
 
 def cmd_rename(a: argparse.Namespace) -> None:
-    p = _load(a.pipeline)
-    _check_node(p, a.node)
-    p.rename_node(a.node, a.title)
-    p.save()
+    with _editing(a.pipeline) as p:
+        _check_node(p, a.node)
+        p.rename_node(a.node, a.title)
     _print(a, p.nodes[a.node].to_dict(), f"Renamed {a.node} to {a.title!r}")
 
 
 def cmd_connect(a: argparse.Namespace) -> None:
-    p = _load(a.pipeline)
-    _check_node(p, a.source); _check_node(p, a.target)
-    e = p.connect(a.source, a.target, a.port)
-    p.save()
+    with _editing(a.pipeline) as p:
+        _check_node(p, a.source); _check_node(p, a.target)
+        e = p.connect(a.source, a.target, a.port)
     _print(a, e.to_dict(), f"Connected {e.source} → {e.target} ({e.port})")
 
 
 def cmd_disconnect(a: argparse.Namespace) -> None:
-    p = _load(a.pipeline)
-    _check_node(p, a.source); _check_node(p, a.target)
-    p.disconnect(a.source, a.target, a.port)
-    p.save()
+    with _editing(a.pipeline) as p:
+        _check_node(p, a.source); _check_node(p, a.target)
+        p.disconnect(a.source, a.target, a.port)
     _print(a, {"ok": True}, f"Disconnected {a.source} → {a.target}")
 
 
 def cmd_remove(a: argparse.Namespace) -> None:
-    p = _load(a.pipeline)
-    _check_node(p, a.node)
-    removed = p.remove_node(a.node)
-    p.save()
+    with _editing(a.pipeline) as p:
+        _check_node(p, a.node)
+        removed = p.remove_node(a.node)
     _print(a, {"removed": a.node, "edges_removed": [e.to_dict() for e in removed]}, f"Removed {a.node}")
 
 
@@ -229,14 +230,19 @@ def cmd_show(a: argparse.Namespace) -> None:
     states = ex.states()
     data = {
         "path": str(p.path), "name": p.name,
-        "nodes": [{**n.to_dict(), "state": _state_dict(p, states[n.id])} for n in p.nodes.values()],
+        "nodes": [{**n.to_dict(), "state": hl.node_record(p, states[n.id])} for n in p.nodes.values()],
         "edges": [e.to_dict() for e in p.edges],
+        "answers": [a.to_dict() for a in p.answers],
         "problems": p.problems(),
     }
     if a.json:
         _print(a, data)
         return
     print(f"{p.name}  ({p.path})")
+    for ans in p.answers:
+        st = states.get(ans.terminal)
+        mark = {"done": "✓", "failed": "✗"}.get(st.status if st else "", "·")
+        print(f"  {mark} ★ {ans.title} [{ans.id}] → {ans.terminal}")
     for n in p.nodes.values():
         nt = registry.get(n.type)
         ins = p.inputs_of(n.id)
@@ -249,6 +255,97 @@ def cmd_show(a: argparse.Namespace) -> None:
             print(f"  ! {pr}")
 
 
+def _abs(files: list[str] | None) -> list[str]:
+    """Files named on the command line are relative to where the command runs, not to the project."""
+    return [str(Path(f).expanduser().resolve()) for f in files or []]
+
+
+def cmd_understand(a: argparse.Namespace) -> None:
+    p = _with_files(a.pipeline, a.file)
+    m = hl.data_model(p, deep=not a.quick)
+    data = m.to_dict()
+    if a.json:
+        _print(a, data); return
+    for t in data["tables"]:
+        rows = f"{t['rows']:,} rows" if t["rows"] is not None else f"{t['sampled']:,}+ rows"
+        print(f"{t['title']} [{t['node']}]  {t['shape']}, {rows}" + (f", time {t['time']} {t['start']} → {t['end']}" if t["time"] else ""))
+        for c in t["columns"]:
+            extra = f" ({c['unit']})" if c["unit"] else ""
+            print(f"    {c['name']}{extra}: {c['role']}" + (f", {len(c['values'])} values" if c["values"] else ""))
+    for r in data["relations"]:
+        print(f"  {r['kind']}: {r['why']}")
+    for nid, why in data["skipped"].items():
+        print(f"  could not read {nid}: {why}")
+
+
+def cmd_suggest(a: argparse.Namespace) -> None:
+    p = _with_files(a.pipeline, a.file)
+    sugs = hl.suggestions(p, a.focus)
+    if a.build is not None:
+        if not 0 <= a.build < len(sugs):
+            raise CliError(f"There are {len(sugs)} suggestions (numbered from 0)")
+        with _editing(a.pipeline) as p:
+            out = hl.build_answer(p, sugs[a.build]["spec"])
+    if a.build is not None:
+        _print(a, out, f"Built “{out['title']}” as {out['id']}, with its result in step {out['terminal']}. Use dancr run to compute it.")
+        return
+    _print(a, sugs, "\n".join(f"{s['index']}. {s['title']}  — {s['why']}" for s in sugs) or "Nothing to suggest yet. Add a data file first.")
+
+
+def cmd_ask(a: argparse.Namespace) -> None:
+    with _editing(a.pipeline) as p:                # the files are added even when the question is not understood
+        hl.add_files(p, _abs(a.file))
+        out = hl.ask_question(p, a.question, build=not a.dry_run)
+    q = out["question"]
+    if not q["ok"]:
+        if a.json:
+            print(json.dumps({"error": q["message"], "unknown": q["unknown"], "hints": q["hints"]}))
+            sys.exit(EXIT_ERROR)
+        raise CliError(q["message"])
+    if a.dry_run:
+        _print(a, out, f"Would build “{q['title']}”: " + ", ".join(c["text"] for c in q["chips"]))
+        return
+    ans = out["answer"]
+    lines = [f"Built “{ans['title']}” as {ans['id']}, with its result in step {ans['terminal']}. Use dancr run to compute it."]
+    lines += [f"  assumed: {x['text']}" for x in ans["assumptions"]]
+    lines += [f"  note: “{x['text']}” could also mean " + ", ".join(c["label"] for c in x["choices"]) for x in q["ambiguous"]]
+    _print(a, out, "\n".join(lines))
+
+
+def cmd_answer(a: argparse.Namespace) -> None:
+    p = _load(a.pipeline)
+    if not a.answer:
+        _print(a, [x.to_dict() for x in p.answers], "\n".join(f"{x.id}: {x.title} → {x.terminal}" for x in p.answers) or "No answers yet")
+        return
+    ans = p.answer(a.answer)
+    if ans is None:
+        raise CliError(f"No answer called {a.answer!r}. Answers: {[x.id for x in p.answers]}")
+    if a.remove:
+        from .core import answers
+        with _editing(a.pipeline) as p:
+            gone = answers.remove(p, a.answer, remove_steps=a.steps)
+        _print(a, {"removed": a.answer, "steps_removed": gone}, f"Deleted {a.answer}" + (f" and {len(gone)} steps" if gone else ""))
+        return
+    if a.set is not None and not a.set:
+        raise CliError("Say what to change with --set KEY=VALUE, for example stat=mean or every=1d")
+    if a.set or a.choose is not None:
+        with _editing(a.pipeline) as p:
+            if a.choose is not None:
+                out = hl.change_answer(p, a.answer, assumption=a.choose[0], choice=a.choose[1] if len(a.choose) > 1 else 0)
+            else:
+                kv = _parse_kv(a.set)
+                out = None
+                for k, v in kv.items():
+                    out = hl.change_answer(p, a.answer, k, None if v in ("", None) else v)
+        _print(a, out, f"Changed {a.answer}. It's now “{out['title']}”")
+        return
+    data = ans.to_dict()
+    text = [f"{ans.title} [{ans.id}] → {ans.terminal}", f"  question: {json.dumps(ans.spec)}"]
+    text += [f"  assumption {i}: {x['text']}" + "".join(f"\n      choice {j}: {c['label']}" for j, c in enumerate(x.get("choices") or []))
+             for i, x in enumerate(ans.assumptions)]
+    _print(a, data, "\n".join(text))
+
+
 def cmd_run(a: argparse.Namespace) -> None:
     p = _load(a.pipeline)
     for nid in a.nodes or []:
@@ -258,61 +355,58 @@ def cmd_run(a: argparse.Namespace) -> None:
     if problems and not a.json:
         for pr in problems:
             print(f"! {pr}", file=sys.stderr)
-    events: list[dict[str, Any]] = []
-
     def on_event(e: dict[str, Any]) -> None:
+        if a.json:
+            return
         if e["type"] in ("node_finished", "node_failed", "node_cached"):
             st: NodeState = e["state"]
-            if a.json:
-                events.append({"event": e["type"], **_state_dict(p, st)})
-            else:
-                print(_fmt_state(st, p.nodes[st.node_id].title), flush=True)
-        elif e["type"] == "node_started" and not a.json and sys.stdout.isatty():
+            print(_fmt_state(st, p.nodes[st.node_id].title), flush=True)
+        elif e["type"] == "node_started" and sys.stdout.isatty():
             print(f"… {p.nodes[e['node']].title}", end="\r", flush=True)
 
     t0 = time.perf_counter()
-    try:
-        res = ex.run(targets=a.nodes or None, on_event=on_event, force=a.force)
-    except ExecutionCancelled:
-        raise CliError("Cancelled")
+    res = ex.run(targets=a.nodes or None, on_event=on_event, force=a.force)
     failed = [s for s in res.values() if s.status == "failed"]
     if a.json:
-        _print(a, {"ok": not failed, "elapsed": time.perf_counter() - t0, "nodes": events,
-                   "problems": problems, "cache_dir": str(ex.cache_dir)})
+        _print(a, hl.run_record(p, ex, res, time.perf_counter() - t0))
     else:
-        print(f"{'Done' if not failed else f'{len(failed)} node(s) failed'} in {time.perf_counter() - t0:.1f}s. Cache: {ex.cache_dir}")
+        print(f"{'Done' if not failed else f'{len(failed)} step(s) failed'} in {time.perf_counter() - t0:.1f}s. Cache: {ex.cache_dir}")
+        rec = hl.run_record(p, ex, res, 0.0)
+        if rec.get("headline"):
+            print(f"→ {rec['headline']}")
     if failed:
-        sys.exit(1)
+        sys.exit(EXIT_FAILED)
 
 
 def cmd_status(a: argparse.Namespace) -> None:
     p = _load(a.pipeline)
     ex = Executor(p)
     nodes = [_check_node(p, a.node)] if a.node else list(p.nodes)
-    states = {n: ex.state(n) for n in nodes}
-    if a.json:
-        _print(a, [_state_dict(p, s) for s in states.values()])
+    memo: dict[str, str] = {}                   # each step's hash once, not again for every step below it
+    states = {n: ex.state(n, memo) for n in nodes}
+    if a.json:                                  # one step: its record (as MCP node_status); all: keyed by id
+        _print(a, hl.node_record(p, states[a.node]) if a.node else {n: hl.node_record(p, s) for n, s in states.items()})
         return
     for n, s in states.items():
         print(_fmt_state(s, p.nodes[n].title))
         for m in s.messages:
             print(f"      {m}")
+        fnd = (s.report or {}).get("finding", {}).get("statement")
+        if fnd:
+            print(f"→ {fnd}")
         if s.report:
             for k, v in s.report.items():
+                if k == "finding":
+                    continue
                 print(f"      {k}: {v}")
 
 
-def _frame(a: argparse.Namespace, p: Pipeline, ex: Executor, node: str) -> pl.LazyFrame:
+def _frame(a: argparse.Namespace, p: Pipeline, ex: Executor, node: str):
+    """A step's output, held while the block reads it (``headless.result_frame``)."""
     _check_node(p, node)
-    st = ex.state(node)
-    if st.status != "done":
-        if getattr(a, "run", False):
-            res = ex.run(targets=[node])
-            if res[node].status != "done":
-                raise CliError(f"{node} failed: {res[node].error}")
-        else:
-            raise CliError(f"{node} has not been run yet (status: {st.status}). Run: dancr run {p.path} {node}   or add --run")
-    return ex.frame(node)
+    if ex.state(node).status != "done" and not getattr(a, "run", False):
+        raise CliError(f"{node} hasn't been run yet (it's {ex.state(node).status}). Run dancr run {p.path} {node}, or add --run")
+    return hl.result_frame(p, ex, node, run=True)
 
 
 def cmd_schema(a: argparse.Namespace) -> None:
@@ -326,7 +420,7 @@ def cmd_schema(a: argparse.Namespace) -> None:
     else:
         sch = ex.schema(a.node)
         if sch is None:
-            raise CliError(f"Cannot work out the columns of {a.node} yet (upstream missing or misconfigured)")
+            raise CliError(f"Can't work out the columns of {a.node} yet. A step before it is missing or not set up.")
         cols = [{"name": n, "dtype": str(d)} for n, d in sch.items()]
         rows = None
     _print(a, {"node": a.node, "rows": rows, "columns": cols},
@@ -334,10 +428,12 @@ def cmd_schema(a: argparse.Namespace) -> None:
 
 
 def cmd_sample(a: argparse.Namespace) -> None:
+    if a.rows < 1 or a.offset < 0:
+        raise CliError("--rows must be at least 1 and --offset at least 0")
     p = _load(a.pipeline)
     ex = Executor(p)
-    lf = _frame(a, p, ex, a.node)
-    df = lf.slice(a.offset, a.rows).collect(engine="streaming")
+    with _frame(a, p, ex, a.node) as lf:
+        df = lf.slice(a.offset, a.rows).collect(engine="streaming")
     if a.json:
         print(df.write_json())
     elif a.csv:
@@ -351,8 +447,8 @@ def cmd_stats(a: argparse.Namespace) -> None:
     from .views.stats import column_summary
     p = _load(a.pipeline)
     ex = Executor(p)
-    lf = _frame(a, p, ex, a.node)
-    df = column_summary(lf, a.columns.split(",") if a.columns else None)
+    with _frame(a, p, ex, a.node) as lf:
+        df = column_summary(lf, a.columns.split(",") if a.columns else None)
     if a.json:
         print(df.write_json())
     else:
@@ -364,39 +460,29 @@ def cmd_chart(a: argparse.Namespace) -> None:
     from .views.render import render_chart
     p = _load(a.pipeline)
     ex = Executor(p)
-    lf = _frame(a, p, ex, a.node)
-    node = p.nodes[a.node]
-    params = dict(node.params) if node.type == "chart" else {}
-    if a.kind:
-        params["kind"] = a.kind
-    if a.x:
-        params["x"] = a.x
-    if a.y:
-        params["series"] = [{"column": c} for c in a.y.split(",")]
-    if a.column:
-        params["column"] = a.column
-    if a.title:
-        params["title"] = a.title
-    params.setdefault("kind", "line")
-    out = render_chart(lf, params, a.out, width=a.width, height=a.height)
+    _check_node(p, a.node)
+    params = hl.chart_params(p.nodes[a.node], a.kind, a.x, a.y.split(",") if a.y else None, a.column, a.title)
+    with _frame(a, p, ex, a.node) as lf:
+        out = render_chart(lf, params, a.out, width=a.width, height=a.height, columns=p.columns, inputs=p.input_values())
     _print(a, {"path": str(out), "params": params}, f"Wrote {out}")
 
 
 def cmd_export(a: argparse.Namespace) -> None:
     p = _load(a.pipeline)
     ex = Executor(p)
-    lf = _frame(a, p, ex, a.node)
     from .core.nodes.outputs import write_table
     out = Path(a.out)
-    write_table(lf, out)
+    with _frame(a, p, ex, a.node) as lf:
+        write_table(lf, out)
     _print(a, {"path": str(out)}, f"Wrote {out}")
 
 
 def cmd_clear_cache(a: argparse.Namespace) -> None:
     p = _load(a.pipeline)
     ex = Executor(p)
-    size = ex.cache_size()
+    before = ex.cache_size()
     ex.clear_cache()
+    size = before - ex.cache_size()         # results another DANCR program is using right now are kept
     _print(a, {"cleared_bytes": size}, f"Cleared {size / 1e6:.1f} MB")
 
 
@@ -418,8 +504,14 @@ def launch_gui(pipeline: str | None, wait: bool = False) -> None:
         rotate_if_large(stdio)
         out = open(stdio, "a")
     except OSError:
-        out = subprocess.DEVNULL
-    subprocess.Popen(args, start_new_session=True, stdout=out, stderr=out)
+        out = None
+    try:
+        # the window gets no stdin: under `dancr mcp` ours is the protocol pipe
+        subprocess.Popen(args, start_new_session=True, stdin=subprocess.DEVNULL,
+                         stdout=out or subprocess.DEVNULL, stderr=out or subprocess.DEVNULL)
+    finally:
+        if out is not None:
+            out.close()                             # the window has its own copy of the handle
 
 
 def cmd_gui(a: argparse.Namespace) -> None:
@@ -447,7 +539,7 @@ def cmd_log(a: argparse.Namespace) -> None:
 
 def cmd_mcp(a: argparse.Namespace) -> None:
     from .mcp_server import main as mcp_main
-    mcp_main()
+    mcp_main(a.root)
 
 
 def cmd_synth(a: argparse.Namespace) -> None:
@@ -459,72 +551,89 @@ def cmd_synth(a: argparse.Namespace) -> None:
 
 
 def cmd_template(a: argparse.Namespace) -> None:
-    from .core.samples import build_template, write_sample, TEMPLATES
-    if a.list or not a.pipeline:
+    from .core.samples import TEMPLATES
+    if a.list or not a.key:
         _print(a, TEMPLATES, "\n".join(f"{t['key']:10} {t['title']} — {t['blurb']}" for t in TEMPLATES)); return
+    if not a.pipeline:
+        raise CliError(f"Name the project file to create, for example dancr template {a.key} my_project.json")
     out = Path(a.pipeline)
-    if out.exists() and not a.force:
-        raise CliError(f"{out} already exists (use --force to overwrite)")
-    data = Path(a.data) if a.data else write_sample(out.parent)
-    pipe = Pipeline(out.stem); pipe.path = out.resolve()
-    build_template(a.key, pipe, data.resolve())
-    pipe.save(out)
-    _print(a, {"path": str(out), "data": str(data), "nodes": list(pipe.nodes)}, f"Built the {a.key!r} template in {out} on {data}")
+    from .core.samples import check_template
+    check_template(a.key)                           # before anything is written, the lock included
+    with hl.project_lock(out):
+        if out.exists() and not a.force:
+            raise CliError(f"{out} already exists. Use --force to overwrite it")
+        pipe, data = hl.build_template(out, a.key, Path(a.data).resolve() if a.data else None)   # --data: relative to here
+    _print(a, {"path": str(out), "data": str(data), "nodes": list(pipe.nodes)}, f"Built the {a.key!r} template in {out}, using the data in {data}")
 
 
 def cmd_inputs(a: argparse.Namespace) -> None:
-    p = _load(a.pipeline)
+    if a.remove or a.name:
+        with _editing(a.pipeline) as p:
+            if a.remove:
+                if not any(i.name.lower() == a.remove.lower() for i in p.inputs):
+                    raise CliError(f"No input called {a.remove!r}. Inputs: {[i.name for i in p.inputs]}")
+                p.remove_input(a.remove)
+            else:
+                exists = any(i.name.lower() == a.name.lower() for i in p.inputs)
+                if a.value is None and not exists:
+                    raise CliError(f"Give {a.name!r} a value, for example dancr inputs {a.pipeline} {a.name!r} 12.5")
+                p.set_input(a.name, a.value, a.unit or None, a.note or None)
+    else:
+        p = _load(a.pipeline)                       # only listing them: no lock, so a read-only folder works
     if a.remove:
-        p.remove_input(a.remove); p.save()
         _print(a, {"removed": a.remove}, f"Removed input {a.remove!r}"); return
-    if a.name:
-        p.set_input(a.name, a.value, a.unit, a.note); p.save()
     rows = [{"name": i.name, "value": i.value, "unit": i.unit, "note": i.note} for i in p.inputs]
     _print(a, rows, "\n".join(f"{r['name']:24} {r['value']!s:>12} {r['unit']:8} {r['note']}" for r in rows) or "no inputs")
 
 
 def cmd_columns(a: argparse.Namespace) -> None:
-    p = _load(a.pipeline)
     if a.name:
-        p.set_column_meta(a.name, a.label, a.unit); p.save()
+        with _editing(a.pipeline) as p:
+            p.set_column_meta(a.name, a.label, a.unit)
+    else:
+        p = _load(a.pipeline)
     _print(a, p.columns, "\n".join(f"{k:24} label={v.get('label', '')!r} unit={v.get('unit', '')!r}" for k, v in p.columns.items()) or "no column names or units set")
 
 
 # ----------------------------------------------------------------- parser
 def build_parser() -> argparse.ArgumentParser:
-    kv = ("KEY=VALUE settings: values that look like JSON (numbers, true/false/null, [lists], {objects}) are parsed as JSON, "
-          "so sheet=1 is the number 1; quote it as sheet='\"1\"' for the text 1. Anything else is text.")
-    ap = argparse.ArgumentParser(prog="dancr", description="DANCR: visual data pipelines for big tables. Headless CLI.", epilog=kv)
+    kv = ("In KEY=VALUE settings, values that look like JSON (numbers, true/false/null, [lists], {objects}) are read as JSON, "
+          "so sheet=1 is the number 1. For the text 1, quote it as sheet='\"1\"'. Anything else is text.")
+    ap = _Parser(prog="dancr", description="Build, run and inspect DANCR projects without opening the window.", epilog=kv)
     ap.add_argument("--version", action="version", version=f"dancr {__version__}")
     ap.add_argument("--json", action="store_true", help="machine-readable output")
-    sub = ap.add_subparsers(dest="cmd", required=True)
+    sub = ap.add_subparsers(dest="cmd", required=True, parser_class=_Parser)
 
-    s = sub.add_parser("nodes", help="list node types and their settings"); s.add_argument("type", nargs="?"); s.add_argument("-v", "--verbose", action="store_true"); s.set_defaults(fn=cmd_nodes)
+    s = sub.add_parser("nodes", help="list step types and their settings"); s.add_argument("type", nargs="?"); s.add_argument("-v", "--verbose", action="store_true"); s.set_defaults(fn=cmd_nodes)
     s = sub.add_parser("formulas", help="list formula functions"); s.set_defaults(fn=cmd_formulas)
-    s = sub.add_parser("new", help="create an empty pipeline file"); s.add_argument("pipeline"); s.add_argument("--name"); s.add_argument("--force", action="store_true"); s.set_defaults(fn=cmd_new)
-    s = sub.add_parser("add", help="add a node", epilog=kv); s.add_argument("pipeline"); s.add_argument("type"); s.add_argument("--id"); s.add_argument("--title")
-    s.add_argument("--after", help="connect from this node"); s.add_argument("--port", help="input port on the new node (for combine: left/right)")
-    s.add_argument("--also-after", action="append", help="additional upstream nodes (e.g. second input of combine)")
+    s = sub.add_parser("new", help="create an empty project file"); s.add_argument("pipeline"); s.add_argument("--name"); s.add_argument("--force", action="store_true"); s.set_defaults(fn=cmd_new)
+    s = sub.add_parser("add", help="add a step", epilog=kv); s.add_argument("pipeline"); s.add_argument("type"); s.add_argument("--id"); s.add_argument("--title")
+    s.add_argument("--after", help="connect from this step"); s.add_argument("--port", help="which input of the new step to connect (left or right for combine)")
+    s.add_argument("--also-after", action="append", help="more steps to connect from (for example the second input of combine)")
     s.add_argument("--set", action="append", metavar="KEY=VALUE", help="a setting (see below)"); s.add_argument("--params", help="JSON object of settings"); s.set_defaults(fn=cmd_add)
-    s = sub.add_parser("set", help="change a node's settings", epilog=kv); s.add_argument("pipeline"); s.add_argument("node"); s.add_argument("set", nargs="*", metavar="KEY=VALUE", help="settings to change (see below)"); s.add_argument("--params", help="JSON object of settings"); s.set_defaults(fn=cmd_set)
-    s = sub.add_parser("rename", help="rename a node"); s.add_argument("pipeline"); s.add_argument("node"); s.add_argument("title"); s.set_defaults(fn=cmd_rename)
-    s = sub.add_parser("connect", help="connect two nodes"); s.add_argument("pipeline"); s.add_argument("source"); s.add_argument("target"); s.add_argument("--port"); s.set_defaults(fn=cmd_connect)
+    s = sub.add_parser("set", help="change a step's settings", epilog=kv); s.add_argument("pipeline"); s.add_argument("node"); s.add_argument("set", nargs="*", metavar="KEY=VALUE", help="settings to change (see below)"); s.add_argument("--params", help="JSON object of settings"); s.set_defaults(fn=cmd_set)
+    s = sub.add_parser("rename", help="rename a step"); s.add_argument("pipeline"); s.add_argument("node"); s.add_argument("title"); s.set_defaults(fn=cmd_rename)
+    s = sub.add_parser("connect", help="connect two steps"); s.add_argument("pipeline"); s.add_argument("source"); s.add_argument("target"); s.add_argument("--port"); s.set_defaults(fn=cmd_connect)
     s = sub.add_parser("disconnect", help="remove a connection"); s.add_argument("pipeline"); s.add_argument("source"); s.add_argument("target"); s.add_argument("--port"); s.set_defaults(fn=cmd_disconnect)
-    s = sub.add_parser("remove", help="delete a node"); s.add_argument("pipeline"); s.add_argument("node"); s.set_defaults(fn=cmd_remove)
-    s = sub.add_parser("show", help="print the pipeline and node statuses"); s.add_argument("pipeline"); s.set_defaults(fn=cmd_show)
-    s = sub.add_parser("run", help="execute the pipeline (or just some nodes and what they need)"); s.add_argument("pipeline"); s.add_argument("nodes", nargs="*"); s.add_argument("--force", action="store_true", help="ignore the cache"); s.set_defaults(fn=cmd_run)
-    s = sub.add_parser("status", help="node status, messages and reports"); s.add_argument("pipeline"); s.add_argument("node", nargs="?"); s.set_defaults(fn=cmd_status)
-    s = sub.add_parser("schema", help="columns of a node's output"); s.add_argument("pipeline"); s.add_argument("node"); s.set_defaults(fn=cmd_schema)
-    s = sub.add_parser("sample", help="print rows of a node's output"); s.add_argument("pipeline"); s.add_argument("node"); s.add_argument("--rows", type=int, default=20); s.add_argument("--offset", type=int, default=0); s.add_argument("--csv", action="store_true"); s.add_argument("--run", action="store_true", help="run first if needed"); s.set_defaults(fn=cmd_sample)
-    s = sub.add_parser("stats", help="summary statistics of a node's output"); s.add_argument("pipeline"); s.add_argument("node"); s.add_argument("--columns"); s.add_argument("--run", action="store_true"); s.set_defaults(fn=cmd_stats)
-    s = sub.add_parser("chart", help="render a chart of a node's output to PNG"); s.add_argument("pipeline"); s.add_argument("node"); s.add_argument("--out", required=True)
+    s = sub.add_parser("remove", help="delete a step"); s.add_argument("pipeline"); s.add_argument("node"); s.set_defaults(fn=cmd_remove)
+    s = sub.add_parser("show", help="print the project and the status of each step"); s.add_argument("pipeline"); s.set_defaults(fn=cmd_show)
+    s = sub.add_parser("understand", help="describe the project's tables: column roles, table shapes, how tables relate"); s.add_argument("pipeline"); s.add_argument("--file", action="append", help="add a data file first (repeatable)"); s.add_argument("--quick", action="store_true", help="from a sample only, without reading every row"); s.set_defaults(fn=cmd_understand)
+    s = sub.add_parser("suggest", help="answers DANCR can give for the project's tables, best first"); s.add_argument("pipeline"); s.add_argument("--file", action="append", help="add a data file first (repeatable)"); s.add_argument("--focus", help="only answers about this step's output"); s.add_argument("--build", type=int, metavar="N", help="build suggestion N"); s.set_defaults(fn=cmd_suggest)
+    s = sub.add_parser("ask", help="answer a question typed in plain words (for example \"total sales by region\")"); s.add_argument("pipeline"); s.add_argument("question"); s.add_argument("--file", action="append", help="add a data file first (repeatable)"); s.add_argument("--dry-run", action="store_true", help="show how the question is read without building it"); s.set_defaults(fn=cmd_ask)
+    s = sub.add_parser("answer", help="list answers, show one, change it or delete it"); s.add_argument("pipeline"); s.add_argument("answer", nargs="?"); s.add_argument("--set", nargs="*", metavar="KEY=VALUE", help="change a chip, for example stat=mean every=1d"); s.add_argument("--choose", type=int, nargs="+", metavar="N", help="take alternative M (default 0) of assumption N"); s.add_argument("--remove", action="store_true"); s.add_argument("--steps", action="store_true", help="with --remove, also delete the steps that only this answer uses"); s.set_defaults(fn=cmd_answer)
+    s = sub.add_parser("run", help="run the project, or only some steps and what they need"); s.add_argument("pipeline"); s.add_argument("nodes", nargs="*"); s.add_argument("--force", action="store_true", help="ignore the cache"); s.set_defaults(fn=cmd_run)
+    s = sub.add_parser("status", help="step status, messages and reports"); s.add_argument("pipeline"); s.add_argument("node", nargs="?"); s.set_defaults(fn=cmd_status)
+    s = sub.add_parser("schema", help="columns of a step's output"); s.add_argument("pipeline"); s.add_argument("node"); s.set_defaults(fn=cmd_schema)
+    s = sub.add_parser("sample", help="print rows of a step's output"); s.add_argument("pipeline"); s.add_argument("node"); s.add_argument("--rows", type=int, default=20); s.add_argument("--offset", type=int, default=0); s.add_argument("--csv", action="store_true"); s.add_argument("--run", action="store_true", help="run first if needed"); s.set_defaults(fn=cmd_sample)
+    s = sub.add_parser("stats", help="summary statistics of a step's output"); s.add_argument("pipeline"); s.add_argument("node"); s.add_argument("--columns"); s.add_argument("--run", action="store_true"); s.set_defaults(fn=cmd_stats)
+    s = sub.add_parser("chart", help="draw a chart of a step's output to a PNG file"); s.add_argument("pipeline"); s.add_argument("node"); s.add_argument("--out", required=True)
     s.add_argument("--kind", choices=["line", "scatter", "histogram", "bar"]); s.add_argument("--x"); s.add_argument("--y", help="comma-separated columns"); s.add_argument("--column"); s.add_argument("--title")
     s.add_argument("--width", type=int, default=1400); s.add_argument("--height", type=int, default=700); s.add_argument("--run", action="store_true"); s.set_defaults(fn=cmd_chart)
-    s = sub.add_parser("export", help="write a node's output to csv/parquet/xlsx"); s.add_argument("pipeline"); s.add_argument("node"); s.add_argument("out"); s.add_argument("--run", action="store_true"); s.set_defaults(fn=cmd_export)
+    s = sub.add_parser("export", help="write a step's output to csv/parquet/xlsx"); s.add_argument("pipeline"); s.add_argument("node"); s.add_argument("out"); s.add_argument("--run", action="store_true"); s.set_defaults(fn=cmd_export)
     s = sub.add_parser("clear-cache", help="delete cached outputs"); s.add_argument("pipeline"); s.set_defaults(fn=cmd_clear_cache)
     s = sub.add_parser("gui", help="run the window in this process"); s.add_argument("pipeline", nargs="?"); s.set_defaults(fn=cmd_gui)
-    s = sub.add_parser("open", help="open the GUI (optionally on a pipeline)"); s.add_argument("pipeline", nargs="?"); s.add_argument("--wait", action="store_true"); s.set_defaults(fn=cmd_open)
-    s = sub.add_parser("mcp", help="start the MCP server (stdio) for AI agents"); s.set_defaults(fn=cmd_mcp)
+    s = sub.add_parser("open", help="open the window, optionally on a project"); s.add_argument("pipeline", nargs="?"); s.add_argument("--wait", action="store_true"); s.set_defaults(fn=cmd_open)
+    s = sub.add_parser("mcp", help="start the MCP server (stdio) for AI agents"); s.add_argument("--root", help="the folder agents may create projects in (default: the current folder)"); s.set_defaults(fn=cmd_mcp)
     s = sub.add_parser("log", help="print the log file path and its last lines"); s.add_argument("--lines", type=int, default=40); s.set_defaults(fn=cmd_log)
     s = sub.add_parser("template", help="build a starter project (on sample data unless --data is given)"); s.add_argument("key", nargs="?"); s.add_argument("pipeline", nargs="?"); s.add_argument("--data"); s.add_argument("--list", action="store_true"); s.add_argument("--force", action="store_true"); s.set_defaults(fn=cmd_template)
     s = sub.add_parser("inputs", help="list, set or remove named inputs (values usable in formulas, filters and limits)"); s.add_argument("pipeline"); s.add_argument("name", nargs="?"); s.add_argument("value", nargs="?"); s.add_argument("--unit", default=""); s.add_argument("--note", default=""); s.add_argument("--remove"); s.set_defaults(fn=cmd_inputs)
@@ -534,7 +643,13 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> None:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv[:1] == ["pdf-helper"]:                      # internal: a report's PDF written in its own process
+        from .views.pdf import _main
+        sys.exit(_main(argv[1:]))
     ap = build_parser()
+    if "--json" in argv[1:]:                            # --json is accepted after the command too
+        argv = ["--json", *[x for x in argv if x != "--json"]]
     a = ap.parse_args(argv)
     if a.cmd != "gui":                                  # the window configures its own logging
         import logging
@@ -542,19 +657,22 @@ def main(argv: list[str] | None = None) -> None:
         configure(stderr_level=logging.WARNING)         # file as usual, warnings to stderr, never stdout
     try:
         a.fn(a)
+    except hl.StepFailed as e:
+        _fail(a, str(e), EXIT_FAILED)
     except (CliError, PipelineError, ValueError, OSError, pl.exceptions.PolarsError) as e:
-        if a.json:
-            print(json.dumps({"error": str(e)}))
-        else:
-            print(f"error: {e}", file=sys.stderr)
-        sys.exit(2)
-    except (KeyError, TypeError, AttributeError) as e:
-        msg = str(e).strip("'\"") or type(e).__name__
-        if a.json:
-            print(json.dumps({"error": msg}))
-        else:
-            print(f"error: {msg}", file=sys.stderr)
-        sys.exit(2)
+        _fail(a, str(e), EXIT_ERROR)
+    except Exception as e:  # noqa: BLE001 - anything else is a DANCR bug: say so and keep the traceback
+        import logging
+        logging.getLogger("dancr.cli").exception("dancr %s failed", a.cmd)
+        _fail(a, f"internal error ({type(e).__name__}: {e}). The details are in the log (see dancr log).", EXIT_BUG)
+
+
+def _fail(a: argparse.Namespace, msg: str, code: int) -> None:
+    if a.json:
+        print(json.dumps({"error": msg}))
+    else:
+        print(f"error: {msg}", file=sys.stderr)
+    sys.exit(code)
 
 
 if __name__ == "__main__":

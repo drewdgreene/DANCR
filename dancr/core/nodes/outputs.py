@@ -8,7 +8,8 @@ import polars as pl
 
 from ..params import Param
 from ..registry import NodeType, Ctx, NodeResult, registry
-from ._common import first_input, schema_of, require_column
+from ._common import private_temp, first_input, schema_of, require_column
+from ..findings import finding
 
 CHART_KINDS = [("line", "Line over time / x"), ("scatter", "Scatter (x vs y)"), ("histogram", "Histogram"), ("bar", "Bar (category totals)")]
 
@@ -16,8 +17,29 @@ CHART_KINDS = [("line", "Line over time / x"), ("scatter", "Scatter (x vs y)"), 
 def _chart(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, Any]) -> NodeResult:
     """Validation only: every column the chart names must exist (the drawing happens in the views)."""
     lf = first_input(inputs)
-    schema = schema_of(lf)
+    validate_chart(schema_of(lf), params)
     kind = params.get("kind", "line")
+    bits: list[str] = []
+    if kind in ("line", "scatter"):
+        if params.get("x"):
+            bits.append(f"over {params['x']}")
+        names = [s.get("column") for s in (params.get("series") or []) if s.get("column")]
+        if names:
+            bits.append(", ".join(names))
+    elif kind == "histogram" and params.get("column"):
+        bits.append(str(params["column"]))
+    elif kind == "bar" and params.get("category"):
+        bits.append(f"{params.get('stat') or 'mean'} of {params.get('value') or 'rows'} by {params['category']}")
+    what = " ".join(b for b in bits if b)
+    said = f"{kind.capitalize()} chart" + (f": {what}" if what else "")
+    return NodeResult(lf, report={"kind": kind, "finding": finding("summary", said, exact=True)})
+
+
+def validate_chart(schema: dict[str, pl.DataType], params: dict[str, Any]) -> None:
+    """Every column a chart names must exist; raises a plain-English ValueError otherwise."""
+    kind = params.get("kind", "line")
+    if kind not in {k for k, _ in CHART_KINDS}:
+        raise ValueError(f"Unknown chart kind {kind!r}. Use one of: {', '.join(k for k, _ in CHART_KINDS)}")
     if kind in ("line", "scatter"):
         if params.get("x"):
             require_column(schema, params["x"], "x column")
@@ -35,12 +57,11 @@ def _chart(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, An
             require_column(schema, params["value"], "value column")
     if kind in ("line", "scatter", "histogram") and params.get("split_by"):
         require_column(schema, params["split_by"], "split-by column")
-    return NodeResult(lf)
 
 
 registry.register(NodeType(
     key="chart", label="Chart", category="Share", icon="◢",
-    description="Draw the data. Big data is summarised per pixel so even 100 million points draw instantly.",
+    description="Draw the data as a chart. Large tables are summarised per pixel, so even 100 million points draw quickly.",
     apply=_chart,
     materialize=False,
     summary=lambda p: f"{p.get('kind', 'line')}: {', '.join(s.get('column', '') for s in (p.get('series') or []))}",
@@ -54,9 +75,12 @@ registry.register(NodeType(
         Param("value", "Value", "column", column_group="numeric", visible_when={"kind": "bar"}),
         Param("stat", "Statistic", "choice", default="mean", visible_when={"kind": "bar"},
               choices=[("mean", "average"), ("sum", "total"), ("count", "count"), ("min", "minimum"), ("max", "maximum"), ("median", "median")]),
-        Param("color_by", "Colour by", "column", visible_when={"kind": ["line", "scatter"]}, help="A category column; one colour per value"),
+        Param("error", "Error bars", "choice", default="", visible_when={"kind": "bar"},
+              choices=[("", "none"), ("se", "± standard error"), ("sd", "± standard deviation"), ("ci95", "95% confidence interval")],
+              help="With averages, a bar for each group's uncertainty; the bars keep the order the groups appear in"),
+        Param("color_by", "Colour by", "column", visible_when={"kind": ["line", "scatter"]}, help="A category column. Each value gets its own colour"),
         Param("split_by", "Split into panels by", "column", visible_when={"kind": ["line", "scatter", "histogram"]},
-              help="A category column; one panel per value, stacked with a shared X axis"),
+              help="A category column. Each value gets its own panel, stacked on a shared X axis"),
         Param("limits", "Limit lines", "limits", default=[], visible_when={"kind": ["line", "scatter", "histogram"]}),
         Param("fit", "Fitted curve", "choice", default="", visible_when={"kind": "scatter"},
               choices=[("", "none"), ("linear", "straight line"), ("saturating", "levels off"), ("exponential", "exponential"), ("power", "power law"), ("logarithmic", "logarithmic"), ("polynomial", "curve (polynomial)")]),
@@ -74,11 +98,11 @@ def _export(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, A
     path = (params.get("path") or "").strip()
     if not path:
         raise ValueError("Choose where to save the file")
-    out = ctx.resolve(path)
+    out = ctx.resolve_output(path)
     if ctx.preview:
-        return NodeResult(lf, messages=[f"Will write {out.name} when the pipeline runs"])
+        return NodeResult(lf, messages=[f"Will write {out.name} when the project runs"])
     write_table(lf, out)
-    return NodeResult(lf, messages=[f"Saved {out}"], report={"path": str(out)})
+    return NodeResult(lf, messages=[f"Saved {out}"], report={"path": str(out)}, files=[out])
 
 
 EXCEL_MAX_ROWS = 1_048_576
@@ -89,7 +113,7 @@ def excel_frame(lf: pl.LazyFrame, what: str = "This table") -> pl.DataFrame:
     from ..dtypes import strip_time_zones
     n = int(lf.select(pl.len()).collect(engine="streaming")[0, 0])
     if n > EXCEL_MAX_ROWS:
-        raise ValueError(f"{what} has {n:,} rows; Excel sheets hold at most {EXCEL_MAX_ROWS:,}. Save as CSV or Parquet, or use 'Average over time' first.")
+        raise ValueError(f"{what} has {n:,} rows, but an Excel sheet holds at most {EXCEL_MAX_ROWS:,}. Save as CSV or Parquet, or use 'Average over time' first.")
     return strip_time_zones(lf.collect(engine="streaming"))
 
 
@@ -101,7 +125,7 @@ def write_table(lf: pl.LazyFrame, out: Path) -> None:
     ext = out.suffix.lower()
     if ext not in (".parquet", ".pq", ".xlsx", ".csv", ".txt", ".tsv"):
         raise ValueError("Use a .csv, .tsv, .txt, .parquet or .xlsx file name")
-    tmp = out.with_name(f".{out.name}.{os.getpid()}.tmp{ext}")
+    tmp = private_temp(out)
     try:
         if ext in (".parquet", ".pq"):
             lf.sink_parquet(tmp)
@@ -119,6 +143,7 @@ registry.register(NodeType(
     description="Write the table to CSV, Excel or Parquet.",
     apply=_export,
     kind="sink",
+    materialize=False,      # the table is the upstream result; keeping a second copy in the cache wastes the disk
     summary=lambda p: Path(p.get("path") or "").name or "no file chosen",
     params=[Param("path", "Save as", "path", required=True, help=".csv, .tsv, .xlsx or .parquet")],
 ))

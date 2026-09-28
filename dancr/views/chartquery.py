@@ -10,7 +10,8 @@ import numpy as np
 import polars as pl
 
 from . import lod
-from ..core.expr import _kind_of_dtype, TIME, NUM
+from ..core.expr import kind_of_dtype, TIME, NUM
+from ..core.dtypes import resolve_number
 
 MAX_PANELS = 8
 
@@ -29,6 +30,7 @@ class ChartData:
     scatter: lod.ScatterData | None = None
     groups: list[tuple[str, Any]] | None = None   # colour-by: (value, LineData | ScatterData)
     fits: list[tuple[Any, np.ndarray | None, np.ndarray | None]] = field(default_factory=list)   # (Fit, xs, ys) or (message, None, None)
+    note: str = ""                          # what is not shown (colour-by values beyond the most common ones)
     mean: float | None = None
     hist: lod.HistData | None = None
     bar: lod.BarData | None = None
@@ -44,14 +46,27 @@ class ChartData:
     def summary(self) -> str:
         if self.kind == "line":
             datas = [g for _, g in self.groups] if self.groups else ([self.line] if self.line else [])
-            rows_in = sum(d.rows_in_range for d in datas); total = sum(d.total_rows for d in datas)
+            rows_in = sum(d.rows_in_range for d in datas)
+            total = max((d.total_rows for d in datas), default=0) if self.groups else sum(d.total_rows for d in datas)   # every group sees the whole table's count
             mode = "envelope" if any(d.mode == "envelope" for d in datas) else "raw"
-            return f"{rows_in:,} of {total:,} rows in view · {'min/max per pixel' if mode == 'envelope' else 'every point'}"
+            return (f"{rows_in:,} of {total:,} rows in view · {'min/max per pixel' if mode == 'envelope' else 'every point'}"
+                    + (f" · {self.note}" if self.note else ""))
         if self.kind == "scatter":
             return f"{self.scatter.rows:,} points" + (" as density" if self.scatter.mode == "density" else "")
         if self.kind == "hist":
             return f"{self.hist.rows:,} values · {len(self.hist.counts)} bins"
-        return f"{len(self.bar.labels)} categories"
+        shown = len(self.bar.labels)
+        return f"{shown} categories" + (f" (the top {shown} of {self.bar.total:,})" if self.bar.total > shown else "")
+
+
+def _group_label(value: Any) -> str:
+    return "(blank)" if value is None else str(value)
+
+
+def _others_note(column: str, others: int, rows: int) -> str:
+    if not others:
+        return ""
+    return f"{others:,} less common value{'s' if others != 1 else ''} of {column} not shown ({rows:,} rows)"
 
 
 def limit_values(params: dict[str, Any], inputs: dict[str, Any] | None) -> list[tuple[float, str]]:
@@ -62,12 +77,11 @@ def limit_values(params: dict[str, Any], inputs: dict[str, Any] | None) -> list[
         if v in (None, ""):
             continue
         try:
-            fv = float(str(v).replace(",", ""))
+            fv = resolve_number(v, inputs, "limit")
         except ValueError:
-            key = str(v).strip().lower()
-            fv = next((float(val) for k, val in (inputs or {}).items() if k.lower() == key and isinstance(val, (int, float))), None)
-            if fv is None:
-                continue
+            continue                        # a limit naming an input that no longer exists is not drawn
+        if fv is None:
+            continue
         out.append((fv, l.get("label") or str(v)))
     return out
 
@@ -80,10 +94,10 @@ def resolve_columns(schema: dict[str, pl.DataType], spec: dict[str, Any]) -> tup
     if x is not None and x not in schema:
         x = None
     if x is None and kind == "line":
-        x = next((c for c, dt in schema.items() if _kind_of_dtype(dt) == TIME), None)
+        x = next((c for c, dt in schema.items() if kind_of_dtype(dt) == TIME), None)
     ys = [s["column"] for s in (spec.get("series") or []) if s.get("column") and s["column"] in schema]
     if not ys:
-        ys = [c for c, dt in schema.items() if _kind_of_dtype(dt) == NUM and c != x][:4]
+        ys = [c for c, dt in schema.items() if kind_of_dtype(dt) == NUM and c != x][:4]
     return x, ys
 
 
@@ -93,7 +107,9 @@ def _mean(lf: pl.LazyFrame, col: str) -> float | None:
 
 
 def _filter_group(lf: pl.LazyFrame, col: str, value: Any) -> pl.LazyFrame:
-    return lf.filter(pl.col(col).cast(pl.Utf8) == str(value))
+    """The rows of one group, matched as values (as text, a true/false column reads "true" in Polars but
+    "True" in Python, and dates and numbers have several spellings)."""
+    return lf.filter(pl.col(col).is_null() if value is None else pl.col(col) == pl.lit(value))
 
 
 def query_one(lf: pl.LazyFrame, schema: dict[str, pl.DataType], spec: dict[str, Any], *, x_range: tuple[float, float] | None = None,
@@ -115,10 +131,14 @@ def query_one(lf: pl.LazyFrame, schema: dict[str, pl.DataType], spec: dict[str, 
         if key not in bounds:
             bounds[key] = lod.x_bounds(whole, x)
         cd = ChartData("line", x, ys)
-        if color_by:
-            cd.groups = [(str(g), lod.line_data(_filter_group(lf, color_by, g), x, ys[:1], x_range=x_range, width_px=width_px, bounds=bounds[key]))
-                         for g in lod.group_values(lf, color_by)]
-        else:
+        values, others, other_rows = lod.group_values_info(lf, color_by) if color_by else ([], 0, 0)
+        if values:
+            # with no x column the rows are numbered before the groups are taken apart, so each group keeps its rows
+            base = lf if x else lf.with_row_index("__row")
+            cd.groups = [(_group_label(g), lod.line_data(_filter_group(base, color_by, g), x, ys[:1], x_range=x_range, width_px=width_px, bounds=bounds[key]))
+                         for g in values]
+            cd.note = _others_note(color_by, others, other_rows)
+        else:                                          # no colour-by, or no rows to colour
             cd.line = lod.line_data(lf, x, ys, x_range=x_range, width_px=width_px, bounds=bounds[key])
             if spec.get("mean_line"):
                 cd.mean = _mean(lf, ys[0])
@@ -130,9 +150,11 @@ def query_one(lf: pl.LazyFrame, schema: dict[str, pl.DataType], spec: dict[str, 
         w, h = max(1, width_px // 2), max(1, height_px // 2)
         cd = ChartData("scatter", x, ys[:1])
         cd.scatter = lod.scatter_data(lf, x, ys[0], x_range=x_range, width_px=w, height_px=h)
-        if color_by:
-            cd.groups = [(str(g), lod.scatter_data(_filter_group(lf, color_by, g), x, ys[0], x_range=x_range, width_px=w, height_px=h, max_raw=20000))
-                         for g in lod.group_values(lf, color_by)]
+        values, others, other_rows = lod.group_values_info(lf, color_by) if color_by else ([], 0, 0)
+        if values:
+            cd.groups = [(_group_label(g), lod.scatter_data(_filter_group(lf, color_by, g), x, ys[0], x_range=x_range, width_px=w, height_px=h, max_raw=20000))
+                         for g in values]
+            cd.note = _others_note(color_by, others, other_rows)
         if spec.get("fit") and cd.scatter.x_kind != "time":
             from ..core.fits import fit_frame, curve_points
             try:
@@ -153,7 +175,8 @@ def query_one(lf: pl.LazyFrame, schema: dict[str, pl.DataType], spec: dict[str, 
         cat = spec.get("category") or spec.get("x")
         if not cat:
             raise ChartError("A bar chart needs a category column for X")
-        return ChartData("bar", x=cat, ys=[spec["value"]] if spec.get("value") else [], bar=lod.bar_data(lf, cat, spec.get("value"), spec.get("stat", "mean")))
+        return ChartData("bar", x=cat, ys=[spec["value"]] if spec.get("value") else [],
+                         bar=lod.bar_data(lf, cat, spec.get("value"), spec.get("stat", "mean"), error=spec.get("error") or ""))
     raise ChartError(f"Unknown chart type {kind!r}")
 
 
@@ -168,4 +191,14 @@ def query_panels(lf: pl.LazyFrame, schema: dict[str, pl.DataType], spec: dict[st
     groups = lod.group_values(lf, split_by, limit=max_panels) if split_by else []
     if not groups:
         return [(None, query_one(lf, schema, spec, **kw))]
-    return [(str(g), query_one(_filter_group(lf, split_by, g), schema, spec, **kw)) for g in groups]
+    kind = spec.get("kind", "line")
+    if x_range is None and kind in ("histogram", "scatter"):
+        # every panel on one x scale, measured over the whole table: each panel's own extent would put the other
+        # panels' values off screen (the panels share their x axis) and bin each histogram differently
+        col = (spec.get("column") or next((s["column"] for s in (spec.get("series") or []) if s.get("column")), None)) \
+            if kind == "histogram" else resolve_columns(schema, spec)[0]
+        if col and col in schema:
+            lo, hi, _ = lod.x_bounds(lf, col)
+            if hi > lo:
+                kw["x_range"] = (lo, hi)
+    return [(_group_label(g), query_one(_filter_group(lf, split_by, g), schema, spec, **kw)) for g in groups]

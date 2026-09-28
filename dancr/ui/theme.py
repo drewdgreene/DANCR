@@ -13,7 +13,6 @@ CATEGORY_COLORS = {
     "Time": "#059669", "Analyse & model": "#0891b2", "Share": "#475569",
 }
 STATUS_COLORS = {"idle": "#8b8b92", "stale": "#d97706", "running": "#2563eb", "done": "#16a34a", "failed": "#dc2626", "preview": "#7c3aed"}
-SERIES_COLORS = ["#2563eb", "#dc2626", "#16a34a", "#d97706", "#7c3aed", "#0891b2", "#db2777", "#78716c"]
 
 UI_FONTS = ["Adwaita Sans", "Inter", "Noto Sans", "Cantarell", "Segoe UI", "SF Pro Text", "Helvetica Neue", "DejaVu Sans", "Liberation Sans", "Arial"]
 MONO_FONTS = ["Adwaita Mono", "JetBrains Mono", "Source Code Pro", "Noto Sans Mono", "DejaVu Sans Mono", "Menlo", "Consolas", "monospace"]
@@ -114,8 +113,6 @@ def apply_app_style(app: QApplication) -> None:
         QToolBar QToolButton:pressed {{ background: {T.border}; }}
         QToolBar QToolButton:disabled {{ color: {T.faint}; }}
         QToolBar::separator {{ width: 1px; background: {T.border}; margin: 4px 6px; }}
-        QDockWidget {{ titlebar-close-icon: none; titlebar-normal-icon: none; }}
-        QDockWidget::title {{ padding: 0; margin: 0; background: {T.bg}; text-align: left; }}
         QTabWidget::pane {{ border: none; border-top: 1px solid {T.border}; }}
         QTabBar::tab {{ padding: 6px 14px; border: none; color: {T.muted}; }}
         QTabBar::tab:selected {{ color: {T.text}; border-bottom: 2px solid {T.accent}; }}
@@ -188,7 +185,7 @@ class ThemeManager(QObject):
             pass
 
     def _on_system_changed(self, *_: object) -> None:
-        if preference() == "system":
+        if preference() == "system" and is_dark() != T.dark:        # restyle only when light/dark really changed
             self.apply()
 
     def apply(self) -> None:

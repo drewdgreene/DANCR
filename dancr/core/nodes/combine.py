@@ -9,8 +9,9 @@ from ..params import Param
 from ..registry import NodeType, InputSpec, Ctx, NodeResult, registry
 from ..timeutil import parse_duration
 from ._common import schema_of, require_column, temporal_columns
-from ..expr import TIME, NUM, STR, _kind_of_dtype
-from ..dtypes import align_time_column, temp_name
+from ..expr import TIME, NUM, STR, kind_of_dtype
+from ..dtypes import align_time_column, temp_name, is_date
+from ..findings import finding, fmt_pct
 
 
 def _combine(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, Any]) -> NodeResult:
@@ -77,22 +78,82 @@ def _combine(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, 
         raise ValueError("Pick the same number of key columns on both sides")
     on = [require_column(ls, c, "key column") for c in on]
     right_on = [require_column(rs, c, "key column of the second table") for c in right_on]
+    how = {"inner": "inner", "left": "left", "outer": "full", "right": "right"}.get(params.get("how") or "left", "left")
+    restore: dict[str, pl.DataType] = {}
     for a, b in zip(on, right_on):
         if ls[a] != rs[b]:
-            ka, kb = _kind_of_dtype(ls[a]), _kind_of_dtype(rs[b])
+            ka, kb = kind_of_dtype(ls[a]), kind_of_dtype(rs[b])
             if ka == TIME and kb == TIME:
-                right = right.with_columns(align_time_column(pl.col(b), rs[b], ls[a]).alias(b))
+                # a date against a date/time: both become date/times (midnight), then the key keeps the first table's type
+                target = pl.Datetime("us") if is_date(ls[a]) else ls[a]
+                if target != ls[a]:
+                    left = left.with_columns(align_time_column(pl.col(a), ls[a], target).alias(a))
+                    if how in ("left", "inner"):
+                        restore[a] = ls[a]
+                right = right.with_columns(align_time_column(pl.col(b), rs[b], target).alias(b))
             elif ka != kb:
                 raise ValueError(f"Cannot match {a!r} ({ka}) with {b!r} ({kb}). Use 'Change type' so both are the same kind.")
             else:
-                # same kind, different storage (Int32 vs Float64, text vs category): compare in a common type, losing nothing
-                common = pl.Float64 if ka == NUM else (pl.Utf8 if ka == STR else ls[a])
+                # same kind, different storage (Int32 vs UInt64, text vs category): compare in a type that holds both
+                common = _common_key_type(ls[a], rs[b]) if ka == NUM else (pl.Utf8 if ka == STR else ls[a])
                 left = left.with_columns(pl.col(a).cast(common).alias(a))
                 right = right.with_columns(pl.col(b).cast(common).alias(b))
-    how = {"inner": "inner", "left": "left", "outer": "full", "right": "right"}.get(params.get("how") or "left", "left")
-    out = left.join(right, left_on=on, right_on=right_on, how=how, suffix=suffix, coalesce=True,
+                if how in ("left", "inner"):
+                    restore[a] = ls[a]           # every key comes from the first table, so its own type holds them
+    # text keys match ignoring case, as VLOOKUP does: the join uses lower-case copies and the key column keeps
+    # the values as written (the first table's, or the second's for rows only it has)
+    taken = {*ls, *rs}
+    lkeys, rkeys, folded = list(on), list(right_on), []
+    for i, (a, b) in enumerate(zip(on, right_on)):
+        if kind_of_dtype(ls[a]) == STR:
+            k, orig = temp_name(f"key{i}", taken), temp_name(f"orig{i}", taken)
+            taken |= {k, orig}
+            left = left.with_columns(pl.col(a).cast(pl.Utf8).str.to_lowercase().alias(k))
+            right = right.with_columns(pl.col(b).cast(pl.Utf8).str.to_lowercase().alias(k)).rename({b: orig})
+            lkeys[i] = rkeys[i] = k
+            folded.append((a, k, orig))
+    out = left.join(right, left_on=lkeys, right_on=rkeys, how=how, suffix=suffix, coalesce=True,
                     maintain_order="left" if how in ("left", "inner") else ("right" if how == "right" else "none"))
-    return NodeResult(out, messages=msgs)
+    if folded:
+        if how in ("full", "right"):
+            out = out.with_columns([pl.coalesce(pl.col(a), pl.col(orig).cast(out.collect_schema()[a])).alias(a) for a, _, orig in folded])
+        out = out.drop([c for _, k, orig in folded for c in (k, orig)])
+    if restore:
+        out = out.with_columns([pl.col(c).cast(dt) for c, dt in restore.items()])
+    report: dict[str, Any] = {}
+    if not ctx.preview:
+        # like VLOOKUP people expect one match per row; say so when a key repeats in the second table
+        dup = int(right.select(pl.struct(rkeys).is_duplicated().sum()).collect(engine="streaming")[0, 0])
+        if dup:
+            msgs.append(f"{dup:,} rows of the second table share their key with another row, so the rows of the first "
+                        "table with those keys appear once per match. Use 'Remove duplicates' on the second table to keep one.")
+        # how many of the first table's keys were actually found in the second, so a silent join is never believed blindly
+        try:
+            lk = left.select(pl.struct(lkeys).hash().alias("__k")).drop_nulls().unique()
+            rk = right.select(pl.struct(rkeys).hash().alias("__k")).drop_nulls().unique().with_columns(pl.lit(1).alias("hit"))
+            row = lk.join(rk, on="__k", how="left").select([pl.len().alias("n"), pl.col("hit").sum().alias("found")]) \
+                    .collect(engine="streaming").row(0, named=True)
+            total, found = int(row["n"] or 0), int(row["found"] or 0)
+            pct = (100.0 * found / total) if total else 0.0
+            if total:
+                said = (f"{fmt_pct(pct)} of the first table's keys were found in the second ({found:,} of {total:,})")
+                if found < total:
+                    said += f"; {total - found:,} rows matched nothing"
+                report = {"matched_keys": found, "left_keys": total, "match_percent": pct,
+                          "finding": finding("summary", said, magnitude=100.0 - pct, exact=True)}
+                msgs.append(said)
+        except Exception:  # noqa: BLE001 - the join itself is the result; the match rate is a bonus
+            report = {}
+    return NodeResult(out, report=report, messages=msgs)
+
+
+def _common_key_type(a: pl.DataType, b: pl.DataType) -> pl.DataType:
+    """A number type that holds every value of both key columns exactly, where one exists."""
+    if a.is_integer() and b.is_integer():
+        if a.is_signed_integer() == b.is_signed_integer():
+            return pl.Int64 if a.is_signed_integer() else pl.UInt64
+        return pl.Int128                     # signed with unsigned: Int128 holds all of Int64 and UInt64
+    return pl.Float64                        # a decimal key on either side: compare as decimals
 
 
 def _summary(p: dict[str, Any]) -> str:

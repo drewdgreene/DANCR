@@ -8,24 +8,10 @@ import polars as pl
 from ..params import Param
 from ..registry import NodeType, InputSpec, Ctx, NodeResult, registry
 from ..fits import KINDS, fit_frame, predict_by_group, outside_range_by_group, Fit
-from ._common import first_input, schema_of, require_column
+from ._common import first_input, schema_of, require_column, number_param, column_title
 from ..expr import NUM
-from ..dtypes import number_from_text
-
-
-def _resolve_number(text: Any, ctx: Ctx, what: str) -> float | None:
-    """A number, or the name of an input that holds one; blank -> None."""
-    if text is None or (isinstance(text, str) and not text.strip()):
-        return None
-    try:
-        return number_from_text(text, what)
-    except ValueError:
-        pass
-    s = str(text).strip()
-    for k, v in (ctx.inputs or {}).items():
-        if k.lower() == s.lower() and isinstance(v, (int, float)) and not isinstance(v, bool):
-            return float(v)
-    raise ValueError(f"{what}: {text!r} is not a number or the name of an input")
+from ..dtypes import resolve_number
+from ..findings import finding, fmt_number, fmt_pct
 
 
 # --------------------------------------------------------------- fit a curve
@@ -38,13 +24,13 @@ def _fit(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, Any]
     group = params.get("group") or None
     if group:
         group = require_column(schema, group, "group column")
-    fits = fit_frame(lf, x, y, kind, int(params.get("degree") or 2), group)
+    fits = fit_frame(lf, x, y, kind, int(number_param(params, "degree", 2, "The degree", whole=True, at_least=1)), group)
     pred_name = params.get("predicted_column") or f"{y}_fitted"
     resid_name = f"{y}_residual"
     for name in (pred_name, resid_name):
         if name in schema:
-            raise ValueError(f"There is already a column called {name!r}; choose another name for the fitted column")
-    pred = predict_by_group(fits, x, group)
+            raise ValueError(f"There is already a column called {name!r}. Choose another name for the fitted column")
+    pred = predict_by_group(fits, x, group, bool(group) and schema[group].is_numeric())
     out = lf.with_columns([pred.alias(pred_name), (pl.col(y).cast(pl.Float64) - pred).alias(resid_name)])
     report: dict[str, Any] = {"kind": kind, "x": x, "y": y, "group": group, "fits": [f.to_dict() for f in fits]}
     msgs = []
@@ -53,16 +39,40 @@ def _fit(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, Any]
         r2 = f" · R² {f.r2:.4f}" if f.r2 is not None else ""
         passes = f" · {f.iterations} passes" if f.iterations else ""
         msgs.append(f"{head}{f.equation}{r2} · typical error {f.rmse:.4g} · {f.n:,} points{passes}")
-        if not f.converged:
-            msgs.append(f"{head}the fit stopped after {f.iterations} passes without settling; treat the equation as approximate")
+        if f.r2 is not None and f.r2 < 0:
+            msgs.append(f"{head}this shape fits worse than a flat line through the average (R² below 0). Try another kind of curve")
+        elif not f.converged:
+            msgs.append(f"{head}the fit stopped after {f.iterations} passes without settling. Treat the equation as approximate")
     if not group:
         f = fits[0]
         report.update({"equation": f.equation, "r_squared": f.r2, "rmse": f.rmse, "points": f.n, "parameters": f.params})
+        how = f"R² {f.r2:.3f}" if f.r2 is not None else "fit quality unknown"
+        report["finding"] = finding("fit", f"{column_title(ctx, y)} tracks {column_title(ctx, x)}: {f.equation} "
+                                            f"({how}, typical error {fmt_number(f.rmse)}, {f.n:,} points)",
+                                    magnitude=f.r2, direction=_direction_of(f), exact=True)
+    else:
+        known = [f for f in fits if f.r2 is not None]
+        best = max(known, key=lambda f: f.r2) if known else fits[0]
+        report["finding"] = finding("fit", f"{column_title(ctx, y)} vs {column_title(ctx, x)}, fitted separately per "
+                                            f"{group}: strongest for {best.group} ({best.equation}"
+                                            + (f", R² {best.r2:.3f}" if best.r2 is not None else "") + ")",
+                                    magnitude=best.r2, direction="flat", exact=True)
     return NodeResult(out, report=report, messages=msgs)
 
 
+def _direction_of(f) -> str:
+    """Up or down across the data's x range, from the fitted curve itself (a polynomial's first parameter is where
+    it is centred, not its slope)."""
+    from ..fits import curve_points
+    try:
+        _cx, cy = curve_points(f)
+        return "up" if cy[-1] >= cy[0] else "down"
+    except Exception:  # noqa: BLE001 - a curve that cannot be drawn has no direction to tell
+        return "flat"
+
+
 registry.register(NodeType(
-    key="fit_curve", label="Fit a curve", category="Analyse & model", icon="≈",
+    key="fit_curve", uses_labels=True, label="Fit a curve", category="Analyse & model", icon="≈",
     description="Find the relationship between two columns (straight line, levelling-off curve, exponential…). "
                 "Adds fitted and residual columns and reports the equation and how well it fits.",
     apply=_fit,
@@ -107,17 +117,18 @@ def _predict(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, 
     if rep.get("group") or len(fits) > 1:
         group = params.get("group") or rep.get("group") or None
         if not group or group not in schema:
-            raise ValueError("The fit was made per group; choose the matching group column here")
+            raise ValueError("The fit was made per group. Choose the matching group column here")
     if out_name in schema:
-        raise ValueError(f"There is already a column called {out_name!r}; choose another name for the predicted column")
-    out = lf.with_columns(predict_by_group(fits, x, group).alias(out_name))
+        raise ValueError(f"There is already a column called {out_name!r}. Choose another name for the predicted column")
+    numeric = bool(group) and schema[group].is_numeric()
+    out = lf.with_columns(predict_by_group(fits, x, group, numeric).alias(out_name))
     if group:
         msgs = [f"Predicted {out_name} from {x} per {group} using {len(fits)} fits"] + [f"{f.group}: {f.equation}" for f in fits]
         report = {"equations": {f.group: f.equation for f in fits}}
     else:
         msgs = [f"Predicted {out_name} from {x} using: {fits[0].equation}"]
         report = {"equation": fits[0].equation}
-    beyond = int(out.select(outside_range_by_group(fits, x, group).fill_null(False).sum()).collect(engine="streaming")[0, 0])
+    beyond = int(out.select(outside_range_by_group(fits, x, group, numeric).fill_null(False).sum()).collect(engine="streaming")[0, 0])
     if beyond:
         rng = f" ({fits[0].x_min:.4g} to {fits[0].x_max:.4g})" if not group else ""
         msgs.append(f"Caution: {beyond:,} rows are outside the range the fit was made on{rng}")
@@ -144,38 +155,56 @@ def _limits(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, A
     lf = first_input(inputs)
     schema = schema_of(lf)
     col = require_column(schema, params.get("column"), "column", NUM)
-    lo = _resolve_number(params.get("min"), ctx, "Minimum")
-    hi = _resolve_number(params.get("max"), ctx, "Maximum")
+    lo = resolve_number(params.get("min"), ctx.inputs, "Minimum")
+    hi = resolve_number(params.get("max"), ctx.inputs, "Maximum")
     if lo is None and hi is None:
-        return NodeResult(lf, messages=["No limit yet: enter a minimum, a maximum, or both (a number or the name of an input)"])
+        return NodeResult(lf, messages=["No limit yet. Enter a minimum, a maximum or both, as a number or the name of an input"])
+    if lo is not None and hi is not None and lo > hi:
+        raise ValueError(f"The minimum ({lo:g}) is above the maximum ({hi:g}), so no value could pass")
     v = pl.col(col).cast(pl.Float64)
-    ok = pl.lit(True)
+    has = v.is_not_null() & v.is_not_nan()          # a blank (or NaN) is not a measurement: it is not checked
+    inside = pl.lit(True)
     if lo is not None:
-        ok = ok & (v >= lo)
+        inside = inside & (v >= lo)
     if hi is not None:
-        ok = ok & (v <= hi)
-    ok = ok.fill_null(False)
+        inside = inside & (v <= hi)
+    ok = pl.when(has).then(inside)                  # true, false, or blank when there is no value
     flag = (params.get("flag_column") or "").strip() or f"{col}_ok"
-    counts = lf.select([pl.len().alias("n"), ok.sum().alias("ok")]).collect(engine="streaming").row(0, named=True)
-    n, n_ok = int(counts["n"]), int(counts["ok"] or 0)
-    bad = n - n_ok
-    limit_txt = " and ".join(t for t in [f"at least {lo:g}" if lo is not None else "", f"at most {hi:g}" if hi is not None else ""] if t)
-    verdict = "PASS" if bad == 0 else "FAIL"
-    report = {"limit": limit_txt, "rows": n, "within": n_ok, "outside": bad,
-              "outside_percent": (100.0 * bad / n) if n else 0.0, "verdict": verdict}
-    msgs = [f"{verdict}: {bad:,} of {n:,} rows ({(100.0 * bad / n) if n else 0:.2f}%) have {col} outside {limit_txt}"]
     action = params.get("action") or "flag"
+    if action == "flag" and flag in schema:
+        raise ValueError(f"There is already a column called {flag!r}. Choose another name for the true/false column")
+    counts = lf.select([pl.len().alias("n"), has.sum().alias("checked"), ok.fill_null(False).sum().alias("ok")]).collect(engine="streaming").row(0, named=True)
+    n, checked, n_ok = int(counts["n"]), int(counts["checked"] or 0), int(counts["ok"] or 0)
+    bad, blank = checked - n_ok, n - checked
+    limit_txt = " and ".join(t for t in [f"at least {lo:g}" if lo is not None else "", f"at most {hi:g}" if hi is not None else ""] if t)
+    # nothing to check (every value blank) is not a pass: there is no evidence either way
+    verdict = "NOTHING CHECKED" if checked == 0 else ("PASS" if bad == 0 else "FAIL")
+    report = {"limit": limit_txt, "rows": n, "checked": checked, "within": n_ok, "outside": bad, "blank": blank,
+              "outside_percent": (100.0 * bad / checked) if checked else 0.0, "verdict": verdict}
+    if checked:
+        msgs = [f"{verdict}: {bad:,} of {checked:,} values ({100.0 * bad / checked:.2f}%) have {col} outside {limit_txt}"]
+    else:
+        msgs = [f"NOTHING CHECKED: {col} has no values{' (the table is empty)' if n == 0 else ''}, so nothing was compared with {limit_txt}"]
+    if blank:
+        msgs.append(f"{blank:,} rows have no {col} value and were not checked")
     if action == "remove":
-        out = lf.filter(ok)
+        out = lf.filter(ok.fill_null(False))
     elif action == "keep_failing":
-        out = lf.filter(~ok)
+        out = lf.filter((~ok).fill_null(False))
     else:
         out = lf.with_columns(ok.alias(flag))
+    if checked == 0:
+        say = f"Nothing was checked: {column_title(ctx, col)} has no values to compare with {limit_txt}"
+    elif bad == 0:
+        say = f"All {checked:,} {column_title(ctx, col)} values are within {limit_txt}"
+    else:
+        say = f"{bad:,} of {checked:,} {column_title(ctx, col)} values ({fmt_pct(report['outside_percent'])}) are outside {limit_txt}"
+    report["finding"] = finding("limit", say, magnitude=report["outside_percent"], direction="up", exact=True)
     return NodeResult(out, report=report, messages=msgs)
 
 
 registry.register(NodeType(
-    key="check_limits", label="Check against limits", category="Analyse & model", icon="✓",
+    key="check_limits", uses_labels=True, label="Check against limits", category="Analyse & model", icon="✓",
     description="Mark each row as within or outside a limit and report how many fail. Limits can be numbers or the names of inputs.",
     apply=_limits,
     summary=lambda p: f"{p.get('column') or '?'} " + " and ".join(t for t in [f"≥ {p['min']}" if p.get("min") not in (None, "") else "", f"≤ {p['max']}" if p.get("max") not in (None, "") else ""] if t),
