@@ -687,7 +687,7 @@ def assistant_turn(p: Pipeline, text: str, *, allow_samples: bool = False, focus
     The key and endpoint come from the environment (``ModelSettings.from_env``) unless ``settings`` is given;
     ``provider`` overrides the client (tests, or the scripted fake)."""
     from .core.assistant import AssistantSession, load_thread
-    from .core.assistant.client import ModelSettings, provider_for
+    from .core.assistant.client import ModelSettings, OpenAIProvider, provider_for
     from .core.assistant.store import save_thread
     from .core import answers
     settings = settings or ModelSettings.from_env()
@@ -699,7 +699,14 @@ def assistant_turn(p: Pipeline, text: str, *, allow_samples: bool = False, focus
     session.record(text, reply)
     save_thread(p, session.thread)
     out: dict[str, Any] = {"kind": reply.kind, "text": reply.text, "proposal": reply.proposal,
-                           "flags": reply.flags, "usage": reply.usage, "tool_calls": reply.tool_calls}
+                           "flags": reply.flags, "unverified": reply.unverified, "usage": reply.usage,
+                           "tool_calls": reply.tool_calls}
+    if isinstance(session.provider, OpenAIProvider) and settings.configured:
+        # no window here, so the egress is stated rather than consented; the caller configured the key
+        out["sent_to"] = {"endpoint": settings.base_url, "model": settings.model}
+        import logging
+        logging.getLogger("dancr.headless").info(
+            "assistant turn sent a project profile to %s (%s)", settings.base_url, settings.model)
     if reply.kind in ("error", "paused"):
         out["error"] = reply.text or reply.error
         return out
@@ -718,8 +725,16 @@ def assistant_turn(p: Pipeline, text: str, *, allow_samples: bool = False, focus
     if not terminal:
         return out
     st = Executor(p).run(targets=[terminal])[terminal]
-    out.update({"terminal": terminal, "status": st.status,
-                "finding": (st.report or {}).get("finding", {}).get("statement", ""), "error": st.error})
+    finding = (st.report or {}).get("finding", {}).get("statement", "")
+    out.update({"terminal": terminal, "status": st.status, "finding": finding, "error": st.error})
+    last = session.thread.turns[-1] if session.thread.turns else None
+    if last is not None and last.role == "assistant":     # fold the outcome in, so a reload shows it built
+        last.node = terminal
+        if isinstance(out.get("answer"), dict):
+            last.answer = out["answer"].get("id")
+        if finding:
+            last.finding = finding
+        save_thread(p, session.thread)
     return out
 
 

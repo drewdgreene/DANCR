@@ -34,6 +34,8 @@ from .enterdata import EnterDataView
 from .answering import Understanding, AskBar, AnswerPanel
 from .assistant import AssistantPanel, SideDock
 from .startpage import StartPage
+from .insight import InsightBar
+from .sources import SourcesTray
 from .theme import T
 from .icons import icon
 
@@ -58,45 +60,53 @@ class MainWindow(QMainWindow):
         self.scene = CanvasScene(self.doc, self)          # parented: it goes when the window goes (theme switch)
         self.view = CanvasView(self.scene)
         self.rail = Rail(self.doc)
+        # result views live in the result drawer, not the centre; the start page is its own full window
         self.pages = QStackedWidget()
         self.pages.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)     # hidden pages must not set the window's minimum width
-        self.start = StartPage(); self.table = TableView(self.doc); self.chart = ChartView(self.doc); self.map = MapView(self.doc)
+        self.start = StartPage()
+        self.table = TableView(self.doc); self.chart = ChartView(self.doc); self.map = MapView(self.doc)
         self.report = ReportView(self.doc); self.inputs = InputsView(self.doc); self.entry = EnterDataView(self.doc)
-        for p in (self.start, self.table, self.chart, self.map, self.report, self.inputs, self.entry):
+        for p in (self.table, self.chart, self.map, self.report, self.inputs, self.entry):
             self.pages.addWidget(p)
-        # Top row: project rail | content pages | settings. Below it the map runs the full width,
-        # so the graph gets the whole window and the side panels stop at the top of the map.
-        centre = QWidget(); cl = QVBoxLayout(centre); cl.setContentsMargins(0, 0, 0, 0); cl.setSpacing(0)
         self.understanding = Understanding(self.doc, self)
         self.askbar = AskBar(self.doc, self.understanding)
         self.answer_bar = AnswerPanel(self.doc, self.understanding)
         self.answer_bar.set_answer(None)
-        cl.addWidget(self.askbar)
-        cl.addWidget(self.answer_bar)
-        cl.addWidget(self.pages, 1)
-        self.toast = Toast(centre)
+        # the canvas is home: the insight bar on top, the graph in the middle, the sources tray below
+        self.insight = InsightBar()
+        self.sources = SourcesTray(self.doc, self)
+        self.canvas_box = QWidget(); cbl = QVBoxLayout(self.canvas_box)
+        cbl.setContentsMargins(0, 0, 0, 0); cbl.setSpacing(0)
+        cbl.addWidget(self.insight); cbl.addWidget(self.view, 1); cbl.addWidget(self.sources)
+        self.toast = Toast(self.canvas_box)
         self.inspector = InspectorPanel(self.doc, self)
         self.assistant = AssistantPanel(self.doc, self.understanding)
         self.side = SideDock(self.inspector, self.assistant)
-        self.top_split = QSplitter(Qt.Horizontal)
-        self.top_split.addWidget(self.rail); self.top_split.addWidget(centre); self.top_split.addWidget(self.side)
+        self.top_split = QSplitter(Qt.Horizontal)         # rail | canvas | side
+        self.top_split.addWidget(self.rail); self.top_split.addWidget(self.canvas_box); self.top_split.addWidget(self.side)
         self.top_split.setStretchFactor(0, 0); self.top_split.setStretchFactor(1, 1); self.top_split.setStretchFactor(2, 0)
-        self.top_split.setSizes([250, 820, 370]); self.top_split.setCollapsible(1, False)
-        # the map drawer, full width
-        self.map_box = QWidget(); self.map_box.setMinimumHeight(140); ml = QVBoxLayout(self.map_box); ml.setContentsMargins(0, 0, 0, 0); ml.setSpacing(0)
-        map_head = QFrame(); map_head.setStyleSheet(f"QFrame {{ background: {T.bg}; border-top: 1px solid {T.border}; border-bottom: 1px solid {T.border}; }}")
-        mh = QHBoxLayout(map_head); mh.setContentsMargins(10, 3, 6, 3)
-        ml_lab = QLabel("The map shows every step in this project, in order. Drag a step to move it, or click one to see it."); ml_lab.setObjectName("muted"); ml_lab.setWordWrap(True)
-        self.map_close = QToolButton(); self.map_close.setObjectName("quiet"); self.map_close.setIcon(icon("x", T.muted, 14)); self.map_close.clicked.connect(lambda: self.a_map.setChecked(False))
-        mh.addWidget(ml_lab, 1); mh.addWidget(self.map_close)
-        ml.addWidget(map_head); ml.addWidget(self.view, 1)
-        # when the map is closed it collapses to this handle, so it is always one click away
-        self.map_handle = QToolButton(); self.map_handle.setObjectName("quiet"); self.map_handle.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
-        self.map_handle.setIcon(icon("map-trifold", T.muted, 14)); self.map_handle.setText("Show the map of steps (Ctrl+M)")
-        self.map_handle.setStyleSheet(f"QToolButton {{ border: none; border-top: 1px solid {T.border}; background: {T.bg}; padding: 3px 10px; text-align: left; }} QToolButton:hover {{ color: {T.accent}; }}")
-        self.map_handle.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.map_handle.clicked.connect(lambda: self.a_map.setChecked(True))
-        self.map_handle.hide()
+        self.top_split.setSizes([210, 760, 330])   # settings open by default; the canvas still leads
+        self.top_split.setCollapsible(0, True); self.top_split.setCollapsible(1, False); self.top_split.setCollapsible(2, True)
+        # the result drawer (bottom): the answers bar, the selected answer's chips, and the result itself
+        self.result_box = QWidget(); self.result_box.setMinimumHeight(180)
+        rl = QVBoxLayout(self.result_box); rl.setContentsMargins(0, 0, 0, 0); rl.setSpacing(0)
+        result_head = QFrame(); result_head.setStyleSheet(f"QFrame {{ background: {T.bg}; border-top: 1px solid {T.border}; border-bottom: 1px solid {T.border}; }}")
+        rh = QHBoxLayout(result_head); rh.setContentsMargins(10, 3, 6, 3)
+        self.result_label = QLabel("Result"); self.result_label.setObjectName("muted"); self.result_label.setWordWrap(True)
+        self.result_expand = QToolButton(); self.result_expand.setObjectName("quiet"); self.result_expand.setCheckable(True)
+        self.result_expand.setIcon(icon("arrows-out", T.muted, 14)); self.result_expand.setToolTip("Expand or restore the result panel")
+        self.result_expand.toggled.connect(self._toggle_result_expand)
+        self.result_close = QToolButton(); self.result_close.setObjectName("quiet"); self.result_close.setIcon(icon("x", T.muted, 14))
+        self.result_close.setToolTip("Hide the result panel"); self.result_close.clicked.connect(lambda: self.a_result.setChecked(False))
+        rh.addWidget(self.result_label, 1); rh.addWidget(self.result_expand); rh.addWidget(self.result_close)
+        rl.addWidget(result_head); rl.addWidget(self.askbar); rl.addWidget(self.answer_bar); rl.addWidget(self.pages, 1)
+        # when the result panel is closed it collapses to this handle, always one click away
+        self.result_handle = QToolButton(); self.result_handle.setObjectName("quiet"); self.result_handle.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.result_handle.setIcon(icon("table", T.muted, 14)); self.result_handle.setText("Show the result panel (Ctrl+M)")
+        self.result_handle.setStyleSheet(f"QToolButton {{ border: none; border-top: 1px solid {T.border}; background: {T.bg}; padding: 3px 10px; text-align: left; }} QToolButton:hover {{ color: {T.accent}; }}")
+        self.result_handle.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.result_handle.clicked.connect(lambda: self.a_result.setChecked(True))
+        self.result_handle.hide()
         # run strip (full width, above the log bar)
         self.progress = QFrame(); self.progress.setStyleSheet(f"QFrame {{ background: {T.panel}; border-top: 1px solid {T.border}; }}")
         pl_ = QHBoxLayout(self.progress); pl_.setContentsMargins(10, 4, 10, 4); pl_.setSpacing(10)
@@ -105,14 +115,17 @@ class MainWindow(QMainWindow):
         self.stop_btn = QPushButton("Stop"); self.stop_btn.setIcon(icon("stop", T.text, 14)); self.stop_btn.clicked.connect(self.stop)
         pl_.addWidget(self.progress_label, 1); pl_.addWidget(self.progress_bar, 2); pl_.addWidget(self.stop_btn)
         self.progress.hide()
-        self.outer_split = QSplitter(Qt.Vertical)
+        self.outer_split = QSplitter(Qt.Vertical)          # canvas on top, result drawer below
         self.outer_split.addWidget(self.top_split)
-        self.outer_split.addWidget(self.map_box)
-        self.outer_split.setStretchFactor(0, 3); self.outer_split.setStretchFactor(1, 1); self.outer_split.setSizes([620, 260])
-        self.outer_split.setCollapsible(0, False)
-        central = QWidget(); cw = QVBoxLayout(central); cw.setContentsMargins(0, 0, 0, 0); cw.setSpacing(0)
-        cw.addWidget(self.outer_split, 1); cw.addWidget(self.map_handle); cw.addWidget(self.progress)
-        self.setCentralWidget(central)
+        self.outer_split.addWidget(self.result_box)
+        self.outer_split.setStretchFactor(0, 4); self.outer_split.setStretchFactor(1, 1); self.outer_split.setSizes([660, 240])
+        self.outer_split.setCollapsible(0, False); self.outer_split.setCollapsible(1, True)
+        self.workspace = QWidget(); cw = QVBoxLayout(self.workspace); cw.setContentsMargins(0, 0, 0, 0); cw.setSpacing(0)
+        cw.addWidget(self.outer_split, 1); cw.addWidget(self.result_handle); cw.addWidget(self.progress)
+        self.root = QStackedWidget()
+        self.root.addWidget(self.start); self.root.addWidget(self.workspace)
+        self._entered = False                              # False until the person leaves the start page for good
+        self.setCentralWidget(self.root)
         self.picker = StepPicker(self)
         self._picker_ctx: dict = {}
         self.status = QStatusBar(); self.setStatusBar(self.status)
@@ -194,8 +207,8 @@ class MainWindow(QMainWindow):
         self.doc.undo.undoTextChanged.connect(self._undo_text); self.doc.undo.redoTextChanged.connect(self._redo_text)
         self.a_undo.setEnabled(False); self.a_redo.setEnabled(False)
         self.a_add = self._act("Add &step…", "plus", ["Ctrl+K", "Insert"], lambda: self.open_picker(), "Add a step after the current table (Ctrl+K)")
-        self.a_ask = self._act("Ask a question…", "sparkle", "Ctrl+J", self.focus_ask,
-                                  "Ask about your data in plain words, or pick an answer DANCR offers (Ctrl+J)")
+        self.a_ask = self._act("&Auto", "sparkle", "Ctrl+J", self.focus_ask,
+                                  "Ask a question in plain words, or pick an answer DANCR offers (Ctrl+J)")
         self.a_assistant = self._act("Assistant", "magic-wand", "Ctrl+Shift+J", self.focus_assistant,
                                      "Talk to the Assistant: it builds real steps you approve (Ctrl+Shift+J)")
         self.a_assistant.setCheckable(True)
@@ -203,10 +216,13 @@ class MainWindow(QMainWindow):
         self.a_dup = self._act("D&uplicate step", "copy", "Ctrl+D", lambda: self.doc.duplicate_nodes(self.scene.selected_node_ids()))
         self.a_note = self._act("Add &note to the map", "note-pencil", "Ctrl+Shift+N", lambda: self._add_note(self.view.mapToScene(self.view.viewport().rect().center())))
         self.a_inputs = self._act("&Inputs (named values)…", "gear", "Ctrl+Shift+I", lambda: self.rail.select("inputs", "inputs"))
+        self.a_remove_ai = self._act("Remove AI-built steps", None, None, self.remove_ai_steps,
+                                     "Delete every step the Assistant built, in one undo")
+        self.a_remove_ai.setEnabled(False)
         for a in (self.a_undo, self.a_redo):
             edit_m.addAction(a)
         edit_m.addSeparator()
-        for a in (self.a_add, self.a_delete, self.a_dup, self.a_note, self.a_inputs):
+        for a in (self.a_add, self.a_delete, self.a_dup, self.a_note, self.a_inputs, self.a_remove_ai):
             edit_m.addAction(a)
         edit_m.insertAction(self.a_delete, self.a_ask)
         run_m = mb.addMenu("&Run")
@@ -224,9 +240,9 @@ class MainWindow(QMainWindow):
         run_m.addSeparator(); run_m.addAction(self.a_auto); run_m.addAction(self.a_clear_cache)
 
         view_m = mb.addMenu("&View")
-        self.a_map = QAction("Show the &map of steps", self, checkable=True, checked=True); self.a_map.setShortcut("Ctrl+M")
-        self.a_map.setIcon(icon("map-trifold", T.text, 16)); self.a_map.setToolTip("Show or hide the map of steps (Ctrl+M)")
-        self.a_map.toggled.connect(self._toggle_map)
+        self.a_result = QAction("Show the &result panel", self, checkable=True, checked=True); self.a_result.setShortcut("Ctrl+M")
+        self.a_result.setIcon(icon("table", T.text, 16)); self.a_result.setToolTip("Show or hide the result panel (Ctrl+M)")
+        self.a_result.toggled.connect(self._toggle_result)
         self.a_settings = QAction("Show &settings", self, checkable=True, checked=True)
         self.a_settings.setIcon(icon("sliders", T.text, 16)); self.a_settings.setShortcut("Ctrl+,")
         self.a_settings.setToolTip("Show or hide the settings panel (Ctrl+,)")
@@ -234,7 +250,7 @@ class MainWindow(QMainWindow):
         self.a_fit = self._act("&Fit the map in view", "arrows-out", "Ctrl+0", self.view.fit_all)
         self.a_zoom_in = self._act("Zoom map in", None, [QKeySequence.ZoomIn, "Ctrl+="], lambda: self.view.zoom_by(1.2))
         self.a_zoom_out = self._act("Zoom map out", None, QKeySequence.ZoomOut, lambda: self.view.zoom_by(1 / 1.2))
-        for a in (self.a_map, self.a_settings, self.a_fit, self.a_zoom_in, self.a_zoom_out):
+        for a in (self.a_result, self.a_settings, self.a_fit, self.a_zoom_in, self.a_zoom_out):
             view_m.addAction(a)
         view_m.addSeparator()
         self.theme_menu = view_m.addMenu("Appearance")
@@ -279,8 +295,8 @@ class MainWindow(QMainWindow):
         tb.addAction(self.a_undo); tb.addAction(self.a_redo); tb.addSeparator()
         tb.addAction(self.a_save); tb.addAction(self.a_versions)
         spacer = QWidget(); spacer.setSizePolicy(spacer.sizePolicy().horizontalPolicy().Expanding, spacer.sizePolicy().verticalPolicy()); tb.addWidget(spacer)
-        tb.addAction(self.a_map); tb.addAction(self.a_settings)
-        for a in (self.a_undo, self.a_redo, self.a_save, self.a_versions, self.a_stop, self.a_map, self.a_settings):
+        tb.addAction(self.a_result); tb.addAction(self.a_settings)
+        for a in (self.a_undo, self.a_redo, self.a_save, self.a_versions, self.a_stop, self.a_result, self.a_settings):
             btn = tb.widgetForAction(a)
             if isinstance(btn, QToolButton):
                 btn.setToolButtonStyle(Qt.ToolButtonIconOnly)
@@ -304,7 +320,7 @@ class MainWindow(QMainWindow):
     def capture_ui_state(self) -> dict:
         """Everything worth carrying across a theme rebuild."""
         return {"geometry": self.saveGeometry(), "current": self._current, "answer": self._current_answer,
-                "map": self.a_map.isChecked(), "tab": self.table.tabs.currentIndex(),
+                "result": self.a_result.isChecked(), "tab": self.table.tabs.currentIndex(),
                 "top_split": self.top_split.saveState(), "outer_split": self.outer_split.saveState(),
                 "settings": self.a_settings.isChecked(), "assistant": self.a_assistant.isChecked()}
 
@@ -318,7 +334,7 @@ class MainWindow(QMainWindow):
             self.outer_split.restoreState(state["outer_split"])
         self.a_settings.setChecked(bool(state.get("settings", True)))
         self.a_assistant.setChecked(bool(state.get("assistant", False)))
-        self.a_map.setChecked(bool(state.get("map", True)))
+        self.a_result.setChecked(bool(state.get("result", True)))
         if state.get("tab"):
             self.table.tabs.setCurrentIndex(int(state["tab"]))
         answer = state.get("answer")
@@ -395,6 +411,8 @@ class MainWindow(QMainWindow):
         self.askbar.closed.connect(self.close_ask)
         self.side.tabChanged.connect(self._on_side_tab)
         self.assistant.buildRequested.connect(self.apply_assistant_proposal)
+        self.assistant.proposalPreview.connect(self._preview_proposal)
+        self.assistant.proposalCleared.connect(lambda: self.scene.clear_ghost())
         self.assistant.applyEditsRequested.connect(self.assistant_apply_edits)
         self.assistant.revealRequested.connect(self._assistant_reveal)
         self.assistant.saveProjectRequested.connect(self.assistant_save_as_project)
@@ -425,6 +443,11 @@ class MainWindow(QMainWindow):
         self.start.blank.connect(lambda: self.add_node("enter_data", None))
         self.start.example.connect(self.open_example)
         self.start.removeRecent.connect(self._remove_recent)
+        listen(self, d.statesChanged, lambda: self.a_remove_ai.setEnabled(bool(self.doc.ai_steps())))
+        self.insight.jumped.connect(lambda nid: (self.show_node(nid), self.view.focus_node(nid)))
+        self.sources.addRequested.connect(self.add_data_files)
+        self.sources.selected.connect(lambda nid: (self.show_node(nid), self.view.focus_node(nid)))
+        self.sources.relateRequested.connect(self.show_relations)
         self.setAcceptDrops(True)
 
     # ------------------------------------------------------------ pages and selection
@@ -432,27 +455,28 @@ class MainWindow(QMainWindow):
         """Pick the page for the current selection (start page when the project is empty)."""
         if self._on_start_page():
             self.start.set_recent(self._recent())
-            self.pages.setCurrentWidget(self.start)
-            self.map_box.setVisible(False); self.map_handle.setVisible(False)
+            self.root.setCurrentWidget(self.start)
             self.askbar.setVisible(False)
             self._apply_side_panels()
             return
+        self.root.setCurrentWidget(self.workspace)
         self._apply_side_panels()
-        self.askbar.setVisible(self._ask_open)       # only when asked for: Ask a question, or an answer selected
-        self._apply_map_visibility()
+        self.askbar.setVisible(self._ask_open and bool(self.doc.pipeline.nodes))   # only when asked for: Auto, or an answer selected
+        self._apply_result_visibility()
         nid = self._current
         if nid == "inputs":
-            self.pages.setCurrentWidget(self.inputs); return
+            self.pages.setCurrentWidget(self.inputs); self._refresh_insight(); return
         if nid is None or nid not in self.doc.pipeline.nodes:
             self.pages.setCurrentWidget(self.table)
             if self.table.nid is not None:
                 self.table.set_node(None)
-            return
+            self._refresh_insight(); return
         t = self.doc.pipeline.nodes[nid].type
         page = {"chart": self.chart, "map": self.map, "report": self.report, "enter_data": self.entry}.get(t, self.table)
         if page.nid != nid:                     # the same step again: keep what is shown, no re-query
             page.set_node(nid)
         self.pages.setCurrentWidget(page)
+        self._refresh_insight()
 
     def show_node(self, nid: str | None) -> None:
         if nid != self._current:
@@ -462,6 +486,8 @@ class MainWindow(QMainWindow):
         if nid == self._current:
             self._show_page(); return
         self._current = nid
+        if nid and nid != "inputs":
+            self.a_result.setChecked(True)      # selecting a step opens the result drawer on it
         self._focus_answers(nid)
         self.inspector.set_node(nid if nid != "inputs" else None)
         self.assistant.set_focus(nid if nid != "inputs" else None)
@@ -519,9 +545,20 @@ class MainWindow(QMainWindow):
         if self.a_assistant.isChecked():
             self.assistant.edit.setFocus()
 
+    def _preview_proposal(self, proposal: dict) -> None:
+        """Ghost a proposed chain of steps onto the canvas, so the person sees what would be built before it is."""
+        steps = proposal.get("steps") or []
+        if steps:
+            self.a_assistant.setChecked(True)       # bring the plan card (with Approve/Discard) into view
+            self._apply_side_panels()
+            self.scene.show_ghost(steps)
+        else:
+            self.scene.clear_ghost()
+
     def apply_assistant_proposal(self, proposal: dict) -> None:
         """Build what the Assistant proposed: real steps, through the undo stack, then run them."""
         from ..core.recipes import PlanError
+        self.scene.clear_ghost()
         model = self.understanding.model
         if model is None:
             self.assistant.built(message="Still reading your tables; try again in a moment.")
@@ -529,8 +566,11 @@ class MainWindow(QMainWindow):
         aid = None
         try:
             if proposal.get("kind") == "answer":
-                aid = self.doc.build_answer(model, proposal.get("spec") or {})
-                a = self.doc.pipeline.answer(aid)
+                with self.doc.macro("Assistant answer"):    # the built steps and their AI marking undo together
+                    aid = self.doc.build_answer(model, proposal.get("spec") or {})
+                    a = self.doc.pipeline.answer(aid)
+                    if a is not None:
+                        self.doc.add_ai_steps(a.nodes)
                 terminal = a.terminal if a is not None else None
             else:
                 terminal = self._apply_assistant_steps(proposal.get("steps") or [])
@@ -561,6 +601,7 @@ class MainWindow(QMainWindow):
                                         port=s.get("port"))
                 made[s.get("id")] = nid
                 last = nid
+            self.doc.add_ai_steps(list(made.values()))     # so they can be marked and removed as a set
         return last
 
     def _on_assistant_run_finished(self, ok: bool, states: dict) -> None:
@@ -604,8 +645,8 @@ class MainWindow(QMainWindow):
         """Show the built steps on the canvas, centred on the answer, with its branch lit up."""
         if terminal not in self.doc.pipeline.nodes:
             return
-        self.a_map.setChecked(True)
-        self._apply_map_visibility()
+        self.a_result.setChecked(True)
+        self._apply_result_visibility()
         self.show_node(terminal)
         branch = self.doc.pipeline.upstream_closure(terminal) | {terminal}
 
@@ -644,8 +685,12 @@ class MainWindow(QMainWindow):
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
             return
         title = self.doc.pipeline.nodes[terminal].title
+        a = next((x for x in self.doc.pipeline.answers if x.terminal == terminal), None)
+        built = list(a.nodes) if a is not None else []
         new = project_from_answer(self.doc.pipeline, terminal, name=self.doc.pipeline.name)
-        self.doc.replace_canvas(new.to_dict(), text=f"Assistant: {title}")
+        with self.doc.macro(f"Assistant: {title}"):        # one undo step: the replace and the marking together
+            self.doc.replace_canvas(new.to_dict(), text=f"Assistant: {title}")
+            self.doc.add_ai_steps(built)                   # the Assistant's steps stay marked after a replace
         self.show_node(terminal)
         self._assistant_terminal = terminal
         self._assistant_answer = None
@@ -720,8 +765,8 @@ class MainWindow(QMainWindow):
 
     def _show_answer_steps(self) -> None:
         a = self.doc.pipeline.answer(self._current_answer) if self._current_answer else None
-        if not self.a_map.isChecked():
-            self.a_map.setChecked(True)
+        if not self.a_result.isChecked():
+            self.a_result.setChecked(True)
         if a is not None and a.terminal in self.doc.pipeline.nodes:
             self.view.focus_node(a.terminal)
         else:
@@ -739,6 +784,8 @@ class MainWindow(QMainWindow):
             return
         self.understanding.set_focus(None)
         self.open_ask()
+        self._entered = True
+        self.a_result.setChecked(True)
         self._current_answer = aid
         self._current = answer.terminal if answer.terminal in self.doc.pipeline.nodes else None
         self.rail.select("answer", aid, emit=False)
@@ -798,7 +845,7 @@ class MainWindow(QMainWindow):
         return nid
 
     def _on_start_page(self) -> bool:
-        return not self.doc.pipeline.nodes and self._current is None
+        return not self.doc.pipeline.nodes and self._current is None and not self._entered
 
     def _apply_side_panels(self) -> None:
         """The project list and the side column have nothing to show until the project has a step."""
@@ -806,27 +853,50 @@ class MainWindow(QMainWindow):
         self.rail.setVisible(not start)
         show = not start and (self.a_settings.isChecked() or self.a_assistant.isChecked())
         self.side.setVisible(show)
+        self.side.set_assistant(self.a_assistant.isChecked())    # keep the tab in step even while hidden
         if show:
-            self.side.set_assistant(self.a_assistant.isChecked())
+            sizes = self.top_split.sizes()
+            if len(sizes) == 3 and sizes[2] < 120:               # opened into a collapsed slot: give it room
+                total = sum(sizes) or self.top_split.width()
+                self.top_split.setSizes([sizes[0], max(320, total - sizes[0] - 360), 360])
         self.inspector.setVisible(not start and self.a_settings.isChecked() and not self.a_assistant.isChecked())
-        for a in (self.a_settings, self.a_map, self.a_add, self.a_ask, self.a_assistant, self.a_run):
+        for a in (self.a_settings, self.a_result, self.a_add, self.a_ask, self.a_assistant, self.a_run):
             a.setEnabled(not start and (a is not self.a_assistant or bool(self.doc.pipeline.nodes)))
 
-    def _toggle_map(self, on: bool) -> None:
-        self._apply_map_visibility()
+    def _toggle_result(self, on: bool) -> None:
+        self._apply_result_visibility()
         if on:
             QTimer.singleShot(0, self.view.fit_all)
 
-    def _apply_map_visibility(self) -> None:
+    def _apply_result_visibility(self) -> None:
         have = bool(self.doc.pipeline.nodes) or self._current is not None
-        on = self.a_map.isChecked()
-        self.map_box.setVisible(on and have)
-        self.map_handle.setVisible(have and not on)
+        on = self.a_result.isChecked()
+        self.result_box.setVisible(on and have)
+        self.result_handle.setVisible(have and not on)
+        if not on and self.result_expand.isChecked():        # closing clears the expanded state
+            self.result_expand.blockSignals(True); self.result_expand.setChecked(False); self.result_expand.blockSignals(False)
+            self.top_split.setMaximumHeight(16777215)
         if on and have:
             sizes = self.outer_split.sizes()
-            if len(sizes) == 2 and sizes[1] < 120:          # reopened into a collapsed slot
+            if len(sizes) == 2 and sizes[1] < 140 and not self.result_expand.isChecked():
                 total = sum(sizes) or self.outer_split.height()
-                self.outer_split.setSizes([max(200, total - 260), 260])
+                self.outer_split.setSizes([max(220, total - 280), 280])
+
+    def _toggle_result_expand(self, on: bool) -> None:
+        """Give the result most of the window (or restore the canvas to most of it)."""
+        if on:
+            self._result_sizes = self.outer_split.sizes()
+            self.top_split.setMaximumHeight(90)          # the canvas keeps a sliver; the result takes the rest
+            h = self.outer_split.height() or max(300, self.height() - 120)
+            self.outer_split.setSizes([90, max(200, h - 90)])
+        else:
+            self.top_split.setMaximumHeight(16777215)
+            sizes = getattr(self, "_result_sizes", None)
+            if sizes and len(sizes) == 2:
+                self.outer_split.setSizes(sizes)
+            else:
+                h = self.outer_split.height() or self.height()
+                self.outer_split.setSizes([max(220, h - 260), 260])
 
     def _refresh_mode(self) -> None:
         auto = self.doc.auto_run and bool(self.doc.pipeline.nodes)
@@ -842,6 +912,34 @@ class MainWindow(QMainWindow):
             self.mode_label.setText(f"large data ({mb:,.0f} MB), press Run to compute")
         if self.table.nid:
             self.table._refresh_header()
+
+    def remove_ai_steps(self) -> None:
+        """Delete every step the Assistant built, as one undoable action."""
+        ids = self.doc.ai_steps()
+        if not ids:
+            self.status.showMessage("No Assistant-built steps to remove", 4000); return
+        with self.doc.macro("Remove AI steps"):
+            self.doc.remove_nodes(ids)
+            self.doc.clear_ai_steps()
+        self.status.showMessage(f"Removed {len(ids)} Assistant-built step(s). Ctrl+Z undoes it.", 6000)
+
+    def _refresh_insight(self) -> None:
+        """Publish the one sentence worth reading: the selected step's finding, else the best finding in the
+        project. Shown in the insight bar above the canvas; clicking it jumps to the step that produced it."""
+        nid = self._current if self._current in self.doc.pipeline.nodes else None
+        if nid:
+            fnd = ((self.doc.state(nid).report or {}).get("finding") or {}).get("statement")
+            if fnd:
+                self.insight.set_insight(fnd, nid); return
+        best = None
+        for k in self.doc.pipeline.nodes:
+            fnd = ((self.doc.state(k).report or {}).get("finding") or {}).get("statement")
+            if fnd:
+                best = (fnd, k)
+        if best:
+            self.insight.set_insight(best[0], best[1])
+        else:
+            self.insight.clear()
 
     def delete_current(self) -> None:
         aids = self.scene.selected_answer_ids()
@@ -879,6 +977,7 @@ class MainWindow(QMainWindow):
         self.a_revert.setEnabled(self.doc.path is not None and self.doc.dirty)
 
     def _on_reloaded(self) -> None:
+        self._entered = True                    # a project was opened or replaced: past the start page for good
         self._building.clear()
         self._update_title()
         self._current = None
@@ -932,6 +1031,7 @@ class MainWindow(QMainWindow):
 
     def new_pipeline(self) -> None:
         if self._confirm_stop_run("start a new project") and self.maybe_save():
+            self._entered = True                # a new project starts on the empty canvas, not the start page
             self.doc.new()
 
     def open_dialog(self) -> None:
@@ -1070,6 +1170,52 @@ class MainWindow(QMainWindow):
         dlg.openProject.connect(self.open_path)
         dlg.exec()
 
+    def show_relations(self) -> None:
+        """How the tables fit together, from the engine's own understanding, with one-click builds."""
+        m = self.understanding.model
+        if m is None:
+            self.understanding.when_full(self._open_relations)
+            return
+        self._open_relations(m)
+
+    def _open_relations(self, model) -> None:
+        from .dialogs import RelationsDialog
+        rels = [r for r in model.relations if len([t for t in r.tables if t in self.doc.pipeline.nodes]) >= 2]
+        if not rels:
+            self.status.showMessage("No relations found between the tables yet", 6000)
+            return
+        RelationsDialog(self, rels, on_build=self.build_relation).exec()
+
+    def build_relation(self, rel) -> None:
+        """Add the step a relation implies: a join, a stack, or a nearest-time alignment."""
+        tables = [t for t in rel.tables if t in self.doc.pipeline.nodes]
+        if len(tables) < 2:
+            return
+        try:
+            if rel.kind == "stack":
+                nid = self.add_node("stack", None, connect_from=tables[0], port="tables")
+                for t in tables[1:]:
+                    self.doc.connect(t, nid, "tables")
+            elif rel.kind == "align" and rel.pairs:
+                left_time, right_time = next(iter(rel.pairs.items()))
+                nid = self.add_node("combine", None,
+                                    params={"method": "nearest_time", "left_time": left_time,
+                                            "right_time": right_time, "tolerance": rel.tolerance or ""},
+                                    connect_from=tables[0], port="left")
+                self.doc.connect(tables[1], nid, "right")
+            else:                                       # a link: join on the key
+                params: dict = {"method": "match", "on": rel.left_on}
+                if rel.right_on and rel.right_on != rel.left_on:
+                    params["right_on"] = rel.right_on
+                nid = self.add_node("combine", None, params=params, connect_from=tables[0], port="left")
+                self.doc.connect(tables[1], nid, "right")
+        except (PipelineError, ValueError, KeyError) as e:
+            self.status.showMessage(f"Could not build that: {e}", 8000); return
+        self.show_node(nid)
+        self.view.focus_node(nid)
+        self.doc.schedule_auto_run()
+        self.status.showMessage(f"Added {self.doc.pipeline.nodes[nid].title}", 5000)
+
     def package_crate(self) -> None:
         from ..headless import package_rocrate
         from ..core.executor import Executor
@@ -1110,7 +1256,7 @@ class MainWindow(QMainWindow):
         self.settings.setValue("geometry", self.saveGeometry())
         self.settings.setValue("top_split", self.top_split.saveState())
         self.settings.setValue("outer_split", self.outer_split.saveState())
-        self.settings.setValue("map", self.a_map.isChecked())
+        self.settings.setValue("result", self.a_result.isChecked())
         view_pool().shutdown(5000)                # nothing may still read the results when the cache is removed
         self.doc.shutdown()
         e.accept()
@@ -1129,9 +1275,9 @@ class MainWindow(QMainWindow):
             sizes = self.top_split.sizes()
             if len(sizes) == 3:
                 self.top_split.setSizes([sizes[0], max(300, sizes[1] - 120), 360])
-        m = self.settings.value("map")
+        m = self.settings.value("result")
         if m is not None:
-            self.a_map.setChecked(m in (True, "true", "True", 1))
+            self.a_result.setChecked(m in (True, "true", "True", 1))
 
     def _recent(self) -> list[str]:
         v = self.settings.value("recent")
@@ -1219,6 +1365,7 @@ class MainWindow(QMainWindow):
 
     def add_node(self, type_key: str, pos: QPointF | None = None, params: dict | None = None, title: str | None = None,
                  connect_from: str | None = None, port: str | None = None, show: bool = True) -> str:
+        self._entered = True                     # the project now has content: past the start page
         nt = registry.get(type_key)
         if connect_from is None and nt.inputs:
             connect_from = self.current_table()
@@ -1410,6 +1557,7 @@ class MainWindow(QMainWindow):
         self._tick.stop(); self.progress_bar.setValue(1000)
         QTimer.singleShot(350, self._hide_progress)      # let the full bar be seen, then hide
         self._refresh_mode()
+        self._refresh_insight()
         self._on_assistant_run_finished(ok, results)
         failed = [k for k, s in results.items() if s.status == "failed" and k in self.doc.pipeline.nodes]
         if self.doc.last_run_outcome == "stopped":

@@ -17,7 +17,7 @@ from .common import listen
 from .theme import T, category_color
 from .icons import paint as paint_icon, icon, node_icon_name
 
-NODE_W, NODE_H = 236, 78
+NODE_W, NODE_H = 236, 98
 ANSWER_W, ANSWER_H = 230, 70
 PORT_R = 6
 PORT_HIT = 18
@@ -150,10 +150,16 @@ class NodeItem(QGraphicsObject):
         self.rows: int | None = None
         self.error: str | None = None
         self.problem: str | None = None
+        self.finding: str = ""
 
     @property
     def node(self) -> Node:
         return self.canvas.doc.pipeline.nodes[self.node_id]
+
+    @property
+    def is_ai(self) -> bool:
+        ids = self.canvas.doc.pipeline.meta.get("ai_steps") or []
+        return self.node_id in ids
 
     def port(self, name: str) -> PortItem:
         for p in self.inputs:
@@ -169,9 +175,9 @@ class NodeItem(QGraphicsObject):
         p.addRoundedRect(QRectF(0, 0, NODE_W, NODE_H), 6, 6)
         return p
 
-    def set_state(self, status: str, rows: int | None, error: str | None) -> None:
-        self.status, self.rows, self.error = status, rows, error
-        self.setToolTip(error or "")
+    def set_state(self, status: str, rows: int | None, error: str | None, finding: str = "") -> None:
+        self.status, self.rows, self.error, self.finding = status, rows, error, finding or ""
+        self.setToolTip(error or self.finding or "")
         self.update()
 
     def set_problem(self, problem: str | None) -> None:
@@ -205,6 +211,14 @@ class NodeItem(QGraphicsObject):
         painter.restore()
         painter.setPen(QPen(border, width)); painter.setBrush(Qt.NoBrush)
         painter.drawRoundedRect(rect, 6, 6)
+        # a small "AI" tag: this step was built by the Assistant, and can be removed as a set
+        if self.is_ai:
+            tag = QRectF(NODE_W - 32, 8, 24, 14)
+            fill = QColor(T.accent); fill.setAlpha(38 if T.dark else 26)
+            painter.setPen(QPen(QColor(T.accent), 1)); painter.setBrush(fill)
+            painter.drawRoundedRect(tag, 7, 7)
+            painter.setPen(QColor(T.accent)); painter.setFont(_font(7.5, True))
+            painter.drawText(tag, Qt.AlignCenter, "AI")
         # icon
         paint_icon(painter, node_icon_name(node.type), cat.name(), QRectF(12, 12, 20, 20))
         # title
@@ -216,6 +230,12 @@ class NodeItem(QGraphicsObject):
         painter.setFont(f2); painter.setPen(QColor(T.muted))
         sub = nt.summarize(node.params) or nt.label
         painter.drawText(QRectF(40, 29, NODE_W - 50, 16), Qt.AlignLeft | Qt.AlignVCenter, _elide(sub, f2, NODE_W - 52))
+        # the step's finding: the plain sentence it produced, when there is one and nothing is wrong
+        if self.finding and self.status == "done" and not self.problem:
+            f3 = _font(8.0)
+            painter.setFont(f3); painter.setPen(QColor(T.accent))
+            painter.drawText(QRectF(12, 47, NODE_W - 24, 16), Qt.AlignLeft | Qt.AlignVCenter,
+                             "→ " + _elide(self.finding, f3, NODE_W - 40))
         # status line
         if failed:
             color, txt = T.danger, (self.error or "failed")
@@ -491,6 +511,30 @@ class AnswerItem(QGraphicsObject):
             self.canvas.answerDeleteRequested.emit(self.answer_id)
 
 
+class GhostItem(QGraphicsObject):
+    """A proposed step: dashed, not part of the project, waiting to be approved. Nothing here touches the dataflow."""
+
+    def __init__(self, title: str, label: str) -> None:
+        super().__init__()
+        self.title, self.label = title, label
+        self.setZValue(0.5)
+        self.setAcceptedMouseButtons(Qt.NoButton)
+
+    def boundingRect(self) -> QRectF:
+        return QRectF(0, 0, NODE_W, NODE_H)
+
+    def paint(self, painter: QPainter, option, widget=None) -> None:
+        painter.setRenderHint(QPainter.Antialiasing)
+        rect = QRectF(0, 0, NODE_W, NODE_H)
+        painter.setPen(QPen(QColor(T.accent), 1.6, Qt.DashLine)); painter.setBrush(Qt.NoBrush)
+        painter.drawRoundedRect(rect, 6, 6)
+        f = _font(10, True)
+        painter.setPen(QColor(T.text)); painter.setFont(f)
+        painter.drawText(rect.adjusted(12, 12, -12, -12), Qt.AlignLeft | Qt.AlignTop, _elide(self.title, f, NODE_W - 24))
+        painter.setPen(QColor(T.faint)); painter.setFont(_font(8.5))
+        painter.drawText(QRectF(12, NODE_H - 28, NODE_W - 24, 18), Qt.AlignLeft | Qt.AlignVCenter, self.label)
+
+
 class CanvasScene(QGraphicsScene):
     nodeActivated = Signal(str)
     answerActivated = Signal(str)
@@ -536,6 +580,7 @@ class CanvasScene(QGraphicsScene):
         self.blockSignals(True)
         self.clear()
         self.nodes.clear(); self.edges.clear(); self.notes.clear(); self.answers.clear()
+        self._ghost_items = []
         for n in self.doc.pipeline.nodes.values():
             self._add_node(n.id)
         for e in self.doc.pipeline.edges:
@@ -633,9 +678,43 @@ class CanvasScene(QGraphicsScene):
         for edge in self.edges.values():
             edge.setOpacity(1.0)
 
+    def show_ghost(self, steps: list[dict]) -> None:
+        """Draw a proposed chain of steps as dashed, non-committed cards to the right of the graph. The person
+        approves or dismisses it; nothing here is in the pipeline."""
+        self.clear_ghost()
+        if not steps:
+            return
+        items: list[QGraphicsItem] = []
+        r = self.itemsBoundingRect()
+        x0 = r.right() + 90 if self.nodes else 80.0
+        y0 = r.top() if self.nodes else 120.0
+        prev: GhostItem | None = None
+        for i, s in enumerate(steps):
+            x = x0 + i * (NODE_W + 70)
+            item = GhostItem(str(s.get("title") or s.get("type") or "step"), str(s.get("type") or ""))
+            item.setPos(x, y0)
+            self.addItem(item); items.append(item)
+            after = s.get("after")
+            if after and after in self.nodes:
+                a = QGraphicsPathItem(bezier(self.nodes[after].output.scenePos(), QPointF(x, y0 + NODE_H / 2)))
+                a.setPen(QPen(QColor(T.accent), 1.6, Qt.DashLine)); a.setZValue(0.4)
+                self.addItem(a); items.append(a)
+            if prev is not None:
+                e = QGraphicsPathItem(bezier(prev.scenePos() + QPointF(NODE_W, NODE_H / 2), QPointF(x, y0 + NODE_H / 2)))
+                e.setPen(QPen(QColor(T.accent), 1.6, Qt.DashLine)); e.setZValue(0.4)
+                self.addItem(e); items.append(e)
+            prev = item
+        self._ghost_items = items
+
+    def clear_ghost(self) -> None:
+        for item in getattr(self, "_ghost_items", []):
+            self.removeItem(item)
+        self._ghost_items = []
+
     def _apply_state(self, nid: str) -> None:
         st = self.doc.state(nid)
-        self.nodes[nid].set_state(st.status, st.rows, st.error)
+        finding = ((st.report or {}).get("finding") or {}).get("statement") or ""
+        self.nodes[nid].set_state(st.status, st.rows, st.error, finding)
 
     def refresh_states(self) -> None:
         for nid in list(self.nodes):
@@ -669,7 +748,8 @@ class CanvasScene(QGraphicsScene):
 
     def _node_state(self, nid: str, st) -> None:
         if nid in self.nodes:
-            self.nodes[nid].set_state(st.status, st.rows, st.error)
+            finding = ((st.report or {}).get("finding") or {}).get("statement") or ""
+            self.nodes[nid].set_state(st.status, st.rows, st.error, finding)
 
     def update_edges_of(self, nid: str) -> None:
         for key, e in self.edges.items():
@@ -892,9 +972,10 @@ class CanvasView(QGraphicsView):
         self.empty = QLabel(self)
         self.empty.setAlignment(Qt.AlignCenter)
         self.empty.setStyleSheet(f"QLabel {{ color: {T.muted}; border: 1.5px dashed {T.border}; border-radius: 10px; padding: 24px 32px; background: transparent; }}")
-        self.empty.setText("<b style='font-size:12pt'>Drop a CSV or Excel file here</b><br><br>"
-                           "or press <b>+ Add step</b> in the toolbar.<br>"
-                           "<span style='color:%s'>Drag to move around · scroll to zoom</span>" % T.faint)
+        self.empty.setText("<b style='font-size:13pt'>Drop your spreadsheets here</b><br>"
+                           "<span style='color:%s'>CSV, Excel, Parquet, JSON, a folder, a database or a URL</span><br><br>"
+                           "or use <b>Auto</b> to ask a question in plain words.<br>"
+                           "<span style='color:%s'>Drag to move · scroll to zoom</span>" % (T.muted, T.faint))
         self.empty.adjustSize()
 
     def resizeEvent(self, e) -> None:

@@ -875,6 +875,23 @@ class Document(QObject):
         if before != after:
             self.undo.push(cmd.SetDatasetMeta(self, before, after))
 
+    def ai_steps(self) -> list[str]:
+        """The step ids the Assistant built, still present in the project."""
+        ids = self.pipeline.meta.get("ai_steps") or []
+        return [n for n in ids if n in self.pipeline.nodes] if isinstance(ids, list) else []
+
+    def add_ai_steps(self, ids: list[str]) -> None:
+        """Remember that these steps were built by the Assistant (undoable, saved with the project)."""
+        before = self.ai_steps()
+        after = sorted(set(before) | {n for n in ids if n in self.pipeline.nodes})
+        if before != after:
+            self.undo.push(cmd.SetAiSteps(self, before, after))
+
+    def clear_ai_steps(self) -> None:
+        before = self.ai_steps()
+        if before:
+            self.undo.push(cmd.SetAiSteps(self, before, []))
+
     def set_thread(self, thread: dict | None) -> None:
         """Save the Assistant's conversation into the project (undoable, and it marks the project changed)."""
         before = copy.deepcopy(self.pipeline.meta.get("assistant"))

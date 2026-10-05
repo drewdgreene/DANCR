@@ -47,7 +47,7 @@ class InspectorPanel(QWidget):
         self.scroll = QScrollArea(); self.scroll.setWidgetResizable(True); self.scroll.setFrameShape(QFrame.NoFrame)
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         lay.addWidget(self.scroll, 1)
-        self.setMinimumWidth(300)
+        self.setMinimumWidth(220)
         self.scroll.setMinimumWidth(0)
         self.setStyleSheet(f"QWidget#inspector {{ background: {T.bg}; border-left: 1px solid {T.border}; }}")
         listen(self, doc.flushRequested, self._flush)

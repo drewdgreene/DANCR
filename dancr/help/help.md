@@ -10,37 +10,42 @@ analysis repeats. Anyone who opens the project file can see what was done.
 
 ## The window
 
+**The canvas is where you work.** Drop your files onto it and each becomes a
+step; draw arrows between steps to build the analysis. Each card is tinted with
+the colour of its category (Get data, Time, Clean up…) and shows, in a line, the
+plain sentence that step found. An empty canvas invites you to drop a file.
+
+**Sources** run along the bottom of the canvas: one chip per table you brought
+in, with its size, side by side however differently formatted. Click a chip to
+work on that table. When you have two or more, **How these relate** lists the
+links, stacks and time alignments DANCR found — each with a **Build** button that
+adds the matching step (a join, a stack, an alignment) to the canvas.
+
+The **insight line** sits above the canvas: the one finding worth reading right
+now. Click it to jump to the step that produced it.
+
+**The result panel** is the drawer along the bottom (Ctrl+M). It holds whatever
+you clicked — a table (with a *Rows* and a *Describe* tab), a chart with its
+settings as chips, a map, or a report. Close it (✕) and the canvas is untouched;
+drag its top edge to resize it, or press the expand arrow to give it most of the
+window and press it again to restore the canvas.
+
 The **project tree** is on the left. It shows your steps as a tree that follows
-their connections, so each step sits under the step that feeds it. If a step
-has more than one input, the other inputs are listed beneath it. The
+their connections, so each step sits under the step that feeds it. The
 **Flow / Type** button in the header switches to a plain list grouped into
 Tables, Charts and Reports. **Inputs** are always at the bottom. Click a step to
-open it, and the map centres on it.
+open it and centre the canvas on it.
 
-The centre shows whatever you clicked. A table has a *Rows* tab and a
-*Describe* tab, which gives one line per column with blanks, average, min, max
-and so on. A chart shows its settings as chips along the top. A report opens
-the report builder.
+**Settings** is on the right (Ctrl+,), hidden until you ask for it. It lists
+every option of the selected step and has a **Run to here** button for big data.
 
-**Settings** is on the right (Ctrl+,). It lists every option of the selected
-step and has a **Run to here** button for big data.
-
-The **map** runs along the bottom (Ctrl+M). It shows every step, with arrows
-from each step to the ones it feeds. The project tree and the settings panel
-sit above it and stop at its top edge, so the map gets the full width of the
-window. Each card is tinted with the colour of its category (Get data, Time,
-Clean up…).
-
-On the map you can:
+On the canvas you can:
 
 - drag a step to move it
 - drag the background to move around
 - scroll to zoom
 - drag an input dot to rewire. Drop the connection on another step, or on empty
   space to remove it.
-
-Drag the divider between the pages and the map to give the map more or less
-room.
 
 DANCR follows your system's light or dark appearance. To choose by hand, use
 *View → Appearance* (Follow the system / Light / Dark). DANCR remembers your
@@ -66,7 +71,7 @@ sample file. When you're ready, swap in your own file in the loader's Settings.
 
 ## Answers: ask, or pick one DANCR offers
 
-Press **Ask a question** (Ctrl+J). A bar opens above the table with answers
+Press **Auto** (Ctrl+J). A bar opens above the table with answers
 DANCR can build right away, such as *Total sales by region*, *Average pressure
 per hour*, *probe B minus probe A*, *Gaps in the log* or *Top 10 customers*.
 Each card has a small preview.
@@ -201,7 +206,7 @@ build and change is one undo step.
 
 ## Assistant (AI)
 
-**Assistant** sits next to **Ask a question** (Ctrl+Shift+J). It is the same
+**Assistant** sits next to **Auto** (Ctrl+Shift+J). It is the same
 idea, but conversational: you talk to it in plain English, and it builds the
 same kind of steps and Answer cards for you to approve.
 
@@ -211,9 +216,11 @@ The rules are fixed and simple:
   not get from a DANCR run. If it ever shows a figure that cannot be traced to a
   run, it is marked *unverified* rather than presented as fact.
 - **It proposes; you approve.** A reply may carry a **Plan** card listing the
-  steps it would build. Nothing changes until you press **Build & run**. The
-  steps it adds are ordinary nodes you can edit, and the whole build is one undo
-  step.
+  steps it would build, and the plan is drawn on the canvas as dashed **ghost
+  cards** so you can see it before it exists. Nothing changes until you press
+  **Build & run**; **Discard** drops it. The steps it adds are ordinary nodes you
+  can edit, marked with a small **AI** tag so you always know which came from the
+  Assistant. **Edit → Remove AI-built steps** deletes them all in one undo.
 - **It never invents joins or columns.** It uses your tables' own names and
   what the engine has already worked out about how they relate.
 
@@ -459,7 +466,7 @@ recomputes every step and replaces the stored results.
 |---|---|
 | Ctrl+I | Open data file |
 | Ctrl+K / Insert | Add step |
-| Ctrl+J | Ask a question about your data |
+| Ctrl+J | Auto: ask a question about your data |
 | Ctrl+Shift+J | Open the Assistant (the conversational version) |
 | Ctrl+F | Find in the table / jump to a time |
 | Ctrl+R / F5 | Run everything |
@@ -469,10 +476,10 @@ recomputes every step and replaces the stored results.
 | Ctrl+Z / Ctrl+Y | Undo / Redo |
 | Ctrl+D | Duplicate step |
 | Delete | Delete step |
-| Ctrl+M | Show / hide the map |
+| Ctrl+M | Show / hide the result panel |
 | Ctrl+, | Show / hide settings |
 | Ctrl+Shift+I | Inputs |
-| Ctrl+0 | Fit the map in view |
+| Ctrl+0 | Fit the canvas in view |
 | F1 | This guide |
 
 ## Troubleshooting

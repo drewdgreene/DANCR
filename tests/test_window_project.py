@@ -45,12 +45,17 @@ def test_save_as_keeps_cache(opened_window, app, tmp_path):
 
 
 def test_start_page_then_table(window, app, sample):
-    assert window.pages.currentWidget() is window.start
+    assert window.root.currentWidget() is window.start
     assert not window.rail.isVisible() and not window.inspector.isVisible()      # nothing to list or set yet
     window._add_load_node(str(sample), None)
     pump(app, 100)
     assert window.pages.currentWidget() is window.table
-    assert window.rail.isVisible() and window.inspector.isVisible()
+    assert window.rail.isVisible() and window.result_box.isVisible()             # result drawer opens on the step
+    assert window.inspector.isVisible()                                          # settings are open by default
+    window.a_settings.setChecked(False); window._apply_side_panels()
+    assert not window.inspector.isVisible()
+    window.a_settings.setChecked(True); window._apply_side_panels()
+    assert window.inspector.isVisible()
     assert window.doc.auto_run                     # small file: runs by itself
     wait_run(window, app)
     nid = window.current_table()

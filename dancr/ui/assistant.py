@@ -196,7 +196,7 @@ class AssistantCard(QFrame):
     """A reply: the model's words, with a note when it named a number the engine never produced."""
 
     def __init__(self, text: str, flags: list[str] | None = None, next_questions: list[str] | None = None,
-                 on_question=None, parent=None) -> None:
+                 on_question=None, unverified: list[str] | None = None, parent=None) -> None:
         super().__init__(parent)
         self.setStyleSheet(f"QFrame {{ background:{T.panel}; border:1px solid {T.border_soft}; border-radius:{RADIUS}px; }}")
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
@@ -208,8 +208,13 @@ class AssistantCard(QFrame):
         body = _plain(QLabel(text or "(no words)"), T.text)
         body.setTextInteractionFlags(Qt.TextSelectableByMouse)
         v.addWidget(body)
-        if flags and "unverified-figure" in flags:
-            v.addWidget(_plain(QLabel("Unverified figure — that number was not in a run."), T.warn))
+        flags = flags or []
+        if "unverified-figure" in flags:
+            tokens = ", ".join(str(t) for t in (unverified or [])[:8])
+            msg = f"Not backed by a run: {tokens}" if tokens else "A figure here was not in a run."
+            v.addWidget(_plain(QLabel(msg), T.warn))
+        if "truncated" in flags:
+            v.addWidget(_plain(QLabel("The reply was cut off. Ask me to carry on."), T.warn))
         if next_questions:
             v.addWidget(_plain(QLabel("You could ask"), T.faint, size=9))
             for q in next_questions[:3]:
@@ -430,6 +435,7 @@ class EmptyState(QFrame):
         row.addStretch(1)
         v.addLayout(row)
         v.addWidget(_plain(QLabel("Commands:  /profile  /connections  /explain  /clean  /report"), T.faint, size=9))
+        v.addWidget(_plain(QLabel("First time? Add a model key from the ⋮ menu above."), T.faint, size=9))
         v.addStretch(2)
 
 
@@ -447,6 +453,8 @@ class AssistantPanel(QFrame):
     revealRequested = Signal(str)
     saveProjectRequested = Signal(str)
     replaceCanvasRequested = Signal(str)
+    proposalPreview = Signal(dict)      # a proposed plan, to ghost onto the canvas
+    proposalCleared = Signal()          # the proposal was dismissed or the project changed
 
     def __init__(self, doc, understanding, parent=None) -> None:
         super().__init__(parent)
@@ -633,10 +641,15 @@ class AssistantPanel(QFrame):
         self._reload_cards()
 
     def allow_egress(self) -> bool:
-        return bool(self.settings.value(SETTING_CONSENT, False, type=bool))
+        """Consent is per endpoint: changing the model server asks again rather than silently sending there."""
+        return bool(self.settings.value(self._consent_key(), False, type=bool)) or \
+            bool(self.settings.value(SETTING_CONSENT, False, type=bool))
 
     def set_allow_egress(self, on: bool) -> None:
-        self.settings.setValue(SETTING_CONSENT, bool(on))
+        self.settings.setValue(self._consent_key(), bool(on))
+
+    def _consent_key(self) -> str:
+        return f"{SETTING_CONSENT}/{self._settings_obj().base_url.strip()}"
 
     def _ensure_consent(self) -> bool:
         if self._provider is not None or self.allow_egress():
@@ -666,6 +679,7 @@ class AssistantPanel(QFrame):
         self._busy = False
         self._announced = set()
         self._focus = None
+        self.proposalCleared.emit()
         self._reload_cards()
 
     def _on_node_added(self, nid: str) -> None:
@@ -728,8 +742,12 @@ class AssistantPanel(QFrame):
             o += int(u.get("completion_tokens") or 0)
         if not (p or o):
             self.cost.setText(""); return
-        est = max(0, p - c) / 1e6 * PRICE_IN_PER_M + c / 1e6 * PRICE_CACHED_PER_M + o / 1e6 * PRICE_OUT_PER_M
-        self.cost.setText(f"{p + o:,} tokens · about ${est:.4f}")
+        s = self._settings_obj()
+        if "fireworks" in s.base_url.lower() or "deepseek" in s.model.lower():
+            est = max(0, p - c) / 1e6 * PRICE_IN_PER_M + c / 1e6 * PRICE_CACHED_PER_M + o / 1e6 * PRICE_OUT_PER_M
+            self.cost.setText(f"{p + o:,} tokens · about ${est:.4f}")
+        else:
+            self.cost.setText(f"{p + o:,} tokens · cost varies by provider")
 
     def _add_turn(self, turn) -> None:
         if turn.role == "user":
@@ -738,7 +756,8 @@ class AssistantPanel(QFrame):
         if turn.kind in ("paused", "error"):
             self._add_widget(NoteCard(turn.text or "The model could not be reached", error=turn.kind == "error"))
             return
-        self._add_widget(AssistantCard(turn.text, turn.flags, turn.next_questions, self._ask_again))
+        self._add_widget(AssistantCard(turn.text, turn.flags, turn.next_questions, self._ask_again,
+                                       unverified=turn.unverified))
         prop = turn.proposal
         if prop and prop.get("kind") in ("answer", "steps"):
             card = ProposalCard(prop, self._build, self._discard)
@@ -885,7 +904,13 @@ class AssistantPanel(QFrame):
         name, _, rest = text[1:].partition(" ")
         cmd = name.strip().lower()
         if cmd == "undo":
-            self.doc.undo.undo(); return "", "done"
+            if self.doc.undo.canUndo():
+                label = self.doc.undo.undoText()
+                self.doc.undo.undo()
+                self._add_widget(NoteCard(f"Undid: {label}." if label else "Undid the last change."))
+            else:
+                self._add_widget(NoteCard("Nothing to undo."))
+            return "", "done"
         if cmd == "build":
             return (rest.strip() or "What can you build from these tables?"), None
         if cmd in self.COMMANDS:
@@ -964,12 +989,13 @@ class AssistantPanel(QFrame):
                                            ("Try a different way", lambda: self._ask_again("Try a different approach."))], tone="warn"))
             return
         nxt = (reply.proposal or {}).get("next_questions") or []
-        self._add_widget(AssistantCard(reply.text, reply.flags, nxt, self._ask_again))
+        self._add_widget(AssistantCard(reply.text, reply.flags, nxt, self._ask_again, unverified=reply.unverified))
         prop = reply.proposal
         if prop and prop.get("kind") in ("answer", "steps"):
             card = ProposalCard(prop, self._build, self._discard)
             self._pending_card = card
             self._add_widget(card)
+            self.proposalPreview.emit(prop)
         elif prop and prop.get("kind") == "edits":
             self._pending_edits_card = EditsCard(prop, self._apply_edits, self._discard_edits)
             self._add_widget(self._pending_edits_card)
@@ -983,6 +1009,7 @@ class AssistantPanel(QFrame):
 
     def _discard(self, card: ProposalCard) -> None:
         card.setVisible(False)
+        self.proposalCleared.emit()
 
     def _apply_edits(self, card: EditsCard) -> None:
         card.apply_btn.setText("Applying…"); card.apply_btn.setEnabled(False)
@@ -1006,8 +1033,25 @@ class AssistantPanel(QFrame):
                        on_save=(lambda t=terminal: self.saveProjectRequested.emit(t)) if terminal else None,
                        on_replace=(lambda t=terminal: self.replaceCanvasRequested.emit(t)) if terminal else None)
             self._pending_card = None
+        self._note_built(finding=finding, terminal=terminal, answer_id=answer_id)
         if message:
             self._add_widget(NoteCard(message))
+
+    def _note_built(self, finding: str = "", terminal: str | None = None, answer_id: str | None = None) -> None:
+        """Fold the run's outcome into the turn that proposed it, so a reopened project shows the plan built —
+        with the engine's Result — instead of offering to build it a second time."""
+        if not alive(self) or not (finding or terminal or answer_id):
+            return
+        for turn in reversed(self._thread.turns):
+            if turn.role == "assistant" and (turn.proposal or {}).get("kind") in ("answer", "steps"):
+                if terminal:
+                    turn.node = terminal
+                if answer_id:
+                    turn.answer = answer_id
+                if finding:
+                    turn.finding = finding
+                self.doc.set_thread(self._thread.to_dict())
+                return
 
     def _show_note(self, text: str, error: bool = False) -> None:
         self._add_widget(NoteCard(text, error=error))

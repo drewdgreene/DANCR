@@ -126,7 +126,7 @@ class Rail(QWidget):
     def __init__(self, doc: Document, parent=None) -> None:
         super().__init__(parent)
         self.doc = doc
-        self.setMinimumWidth(190); self.setMaximumWidth(340)
+        self.setMinimumWidth(120); self.setMaximumWidth(340)
         self.mode = str(QSettings().value(self.MODE_SETTING, "flow") or "flow")
         if self.mode not in ("flow", "type"):
             self.mode = "flow"

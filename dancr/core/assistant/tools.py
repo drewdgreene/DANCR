@@ -299,6 +299,7 @@ class ToolRunner:
     def _validate_edits(self, edits: list[Any]) -> list[dict[str, Any]] | dict[str, Any]:
         """Check a batch of pipeline edits against the project, without changing anything."""
         known = set(self.pipe.nodes)
+        columns = {c.name for t in self.model.tables.values() for c in t.columns}
         out: list[dict[str, Any]] = []
         for i, e in enumerate(edits):
             if not isinstance(e, dict):
@@ -335,13 +336,22 @@ class ToolRunner:
                 name = clean(e.get("name") or "", 60)
                 if not name:
                     return {"error": f"Edit {i}: set_input needs a name"}
+                unit = clean(e.get("unit") or "", 20)
+                note = clean(e.get("note") or "", 200)
+                try:                                    # validated on a throwaway project, as the window applies it
+                    from ..model import Pipeline
+                    Pipeline().set_input(name, e.get("value"), unit, note)
+                except Exception as ex:  # noqa: BLE001 - a bad input is handed back to the model to fix
+                    return {"error": f"Edit {i}: {ex}"}
                 out.append({"op": "set_input", "name": name, "value": e.get("value"),
-                            "unit": clean(e.get("unit") or "", 20), "note": clean(e.get("note") or "", 200),
-                            "summary": f"input {name} = {e.get('value')}"})
+                            "unit": unit, "note": note, "summary": f"input {name} = {e.get('value')}"})
             elif op == "column_label":
                 col = str(e.get("column") or "").strip()
                 if not col:
                     return {"error": f"Edit {i}: column_label needs a column"}
+                if columns and col not in columns:
+                    near = [c for c in columns if col.lower() in c.lower()][:5]
+                    return {"error": f"Edit {i}: no column called {col!r}", "did_you_mean": near}
                 out.append({"op": "column_label", "column": col, "label": clean(e.get("label") or "", 80),
                             "unit": clean(e.get("unit") or "", 20),
                             "summary": f"column {col} → “{e.get('label') or col}”"})

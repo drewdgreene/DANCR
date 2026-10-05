@@ -53,11 +53,19 @@ Assistant "just does things" while keeping the approval gate.
   with a nudge instead of being run again; if a whole round is repeats, the turn ends with "tell me which
   step to change, or try a different way". This stops the old `list_node_types` × 14 loop.
 - `list_steps` is what the model reads to see the map, so it does not have to guess the project's steps.
+- A reply cut off by the model's token limit (`finish_reason: "length"`) is flagged **truncated** and the card
+  offers a **Carry on**, rather than presenting a half answer as complete.
+- A built plan is folded back into the turn that proposed it (its `node`, `answer` and the engine's `finding`),
+  so reopening the project shows it **built, with its Result** — it is never offered to be built a second time.
 
 ## The trust contract, enforced in code
 
 - **Engine does the maths.** `propose` only plans; the window runs the plan; the finding comes from the
-  run's `report`. A reply is scanned for numbers and any not present in a tool result is flagged.
+  run's `report`. A reply is scanned for numbers and any figure no tool result (or the profile's own engine
+  statistics, or an earlier verified turn) backs is flagged and **named** ("Not backed by a run: 987654").
+  Written forms are matched either way (`50` ≡ `50.0` ≡ `1,234`); only a single-digit integer is treated as a
+  structural count ("2 tables") rather than a claim about the data. Category *cell values* never count as a
+  source, so a figure copied from a cell is still unverified.
 - **No invented joins.** Connections are the engine's own `understand` relations; the model can only
   reference tables and columns that exist, and `recipes.plan` rejects anything else.
 - **Data is never instructions.** Data-derived text is sanitised, wrapped in a labelled block that it
@@ -88,8 +96,10 @@ Assistant "just does things" while keeping the approval gate.
 ## Privacy, cost and keys
 
 - The first time real data would leave the machine, the panel says exactly what is sent (a profile, not
-  rows, unless sample rows are allowed) and asks; **Allow sending data** in the ⋮ menu can revoke it. A
-  rigged/fake provider never leaves the machine, so it is never asked.
+  rows, unless sample rows are allowed) and asks; **Allow sending data** in the ⋮ menu can revoke it. Consent
+  is remembered **per endpoint**, so pointing DANCR at a different model server asks again rather than sending
+  silently. A rigged/fake provider never leaves the machine, so it is never asked. Headless turns (CLI/MCP)
+  have no window to ask, so they state the egress in the result (`sent_to`) and the log instead.
 - Only the profile, the thread, your questions and the engine's tool results are sent. Sample rows are off
   by default. This is the only feature that uses the internet.
 - The footer shows the session's **exact token counts** and a rough cost (input / cached-input / output

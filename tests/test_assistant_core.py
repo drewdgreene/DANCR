@@ -310,6 +310,72 @@ def test_turn_does_not_flag_a_figure_the_tools_returned(project):
     assert "unverified-figure" not in r.flags
 
 
+def test_turn_flags_a_two_digit_unbacked_figure(project):
+    # no get_stats call, so 50 is not backed — a small fabricated figure is now flagged too
+    s = _session(project, [_call("propose", reply="The total is 77.", answer=SPEC)])
+    r = s.turn("what is the total")
+    assert "unverified-figure" in r.flags and "77" in r.unverified
+
+
+def test_turn_does_not_flag_a_profile_stat(project):
+    # the profile itself carries the engine's own amount max; quoting it is backed
+    p, ex, m = project
+    top = max(int(c.maximum) for t in m.tables.values() for c in t.columns if c.name == "amount")
+    s = _session(project, [_say(f"The largest amount is {top}.")])
+    r = s.turn("largest amount")
+    assert "unverified-figure" not in r.flags
+
+
+def test_prior_turn_allowed_numbers_are_not_flagged(project):
+    s = _session(project, [_call("get_stats", node="orders", columns=["amount"]), _say("max is 50"),
+                           _say("as I said, 50")])
+    r1 = s.turn("max?"); s.record("max?", r1)
+    r2 = s.turn("again")
+    assert "unverified-figure" not in r2.flags
+
+
+def test_turn_flags_a_truncated_reply(project):
+    p, ex, m = project
+    cut = ChatResult(Message("assistant", "The answer is incomplete because the model ran out of room"),
+                     Usage(), "length")
+    s = AssistantSession(p, ex, m, FakeProvider([cut]), ModelSettings(api_key="k"))
+    r = s.turn("q")
+    assert "truncated" in r.flags
+
+
+def test_record_keeps_unverified_and_allowed(project):
+    p, _ex, _m = project
+    s = _session(project, [_call("propose", reply="The total is 987654.", answer=SPEC)])
+    r = s.turn("q"); s.record("q", r)
+    from dancr.core.assistant.store import load_thread, save_thread
+    save_thread(p, s.thread)
+    t = load_thread(p).turns[-1]
+    assert t.unverified and t.allowed
+
+
+def test_propose_edits_rejects_a_missing_column(project):
+    p, ex, m = project
+    out = ToolRunner(p, ex, m).call("propose_edits", {"edits": [{"op": "column_label", "column": "nope", "label": "x"}]})
+    assert not out.terminal and out.content["ok"] is False and "no column" in out.content["error"]
+
+
+def test_propose_edits_rejects_a_bad_input(project):
+    p, ex, m = project
+    out = ToolRunner(p, ex, m).call("propose_edits", {"edits": [{"op": "set_input", "name": "123 bad", "value": 1}]})
+    assert not out.terminal and out.content["ok"] is False
+
+
+def test_headless_build_records_the_outcome(project):
+    p, _ex, _m = project
+    from dancr import headless as hl
+    out = hl.assistant_turn(p, "total amount by region",
+                            provider=FakeProvider([_call("propose", reply="Total by region.", answer=SPEC)]),
+                            settings=ModelSettings(api_key="k"), build=True)
+    assert out["status"] == "done" and out.get("sent_to") is None      # a fake provider never leaves the machine
+    turn = p.meta["assistant"]["turns"][-1]
+    assert turn["node"] and turn["answer"]
+
+
 def test_turn_pauses_without_a_key(project):
     p, ex, m = project
     from dancr.core.assistant.client import OpenAIProvider

@@ -31,6 +31,8 @@ class Turn:
     assumptions: list[str] = field(default_factory=list)
     next_questions: list[str] = field(default_factory=list)
     flags: list[str] = field(default_factory=list)
+    unverified: list[str] = field(default_factory=list)   # figures in the reply no tool result backed
+    allowed: list[str] = field(default_factory=list)      # figures this turn's tools/profile did back (for later turns)
     usage: dict[str, int] = field(default_factory=dict)
     ts: float = field(default_factory=time.time)
 

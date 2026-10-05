@@ -9,7 +9,7 @@ from typing import Callable
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (QFrame, QWidget, QHBoxLayout, QVBoxLayout, QLabel, QPushButton, QDialog, QListWidget, QListWidgetItem,
                                QDialogButtonBox, QLineEdit, QPlainTextEdit, QFormLayout, QTreeWidget, QTreeWidgetItem,
-                               QFileDialog)
+                               QFileDialog, QScrollArea)
 
 from .document import Document
 from .workers import Serial
@@ -86,6 +86,42 @@ def _step_count(path: Path) -> int | None:
         return len(json.loads(path.read_text(encoding="utf-8")).get("nodes") or [])
     except (OSError, ValueError, AttributeError):
         return None
+
+
+class RelationsDialog(QDialog):
+    """How the tables fit together, as DANCR worked it out from the data. Each relation can be built into the
+    matching step (a join, a stack, a time alignment) on the canvas — only when you say so."""
+
+    def __init__(self, parent, relations, on_build=None) -> None:
+        super().__init__(parent)
+        from ..core.profile import relation_phrase
+        self.setWindowTitle("How these tables relate"); self.resize(560, 440)
+        self._on_build = on_build
+        lay = QVBoxLayout(self)
+        intro = QLabel("DANCR worked these out from the data. Build one to add the matching step to the canvas.")
+        intro.setWordWrap(True); lay.addWidget(intro)
+        body = QWidget(); bl = QVBoxLayout(body); bl.setContentsMargins(0, 4, 0, 4); bl.setSpacing(6)
+        for r in relations:
+            row = QFrame(); row.setObjectName("panel")
+            row.setStyleSheet(f"QFrame#panel {{ background: {T.panel}; border: 1px solid {T.border}; border-radius: 6px; }}")
+            h = QHBoxLayout(row); h.setContentsMargins(10, 6, 8, 6)
+            lab = QLabel(relation_phrase(r)); lab.setWordWrap(True)
+            btn = QPushButton("Build")
+            btn.clicked.connect(lambda _=False, rel=r: self._build(rel))
+            h.addWidget(lab, 1); h.addWidget(btn)
+            bl.addWidget(row)
+        if not relations:
+            bl.addWidget(QLabel("No relations were found between the tables."))
+        bl.addStretch()
+        scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setFrameShape(QFrame.NoFrame); scroll.setWidget(body)
+        lay.addWidget(scroll, 1)
+        bb = QDialogButtonBox(QDialogButtonBox.Close); bb.rejected.connect(self.reject); bb.accepted.connect(self.accept)
+        lay.addWidget(bb)
+
+    def _build(self, relation) -> None:
+        if self._on_build:
+            self._on_build(relation)
+        self.accept()
 
 
 class CatalogDialog(QDialog):

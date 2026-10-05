@@ -3,7 +3,7 @@ import polars as pl
 
 from helpers import settle, wait_run
 from dancr.core.assistant.client import ChatResult, FakeProvider, Message, ToolCall, Usage
-from dancr.ui.assistant import AssistantCard, ChoiceCard, ChoiceRow
+from dancr.ui.assistant import AssistantCard, ChoiceCard, ChoiceRow, ProposalCard
 
 
 def _call(name, **a):
@@ -168,6 +168,24 @@ def test_assistant_replace_canvas_is_undoable(window, app, tmp_path):
     assert a.terminal in window.doc.pipeline.nodes         # the answer's steps stay
     window.doc.undo.undo()
     assert other in window.doc.pipeline.nodes              # Ctrl+Z brings it all back
+
+
+def test_a_built_plan_stays_built_after_a_reload(window, app, tmp_path):
+    src = _load(window, app, tmp_path)
+    spec = {"recipe": "breakdown", "table": src, "measure": [src, "amount"], "stat": "sum", "by": [src, "region"]}
+    panel = window.assistant
+    panel.set_provider(FakeProvider([_call("propose", reply="ok", answer=spec)]))
+    window.a_assistant.setChecked(True); window._apply_side_panels()
+    panel.edit.setPlainText("total by region"); panel.send()
+    settle(app, lambda: panel._pending_card is not None, 20)
+    panel._build(panel._pending_card)
+    wait_run(window, app)
+    from dancr.core.assistant.store import load_thread
+    turn = load_thread(window.doc.pipeline).turns[-1]
+    assert turn.node and turn.answer                       # the outcome was folded into the thread
+    panel._reload_cards()                                  # what reopening a project does
+    cards = panel.body.findChildren(ProposalCard)
+    assert cards and cards[-1].build_btn.isHidden()        # shown as built, not offered to build again
 
 
 def test_cost_meter_shows_the_session(window, app, tmp_path):

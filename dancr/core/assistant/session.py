@@ -40,6 +40,8 @@ class AssistantReply:
     kind: str = "text"                       # text | answer | steps | error | paused
     proposal: dict[str, Any] | None = None
     flags: list[str] = field(default_factory=list)
+    unverified: list[str] = field(default_factory=list)   # the exact figures no tool result backed
+    allowed: list[str] = field(default_factory=list)      # figures this turn's tools/profile did back
     usage: dict[str, int] = field(default_factory=dict)
     tool_calls: list[str] = field(default_factory=list)
     error: str = ""
@@ -103,13 +105,16 @@ class AssistantSession:
             return AssistantReply(kind="paused", text="No model key is set. Open the Assistant settings and add a key.")
         messages = self._messages(user_text)
         schemas = self.runner.schemas()
-        # only what the engine's tools returned counts as a source for a figure; the profile's category
-        # values are data, so a number copied from a cell is still unverified
-        allowed: list[str] = []
+        # What counts as a source for a figure: what the engine's tools returned this turn, plus the engine's
+        # own statistics in the profile (counts, ranges, distinct) — but not the profile's category *values*,
+        # which are data, so a number copied from a cell is still unverified.
+        allowed_texts: list[str] = [_profile_stats_text(self.profile())]
+        prior = self._prior_allowed()
         called: list[str] = []
         proposal: dict[str, Any] | None = None
         connections: list[dict[str, Any]] = []
         final_text = ""
+        finish = ""
         extra_flags: list[str] = []
         seen: dict[str, int] = {}          # name+arguments -> how many times this turn
         by_name: dict[str, int] = {}       # tool name -> how many times this turn
@@ -122,6 +127,7 @@ class AssistantSession:
                 emit({"status": "Thinking" if _round else "Reviewing what the engine returned"})
                 result: ChatResult = self.provider.chat(messages, schemas, self.settings)
                 self.usage.add(result.usage)
+                finish = result.finish_reason or finish
                 msg = result.message
                 messages.append(msg)
                 if not msg.tool_calls:
@@ -149,7 +155,7 @@ class AssistantSession:
                     executed += 1
                     outcome = self.runner.call(call.name, call.arguments)
                     text = tool_result_text(call.name, outcome.content)
-                    allowed.append(text)
+                    allowed_texts.append(text)
                     messages.append(Message("tool", text, tool_call_id=call.id))
                     if call.name == "list_connections" and isinstance(outcome.content.get("connections"), list):
                         connections = outcome.content["connections"]       # keep the engine's map, to persist
@@ -172,6 +178,8 @@ class AssistantSession:
         except ProviderError as e:
             return AssistantReply(kind="error", text="", error=str(e), usage=self._usage())
 
+        if finish == "length":
+            extra_flags.append("truncated")          # the model was cut off mid-answer
         if connections:
             self.last_connections = connections
         if proposal is not None:
@@ -180,9 +188,11 @@ class AssistantSession:
         else:
             text, kind = final_text.strip(), "text"
         text = text[:MAX_REPLY]
-        flags = _flags_for(text, allowed) + extra_flags
-        return AssistantReply(text=text, kind=kind, proposal=proposal, flags=flags, usage=self._usage(),
-                              tool_calls=called)
+        allowed = _allowed_numbers(allowed_texts)
+        flags, unverified = _flags_for(text, allowed, prior)
+        return AssistantReply(text=text, kind=kind, proposal=proposal, flags=flags + extra_flags,
+                              unverified=unverified, allowed=sorted(allowed)[:800],
+                              usage=self._usage(), tool_calls=called)
 
     def record(self, user_text: str, reply: AssistantReply, *, finding: str = "", node: str | None = None,
                answer: str | None = None) -> None:
@@ -195,7 +205,16 @@ class AssistantSession:
                              finding=finding, node=node, answer=answer,
                              assumptions=[str(a) for a in (prop.get("assumptions") or [])],
                              next_questions=[str(q) for q in (prop.get("next_questions") or [])],
-                             flags=list(reply.flags), usage=dict(reply.usage)))
+                             flags=list(reply.flags), unverified=list(reply.unverified),
+                             allowed=list(reply.allowed), usage=dict(reply.usage)))
+
+    def _prior_allowed(self) -> set[str]:
+        """The figures earlier turns' tools backed, so a model restating a verified number is not flagged."""
+        out: set[str] = set()
+        for t in self.thread.turns:
+            if t.role == "assistant" and t.allowed:
+                out.update(t.allowed)
+        return out
 
     def _usage(self) -> dict[str, int]:
         return {"prompt_tokens": self.usage.prompt_tokens, "completion_tokens": self.usage.completion_tokens,
@@ -225,18 +244,46 @@ def _number_forms(tok: str) -> set[str]:
     return forms
 
 
-def _flags_for(text: str, allowed_texts: Sequence[str]) -> list[str]:
-    """Any figure in the reply that no tool result or finding contains is flagged, not trusted."""
+_DATEISH = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+def _profile_stats_text(profile: dict[str, Any]) -> str:
+    """The profile as text with cell data dropped: the engine's own statistics (counts, ranges, distinct, dates)
+    are backed figures, but a value copied from a cell is not. So the category ``values`` are dropped, and a
+    text column's ``min``/``max`` (which are lexicographic cell values) too; a number or a date is kept."""
+    def strip(o: Any) -> Any:
+        if isinstance(o, dict):
+            out: dict[str, Any] = {}
+            for k, v in o.items():
+                if k == "values":
+                    continue
+                if k in ("min", "max") and isinstance(v, str) and not _DATEISH.search(v):
+                    continue
+                out[k] = strip(v)
+            return out
+        if isinstance(o, list):
+            return [strip(x) for x in o]
+        return o
+    return json.dumps(strip(profile), default=str, ensure_ascii=False)
+
+
+def _flags_for(text: str, allowed: set[str], prior: set[str]) -> tuple[list[str], list[str]]:
+    """Split a reply's figures into (flags, the exact unbacked tokens).
+
+    A figure is backed when any of its written forms (``50`` ≡ ``50.0`` ≡ ``1,234``) appears in a tool result,
+    the profile's statistics, or an earlier turn. Only a single-digit integer is treated as a structural count
+    ("2 tables") rather than a claim about the data; anything larger, or with a decimal or a percent, that no
+    tool backed is flagged and named."""
     if not text:
-        return []
-    allowed = _allowed_numbers(allowed_texts)
+        return [], []
     unverified: list[str] = []
     for m in _NUMBER.finditer(text):
         tok = m.group(0)
+        forms = _number_forms(tok)
+        if forms & allowed or forms & prior:
+            continue
         core = tok.replace(",", "").lstrip("-")
-        if "," not in tok and "." not in tok and len(core) <= 2:
-            continue                                # small counts ("2 steps") are not claims about the data
-        if tok in allowed or core in allowed:
+        if "." not in tok and "," not in tok and len(core) <= 1:
             continue
         unverified.append(tok)
-    return ["unverified-figure"] if unverified else []
+    return (["unverified-figure"] if unverified else []), unverified

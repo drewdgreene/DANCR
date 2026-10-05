@@ -392,6 +392,30 @@ class SetDatasetMeta(QUndoCommand):
         self._apply(self.before)
 
 
+class SetAiSteps(QUndoCommand):
+    """Which steps the Assistant built. Kept in ``meta`` (so it travels with the project and is undoable), so the
+    canvas can mark them and the person can remove every AI-built step in one go."""
+
+    def __init__(self, doc: "Document", before: list | None, after: list | None, text: str = "Assistant steps") -> None:
+        super().__init__(text)
+        self.doc, self.before, self.after = doc, before, after
+
+    def _apply(self, value: list | None) -> None:
+        meta = self.doc.pipeline.meta
+        if value:
+            meta["ai_steps"] = list(value)
+        else:
+            meta.pop("ai_steps", None)
+        self.doc.statesChanged.emit()                 # repaint the canvas so the AI marker follows
+        self.doc.message.emit("Marked the Assistant's steps" if value else "Cleared the Assistant's steps")
+
+    def redo(self) -> None:
+        self._apply(self.after)
+
+    def undo(self) -> None:
+        self._apply(self.before)
+
+
 class ReplacePipeline(QUndoCommand):
     """Replace the whole canvas (nodes, edges, answers, inputs, columns, meta) as one undo step. Used by the
     Assistant's "replace the canvas with this": the file and the cache stay, so shared steps keep their results."""

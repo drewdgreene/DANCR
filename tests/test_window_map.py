@@ -38,14 +38,14 @@ def test_connect_via_scene_validation(opened_window, app):
     assert msgs and ("loop" in msgs[0].lower() or "already connected" in msgs[0].lower())
 
 
-def test_map_closes_to_a_handle_and_reopens(window, app, sample):
+def test_result_panel_closes_to_a_handle_and_reopens(window, app, sample):
     window._add_load_node(str(sample), None); wait_run(window, app)
-    assert window.map_box.isVisible() and not window.map_handle.isVisible()
-    window.map_close.click(); pump(app, 100)
-    assert not window.map_box.isVisible() and window.map_handle.isVisible()
-    window.map_handle.click(); pump(app, 100)
-    assert window.map_box.isVisible() and not window.map_handle.isVisible()
-    assert window.outer_split.sizes()[1] >= 120
+    assert window.result_box.isVisible() and not window.result_handle.isVisible()
+    window.a_result.setChecked(False); pump(app, 100)
+    assert not window.result_box.isVisible() and window.result_handle.isVisible()
+    window.result_handle.click(); pump(app, 100)
+    assert window.result_box.isVisible() and not window.result_handle.isVisible()
+    assert window.outer_split.sizes()[1] >= 140
 
 
 def test_rail_flow_tree_nests_steps_by_connection(window, app, sample):
@@ -180,17 +180,15 @@ def test_wheel_zooms_the_map_without_a_modifier(window, app):
     assert v.transform().m11() > base
 
 
-def test_map_runs_full_width_below_the_side_panels(window, app, sample):
-    """The rail and settings stop at the top of the map; the map spans the whole window width."""
+def test_result_panel_runs_full_width_below_the_canvas(window, app, sample):
+    """The canvas is the main stage; the result drawer spans the whole window width below it."""
     window.doc.set_auto_run(False)
     window._add_load_node(str(sample), None)
     pump(app, 120)
-    map_g = window.map_box.geometry()
-    assert map_g.x() == 0 and abs(map_g.width() - window.width()) <= 2
-    assert window.rail.geometry().bottom() <= map_g.top()
-    assert window.inspector.geometry().bottom() <= map_g.top()
-    assert map_g.height() > 80
-    assert window.rail.geometry().top() == window.inspector.geometry().top() == 0
+    result_g = window.result_box.geometry()
+    assert result_g.x() == 0 and abs(result_g.width() - window.width()) <= 2
+    assert window.outer_split.widget(0).geometry().bottom() <= result_g.top() + 2
+    assert result_g.height() > 80
 
 
 def test_map_dot_grid_has_zoom_independent_spacing():
