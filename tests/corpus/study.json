@@ -1,42 +1,42 @@
 {
  "tables": {
-  "Leaves & Light Data Sheet": {
+  "lab data": {
    "shape": "events",
    "rows": 30,
    "time": null,
    "columns": {
-    "N - Leaf": "id",
+    "N - Sample": "id",
     "group": "category",
-    "Leaf area (LA) cm2": "measure",
-    "polygon area (PA) cm2": "measure",
-    "D": "measure",
-    "m (g)": "measure",
-    "m/LA x 10000 (g/m2)": "measure"
+    "inner area (IA) cm2": "measure",
+    "outer area (OA) cm2": "measure",
+    "gap": "measure",
+    "mass (m) g": "measure",
+    "mass/area x 10000 (g/m2)": "measure"
    }
   }
  },
  "relations": [],
  "suggestions": [
-  "groups: Shade and Sun compared",
-  "quality: Check Leaves & Light Data Sheet",
-  "relationship: polygon area (PA) cm2 against Leaf area (LA) cm2",
-  "drivers: How the columns of Leaves & Light Data Sheet move together",
-  "breakdown: Average Leaf area (LA) cm2 by group",
-  "explain: What drives leaf area (la) cm2: group",
-  "distribution: Spread of Leaf area (LA) cm2",
-  "describe: What is in Leaves & Light Data Sheet"
+  "groups: Control and Treated compared",
+  "quality: Check lab data",
+  "relationship: outer area (OA) cm2 against inner area (IA) cm2",
+  "drivers: How the columns of lab data move together",
+  "breakdown: Average inner area (IA) cm2 by group",
+  "explain: What drives inner area (ia) cm2: group",
+  "distribution: Spread of inner area (IA) cm2",
+  "describe: What is in lab data"
  ],
  "questions": {
-  "compare sun and shade leaves": "Shade and Sun compared",
-  "is there a difference between sun and shade": "Shade and Sun compared",
-  "is leaf mass per area higher in sun leaves": "Shade and Sun compared on m/LA x 10000 (g/m2)",
-  "t test leaf area": "Shade and Sun compared on Leaf area (LA) cm2",
-  "average leaf area": "Average Leaf area (LA) cm2",
-  "standard deviation of mass": "Standard deviation of m (g)",
-  "average D": "Average D",
-  "which leaf is biggest": "Biggest leaf (by Leaf area (LA) cm2)",
-  "check the data": "Check Leaves & Light Data Sheet",
-  "relationship between mass and leaf area": "m (g) against Leaf area (LA) cm2",
-  "unusual leaves": "Unusual leaves"
+  "compare treated and control": "Control and Treated compared",
+  "is there a difference between treated and control": "Control and Treated compared",
+  "is mass per area higher in treated samples": "Control and Treated compared on mass/area x 10000 (g/m2)",
+  "t test inner area": "Control and Treated compared on inner area (IA) cm2",
+  "average inner area": "Average inner area (IA) cm2",
+  "standard deviation of mass": "Standard deviation of mass (m) g",
+  "average gap": "Average gap",
+  "which sample is biggest": "Biggest sample (by inner area (IA) cm2)",
+  "check the data": "Check lab data",
+  "relationship between mass and inner area": "mass (m) g against inner area (IA) cm2",
+  "unusual samples": "Unusual samples"
  }
 }

@@ -97,6 +97,8 @@ class NodeType:
     materialize: bool = True       # write output to the cache; False for pure pass-through nodes
     uses_labels: bool = False      # its result says columns by their labels and units: they are part of its cache hash
     route: Callable[[str, dict[str, list[str]]], str | None] | None = None   # (source node type, taken ports) -> port to use when none is given
+    source_files: Callable[[Path, dict[str, Any]], list[Path]] | None = None   # a source's many files (a folder/glob), for the cache fingerprint
+    source_digest: Callable[[Path, dict[str, Any]], Any] | None = None   # a source with no local file (URL/DB): a cheap value that changes when the data does
     help_md: str = ""
 
     def param(self, name: str) -> Param:

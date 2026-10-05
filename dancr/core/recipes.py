@@ -40,10 +40,13 @@ TOP_CHOICES = [5, 10, 20, 50]
 
 # the recipes, in the order that breaks ties
 RECIPES = ["compare", "groups", "trend", "breakdown", "top", "toprows", "relationship", "gaps", "outliers", "single",
-           "distribution", "linked", "stacked", "rows", "describe", "change", "explain", "drivers", "forecast", "quality"]
+           "distribution", "linked", "stacked", "rows", "describe", "change", "explain", "drivers", "forecast", "quality",
+           "nearest", "map", "density", "place"]
 WEIGHT = {"compare": 100, "groups": 62, "trend": 95, "breakdown": 90, "top": 75, "relationship": 60, "gaps": 65,
           "outliers": 55, "single": 30, "distribution": 45, "linked": 50, "stacked": 60, "rows": 25, "toprows": 40,
-          "describe": 20, "change": 88, "explain": 86, "drivers": 68, "forecast": 58, "quality": 18}
+          "describe": 20, "change": 88, "explain": 86, "drivers": 68, "forecast": 58, "quality": 18,
+          "nearest": 72, "map": 56, "density": 46, "place": 66}
+NEAR_DEFAULT = "10km"       # a proximity match with no distance asked for: near enough to mean something
 EXPERIMENT_ROWS = 5_000     # a table this small, with groups and no dates, is a study: its groups are compared first
 TEST_CHOICES = [("auto", "Test: chosen for me"), ("welch", "Welch's t-test"), ("student", "Student's t-test"),
                 ("rank", "Rank test (Mann–Whitney)")]
@@ -85,7 +88,7 @@ def plural(name: str) -> str:
     if word.endswith("y") and word[-2:-1] not in "aeiou":
         word = word[:-1] + "ies"
     elif word.endswith(("lf", "eaf", "oaf")):
-        word = word[:-1] + "ves"                          # leaf, half, shelf -> leaves, halves, shelves (not roofs)
+        word = word[:-1] + "ves"                          # half, shelf, wolf -> halves, shelves, wolves (not roofs)
     elif word.endswith(("ch", "sh", "x", "z")):
         word += "es"
     else:
@@ -298,16 +301,16 @@ def _condition_columns(model: DataModel, t: Table) -> list[list]:
 
 
 def experiment(t: Table, model: DataModel | None = None) -> bool:
-    """A small table of measurements in groups with no dates (sun and shade leaves, treated and control plots): a
+    """A small table of measurements in groups with no dates (treated and control plots, before and after): a
     study, whose first question is whether the groups differ. The groups may be a column, or the files (or sheets)
-    of tables with the same columns (sun_leaves.csv, shade_leaves.csv)."""
+    of tables with the same columns (group_a.csv, group_b.csv)."""
     stack = model.stack_of(t.node) if model is not None else None
     rows = sum((model.tables[n].rows or model.tables[n].sampled or 0) for n in stack.tables) if stack else (t.rows or t.sampled or 0)
     return not t.time and rows <= EXPERIMENT_ROWS and bool(t.measures) and (bool(t.categories) or stack is not None)
 
 
 def breaks_of(t: Table) -> list[tuple[Column, dict]]:
-    """The rows that break a calculated column's rule (a D of 1.26 where polygon area minus leaf area is 54.1)."""
+    """The rows that break a calculated column's rule (a gap of 1.26 where outer area minus inner area is 54.1)."""
     return [(c, b) for c in t.columns for b in (c.derived or {}).get("breaks", [])]
 
 
@@ -399,6 +402,17 @@ def _candidates(model: DataModel, t: Table) -> list[dict]:
         out.append({"recipe": "drivers", "table": t.node})
     if t.time and m0 and rows >= 6:
         out.append({"recipe": "forecast", "table": t.node, "measure": m0})
+    if t.geo:                                       # the table holds points: it can be drawn on a map
+        out.append({"recipe": "map", "table": t.node})
+        if t.categories:
+            out.append({"recipe": "map", "table": t.node, "color_by": t.categories[0].name})
+        if rows >= 4:                               # a handful of points still clusters into a few cells
+            out.append({"recipe": "density", "table": t.node})
+    for r in model.relations:                        # another table of places: nearest-place match
+        if r.kind == "near" and t.node == r.tables[0]:
+            out.append({"recipe": "nearest", "table": t.node, "other": r.tables[1]})
+        if r.kind == "containment" and t.node == r.tables[0]:
+            out.append({"recipe": "place", "table": t.node, "other": r.tables[1]})
     out.append({"recipe": "quality", "table": t.node})
     out.append({"recipe": "describe", "table": t.node})
     return out
@@ -1136,7 +1150,7 @@ def _plan_outliers(b: _Builder):
 
 
 def row_noun(t: Table) -> str:
-    """What a table's rows are, from a column that numbers them: 'N - Leaf' numbers leaves."""
+    """What a table's rows are, from a column that numbers them: a sample number names each sample."""
     for c in t.by_role(ID):
         w = name_words(c.name)
         if len(w) > 1 and w[0] in ("n", "no", "nr", "num", "number"):
@@ -1145,8 +1159,8 @@ def row_noun(t: Table) -> str:
 
 
 def _plan_study_outliers(b: _Builder):
-    """Unusual rows of a study: every number, each group against its own values (a shade leaf against shade
-    leaves), far outside the middle half of them."""
+    """Unusual rows of a study: every number, each group against its own values (a control sample against the
+    other control samples), far outside the middle half of them."""
     m, spec = b.m, b.spec
     t = m.table(spec["table"])
     measures = [c.name for c in ordered_measures(t)]
@@ -1466,6 +1480,11 @@ def _plan_groups(b: _Builder):
         if not own:
             raise PlanError(f"{t.title} has no column that splits its rows into a few groups")
         by = own[0]
+    else:
+        gc = _col(m, by)
+        if gc is not None and gc.role in ("measure", "time"):
+            raise PlanError(f"“{gc.label or gc.name}” is a measured number, not a group. Compare named groups "
+                            f"(for example “compare A and B”), or group by a category column")
     if _distinct(m, by) > GROUP_MAX:
         raise PlanError(f"{by[1]} has {_distinct(m, by)} values. Compare a few groups at a time (name them, as in "
                         f"“compare A and B”)")
@@ -1476,7 +1495,10 @@ def _plan_groups(b: _Builder):
     b.need(by, *measures)
     b.filters()
     g = b.name(by)
-    params: dict[str, Any] = {"by": g, "columns": [b.name(r) for r in measures], "test": spec.get("test") or "auto"}
+    test = spec.get("test") or "auto"
+    if test not in ("auto", "welch", "student", "rank", "none"):
+        raise PlanError(f"test must be one of auto, welch, student, rank or none (got {test!r})")
+    params: dict[str, Any] = {"by": g, "columns": [b.name(r) for r in measures], "test": test}
     ids = [c for c in t.columns if c.role == ID and (t.node, c.name) in b.names]
     if ids:
         params["label"] = b.name([t.node, ids[0].name])
@@ -1520,11 +1542,127 @@ def _plan_quality(b: _Builder):
     return key, "table", title, why
 
 
+# =================================================================== maps, grids and nearest places
+CELL_CHOICES = ("0.01", "0.02", "0.05", "0.1", "0.25", "0.5", "1", "5", "10")
+NEAR_CHOICES = ("1km", "5km", "10km", "25km", "50km", "100km")
+
+
+def _default_cell(t: Table) -> str:
+    """A grid cell size that splits a table's points into a few dozen cells, so a density map is readable."""
+    la, lo = t.column(t.geo["lat"]), t.column(t.geo["lon"])
+    try:
+        span = max(abs(float(la.maximum) - float(la.minimum)), abs(float(lo.maximum) - float(lo.minimum)))
+    except (TypeError, ValueError):
+        return "0.1"
+    if span <= 0:
+        return "0.01"
+    for size in (0.01, 0.02, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0):
+        if span / size <= 40:
+            return f"{size:g}"
+    return "10"
+
+
+def _plan_map(b: _Builder):
+    m, spec = b.m, b.spec
+    t = m.table(spec["table"])
+    if not t.geo:
+        raise PlanError(f"{t.title} has no latitude and longitude columns to map")
+    b.base(together=False)
+    params = {"lat": b.name([t.node, t.geo["lat"]]), "lon": b.name([t.node, t.geo["lon"]])}
+    color = spec.get("color_by")
+    if color:
+        params["color_by"] = b.name([t.node, color])
+    size = spec.get("size_by")
+    if size:
+        params["size_by"] = b.name(size)
+    title = f"Map of {t.title}" + (f" by {label(m, [t.node, color])}" if color else "")
+    key = b.add("map", "map", title, params, {"in": [b.current]})
+    return key, "map", title, f"{t.title} has latitude and longitude columns"
+
+
+def _plan_density(b: _Builder):
+    m, spec = b.m, b.spec
+    t = m.table(spec["table"])
+    if not t.geo:
+        raise PlanError(f"{t.title} has no latitude and longitude columns")
+    b.base(together=False)
+    lat = b.name([t.node, t.geo["lat"]])
+    lon = b.name([t.node, t.geo["lon"]])
+    size = str(spec.get("size") or _default_cell(t))
+    measure = spec.get("measure")
+    params: dict[str, Any] = {"lat": lat, "lon": lon, "size": size, "count_column": "points"}
+    if measure:
+        params["columns"] = [b.name(measure)]
+        params["default_stats"] = [spec.get("stat") or "mean"]
+    grid = b.add("grid", "points_grid", f"Points per {size}° cell", params, {"in": [b.current]})
+    where = {
+        "lat": "cell_lat", "lon": "cell_lon", "cell_size": size, "color_by": "points",
+        "title": f"Points per {size}° cell",
+    }
+    key = b.add("map", "map", f"Density of {t.title}", where, {"in": [grid]})
+    if not spec.get("size"):
+        b.assume("size", f"Counted points in {size}° cells, so the map reads as a density of {t.title}",
+                 [{"label": f"cells of {s}", "set": {"size": s}} for s in CELL_CHOICES if s != size][:4])
+    return key, "map", f"Density of {t.title}", "how the points cluster in space"
+
+
+def _plan_nearest(b: _Builder):
+    m, spec = b.m, b.spec
+    t = m.table(spec["table"])
+    other = m.table(spec.get("other") or "")
+    if other is None:
+        raise PlanError("Choose the table of places to match against")
+    rel = next((r for r in m.relations if r.kind == "near" and set(r.tables) == {t.node, other.node}), None)
+    if rel is None:
+        raise PlanError(f"{other.title} has no latitude and longitude columns to match against")
+    left, right = m.table(rel.tables[0]), m.table(rel.tables[1])
+    b.spec["table"] = left.node
+    b.base(together=False)
+    dist = str(spec.get("distance") or NEAR_DEFAULT)
+    dist_col = _free_name("distance", [c.name for c in right.columns] + [c.name for c in left.columns])
+    params = {"method": "nearest_feature", "near_how": "left",
+              "left_lat": rel.geo["left_lat"], "left_lon": rel.geo["left_lon"],
+              "right_lat": rel.geo["right_lat"], "right_lon": rel.geo["right_lon"],
+              "max_distance": dist, "units": "km", "distance_column": dist_col}
+    key = b.add("nearest", "combine", f"Nearest {right.title} to each {left.title}", params,
+                {"left": [b.current], "right": [b.table(right.node)]})
+    b.names[(left.node, dist_col)] = dist_col
+    b.assume("distance", f"Looked for the nearest place within {dist}",
+             [{"label": f"within {d}", "set": {"distance": d}} for d in NEAR_CHOICES if d != dist][:4])
+    title = f"Nearest {right.title} to each {left.title}"
+    return key, "table", title, rel.why
+
+
+def _plan_place(b: _Builder):
+    """Which region (or other polygon place) each point falls inside."""
+    m, spec = b.m, b.spec
+    t = m.table(spec["table"])
+    other = m.table(spec.get("other") or "")
+    if other is None:
+        raise PlanError("Choose the table of regions to match against")
+    rel = next((r for r in m.relations if r.kind == "containment" and set(r.tables) == {t.node, other.node}), None)
+    if rel is None:
+        raise PlanError(f"{other.title} has no polygon column to match points against")
+    points = m.table(rel.tables[0])
+    regions = m.table(rel.tables[1])
+    b.spec["table"] = points.node
+    b.base(together=False)
+    geom = rel.geo.get("right_geometry") or "geometry"
+    label = _free_name("region", [c.name for c in points.columns] + [c.name for c in regions.columns])
+    params = {"method": "within", "near_how": "left", "left_lat": rel.geo["left_lat"], "left_lon": rel.geo["left_lon"],
+              "right_geometry": geom, "place_column": label}
+    key = b.add("place", "combine", f"Which {regions.title} each {points.title} is inside", params,
+                {"left": [b.current], "right": [b.table(regions.node)]})
+    b.names[(points.node, label)] = label
+    return key, "table", f"Which {regions.title} each {points.title} is inside", rel.why
+
+
 PLANNERS = {"compare": _plan_compare, "groups": _plan_groups, "trend": _plan_trend, "breakdown": _plan_breakdown, "top": _plan_top, "toprows": _plan_toprows,
             "relationship": _plan_relationship, "gaps": _plan_gaps, "outliers": _plan_outliers,
             "single": _plan_single, "distribution": _plan_distribution, "linked": _plan_linked, "stacked": _plan_stacked,
             "rows": _plan_rows, "describe": _plan_describe, "change": _plan_change, "explain": _plan_explain,
-            "drivers": _plan_drivers, "forecast": _plan_forecast, "quality": _plan_quality}
+            "drivers": _plan_drivers, "forecast": _plan_forecast, "quality": _plan_quality,
+            "map": _plan_map, "density": _plan_density, "nearest": _plan_nearest, "place": _plan_place}
 
 
 # =================================================================== chips
@@ -1595,6 +1733,20 @@ def chips(model: DataModel, spec: dict) -> list[dict[str, Any]]:
         by = spec.get("by")
         out.append({"key": "by", "text": f"by {_group_ref_label(model, by, t.node)}" if by else "by …", "value": by,
                     "choices": [{"label": f"by {_group_ref_label(model, g, t.node)}", "value": g} for g in groupables(model, t.node)]})
+    if r == "map":
+        cats = [[t.node, c.name] for c in t.categories]
+        out.append({"key": "color_by", "text": (f"coloured by {label(model, [t.node, spec['color_by']])}"
+                    if spec.get("color_by") else "not coloured"), "value": spec.get("color_by"),
+                    "choices": [{"label": "not coloured", "value": None}] +
+                               [{"label": f"by {_ref_label(model, c, t.node)}", "value": c[1]} for c in cats]})
+    if r == "density":
+        size = spec.get("size") or _default_cell(t)
+        out.append({"key": "size", "text": f"cells of {size}°", "value": spec.get("size") or size,
+                    "choices": [{"label": f"cells of {s}°", "value": s} for s in CELL_CHOICES]})
+    if r == "nearest":
+        dist = spec.get("distance") or NEAR_DEFAULT
+        out.append({"key": "distance", "text": f"within {dist}", "value": spec.get("distance") or dist,
+                    "choices": [{"label": f"within {d}", "value": d} for d in NEAR_CHOICES]})
     if r == "groups" and spec.get("columns"):
         test = spec.get("test") or "auto"
         out.append({"key": "test", "text": dict(TEST_CHOICES).get(test, test), "value": test,

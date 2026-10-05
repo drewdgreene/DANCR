@@ -2,15 +2,15 @@
 out around them.
 
 People lay out spreadsheets for other people to read. A lab sheet puts two tables side by side under the
-banners SUN LEAVES and SHADE LEAVES, sharing a column of leaf numbers; a report puts a title above the column
-names, AVERAGE and STANDARD DEV rows under the data, and an empty template row left over from the handout. Read
-as rows and columns that is one wide table with words in its number columns. Read as a person reads it, it is
-thirty leaves in two groups.
+banners TREATED and CONTROL, sharing a column of sample numbers; a report puts a title above the column names,
+AVERAGE and STANDARD DEV rows under the data, and an empty template row left over from the handout. Read as rows
+and columns that is one wide table with words in its number columns. Read as a person reads it, it is thirty
+samples in two groups.
 
 This module looks at the cells of a sheet (an Excel sheet or a CSV file) and says how to read it:
 
 - the **column names**: the first row as wide as the data under it, below any title lines;
-- **banners** above them over runs of the same column names (SUN LEAVES and SHADE LEAVES, five columns each):
+- **banners** above them over runs of the same column names (TREATED and CONTROL, five columns each):
   the runs are one table in groups, read one under another with a ``group`` column. Generic names under banners
   (``min | max`` under Pressure and Temperature) are one header written in two rows instead (Pressure min …);
 - the same column names again **further down**, each block under its own title line: one table, one block under
@@ -454,7 +454,7 @@ def _split(grid: Grid, h: int, segments: list[list[int]], banners: dict[int, str
 
 
 def _grouped(grid: Grid, h: int, runs: list[tuple[list[int], list[int], str | None]]) -> SheetTable:
-    """Runs of the same columns under different banners: one table in groups (Sun leaves, Shade leaves) — unless
+    """Runs of the same columns under different banners: one table in groups (Treated samples, Control samples) — unless
     the names under them are parts of one quantity (min | max under Pressure and Temperature), which is one
     header written in two rows."""
     head = grid.rows[h]
@@ -491,8 +491,8 @@ def _two_row(grid: Grid, h: int, runs: list[tuple[list[int], list[int], str | No
 
 
 def group_labels(banners: list[str]) -> list[str]:
-    """Short labels for groups named by banners: the words they all end with are left off (SUN LEAVES, SHADE
-    LEAVES -> Sun, Shade), and a word in capitals is written as a word. Kept whole when that would leave one
+    """Short labels for groups named by banners: the words they all end with are left off (TREATED PLOTS, CONTROL
+    PLOTS -> Treated, Control), and a word in capitals is written as a word. Kept whole when that would leave one
     empty or two the same."""
     words = [b.split() for b in banners]
     common = 0

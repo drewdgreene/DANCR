@@ -13,15 +13,27 @@ Two interfaces, same engine:
   folder pipelines may be created in (default: the folder it starts in; started in
   or above the home folder, or at the top of a drive, it creates and changes no pipelines
   until `--root` names a folder). Tools: `ask`,
-  `suggest_answers`, `change_answer`, `remove_answer`, `understand_data`, `list_node_types`,
+  `suggest_answers`, `change_answer`, `remove_answer`, `understand_data`, `profile`, `list_node_types`,
   `formula_reference`, `inspect_file`, `create_pipeline`, `build_template`,
   `describe_pipeline`, `add_node`, `set_params`, `connect_nodes`,
   `disconnect_nodes`, `remove_node`, `rename_node`, `set_input`, `remove_input`,
-  `set_column_label`, `run_pipeline`, `node_status`, `get_schema`, `get_sample`,
-  `get_stats`, `render_chart` (returns a PNG image), `export_node`, `open_in_gui`.
+  `set_column_label`, `get_dataset_meta`, `set_dataset_meta`, `assistant`, `connections`, `run_pipeline`, `run_batch`,
+  `node_status`, `get_schema`, `get_sample`,
+  `get_stats`, `render_chart` (returns a PNG image), `render_map` (a map PNG),
+  `export_node`, `export_fair` (schema.org / Frictionless / manifest / RO-Crate), `package_project` (a
+  self-contained RO-Crate), `catalog` (every project under a folder), `open_in_gui`.
 - **CLI**: `dancr --json <command> …` prints JSON. `dancr ask p.json "total sales by region" --file a.csv`,
-  `dancr suggest p.json [--build N]` (`--file` on a workbook adds every sheet), `dancr answer p.json [ID] [--set stat=mean] [--choose N M] [--remove --steps]`
-  and `dancr understand p.json` are the answer commands. `dancr nodes -v` documents
+  `dancr suggest p.json [--build N]` (`--file` on a workbook adds every sheet),   `dancr answer p.json [ID] [--set stat=mean] [--choose N M] [--remove --steps]`
+  and `dancr understand p.json` are the answer commands. `dancr context p.json [--samples] [--jsonl] [--changed old.jsonl]` (alias
+  `dancr profile`) prints a knowledge-base document for the project's datasets (see below). `dancr batch p.json --files 'folder/*.csv' --out-dir results`
+  runs one step over many files (an output each plus a combined table); `dancr dataset p.json --set license=CC-BY-4.0`
+  sets dataset metadata; `dancr fair p.json --format schema.org|frictionless|manifest|rocrate [--out f]` writes a FAIR
+  descriptor; `dancr package p.json --out study.rocrate.zip [--copy data|results|all]` writes a self-contained crate;
+  `dancr catalog DIR [--jsonl --output index.jsonl]` catalogs every project under a folder; `dancr watch p.json
+  [--once] [--batch --files … --out-dir …]` reruns when the data changes.
+  `dancr assistant p.json "…" [--file …] [--build]`
+  is the conversational front end (needs a model key in the environment); with `--build` it applies and runs
+  the proposal. Same core as the in-app Assistant: `docs/ASSISTANT.md`. `dancr nodes -v` documents
   every step type and setting; `dancr formulas` documents the formula language;
   `dancr template --list` lists starter projects. `KEY=VALUE` settings are
   parsed as JSON when they look like JSON (`sheet=1` is the number 1).
@@ -46,11 +58,13 @@ every tool that edits one) must be `.json` files inside the server's root
 folder and outside any `.dancr` folder; `create_pipeline(overwrite=true)` replaces only a file that is
 already a DANCR pipeline. Every other file must be inside the folder that holds the pipeline
 file, outside its `.dancr` folder, and must not be a data file the pipeline reads: `export_node(out_path)`,
-`render_chart(out_png)`, and the `path` of `export`, `workbook` and `report` steps
-(checked when the step is added or changed, and before `run_pipeline` or a reading
-tool runs it); a step pointing elsewhere fails with a message. Relative paths are
-taken from that folder. Put the pipeline next to the data and results you
-want. Reading (`inspect_file`, `load_file` paths) is not confined.
+`export_fair(out_path)`, `package_project(out_path)`, `render_chart(out_png)`, the `out_dir` and `manifest` of
+`run_batch`, and the `path` of `export`, `workbook` and `report` steps (checked when the step is added or changed,
+and before `run_pipeline`, `run_batch` or a reading tool runs it); a step pointing elsewhere fails with a message.
+Relative paths are taken from that folder, and the `files` of `run_batch` too. Put the pipeline next to the data
+and results you want. `catalog` reads projects under the server's root folder. Reading (`inspect_file`,
+`load_file` paths, and the `load_url`/`load_sql` connectors) is not confined — a connector step reaches the
+network or a database, so a project using one is no longer strictly offline.
 
 One writer at a time: the MCP server, the CLI and the window each hold a project
 file's lock (`.dancr/locks/` next to it) while they read, change and save it, so
@@ -127,12 +141,16 @@ steps another answer uses.
 
 Besides the named recipes (`trend`, `breakdown`, `top`, `compare`, `gaps`, `outliers`, `single`, `distribution`,
 `linked`, `stacked`, `rows`, `describe`), the answer engine can build the questions people ask most:
-`groups` (`compare sun and shade`, `is mass higher in sun leaves`, `t test leaf area`, `compare before and after`:
+`groups` (`compare treated and control`, `is mass higher in treated samples`, `t test inner area`, `compare before and after`:
 the groups compared on every number with a test, an effect size and a sentence; spec `by` or `columns` for groups kept
 in a column each, `test`, `paired`; it is the first suggestion for a small table of measurements in groups — a study),
 `change` (`what changed`, `this month vs last`), `explain` (`what drives sales`, `why did it drop`),
-`drivers` (`what relates to price`), `quality` (`check the data`, `is the data clean`) and `forecast`
-(`where is pressure heading`, `when will we hit the limit`). Each emits a **finding** — one plain sentence
+`drivers` (`what relates to price`), `quality` (`check the data`, `is the data clean`), `forecast`
+(`where is pressure heading`, `when will we hit the limit`), and the place recipes: `map` (`map the water points`,
+`map the villages by status`), `density` (`where are the clusters`, `density of water points`) and `nearest`
+(`nearest clinic to each village`, `how far to the nearest clinic`). A table is a place when its columns name a
+latitude and a longitude (lat/lon, latitude/longitude, clat/clon, easting/northing, and plain x/y only when the
+ranges leave no doubt). Each emits a **finding** — one plain sentence
 attached to the step's `report["finding"]["statement"]`; a run reports the best one as `headline`.
 
 A question the grammar cannot read is repaired and re-read before it is ever refused: a mistyped word is
@@ -189,9 +207,34 @@ dancr --json run samples.json
 
 Here `log.csv` has the columns `time`, `value` and `temperature`.
 
+## Recipe: water points on a map, and the nearest clinic to each village
+
+```bash
+dancr new places.json
+dancr add places.json enter_data --id points --params '{"columns":[{"name":"lat","type":"number"},{"name":"lon","type":"number"},{"name":"status","type":"text"}],"rows":[[-1.29,36.82,"on"],[-1.25,36.90,"on"],[-1.40,36.70,"off"],[-1.20,37.10,"on"]]}'
+dancr add places.json make_point --id pt --after points --set lat=lat --set lon=lon
+dancr add places.json map --id map --after pt --params '{"lat":"latitude","lon":"longitude","color_by":"status","title":"Water points"}'
+dancr add places.json enter_data --id clinics --params '{"columns":[{"name":"clat","type":"number"},{"name":"clon","type":"number"},{"name":"clinic","type":"text"}],"rows":[[-1.29,36.82,"A"],[-1.20,37.10,"B"]]}'
+dancr add places.json combine --id near --after pt --port left --also-after clinics \
+      --params '{"method":"nearest_feature","left_lat":"latitude","left_lon":"longitude","right_lat":"clat","right_lon":"clon","max_distance":"10km","units":"km"}'
+dancr add places.json points_grid --id grid --after pt --params '{"lat":"latitude","lon":"longitude","size":"5km","count_column":"points"}'
+dancr add places.json map --id density --after grid --params '{"lat":"cell_lat","lon":"cell_lon","cell_size":"5km","color_by":"points","title":"Water points per 5km cell"}'
+dancr add places.json report --id report --after map --port items --also-after density --params '{"title":"Where the water points are","path":"places.html"}'
+dancr --json run places.json
+dancr map places.json map --out points.png     # or the map node's own settings
+```
+
+The same flow via MCP: `add_node("make_point", …)`, `add_node("map", …)`,
+`add_node("combine", {"method": "nearest_feature", …}, after=…, port="left", also_after=[…])`,
+then `render_map`. Offline country outlines are drawn when `basemap` is on; nothing reaches the network.
+
 ## Settings cheat-sheet (full list: `dancr nodes -v` or `list_node_types`)
 
-- `load_file`: `path`, `sheet`, `has_header`, `layout` (`auto`: reads the sheet as laid out — title lines, tables side by side under banners or in blocks under titles become one table with a `group` column, section lines become a `group` column, labels written once per run are filled down, names in two rows are joined, summary rows under the data (AVERAGE, Total …) and empty template rows are left out and the summary checked against the data; the step's `report["layout"]` and messages say what was done; `as_is`: every row under the column names), `table` (which table on a sheet that holds several, from 1; `dancr suggest --file` adds one step per table), `skip_rows`, `separator` (auto), `parse_dates` (also joins a Date and a time-of-day column into `<Date> <Time>`), `parse_numbers` (reads `1,234.50` `£99` `31.5%` `(120)`; codes with leading zeros stay text), `date_format`, `day_first` (only for dates like 01/05/2024 that read either way; default month/day, and a run reads the whole column to choose), `time_zone` (for times written with a UTC offset: empty keeps the file's own offset when it has one throughout, else UTC; or a name such as `Europe/London`), `decimal_comma`, `encoding` utf8|latin1, `infer_rows`, `ignore_errors`, `columns`.
+- `load_file`: `path` (CSV/TSV/text, Excel, Parquet, GeoJSON, GeoPackage `.gpkg` or shapefile `.shp`), `sheet`, `layer` (GeoPackage: which layer, blank = the first; `dancr suggest --file` adds one step per layer), `has_header`, `layout` (`auto`: reads the sheet as laid out — title lines, tables side by side under banners or in blocks under titles become one table with a `group` column, section lines become a `group` column, labels written once per run are filled down, names in two rows are joined, summary rows under the data (AVERAGE, Total …) and empty template rows are left out and the summary checked against the data; the step's `report["layout"]` and messages say what was done; `as_is`: every row under the column names), `table` (which table on a sheet that holds several, from 1; `dancr suggest --file` adds one step per table), `skip_rows`, `separator` (auto), `parse_dates` (also joins a Date and a time-of-day column into `<Date> <Time>`), `parse_numbers` (reads `1,234.50` `£99` `31.5%` `(120)`; codes with leading zeros stay text), `date_format`, `day_first` (only for dates like 01/05/2024 that read either way; default month/day, and a run reads the whole column to choose), `time_zone` (for times written with a UTC offset: empty keeps the file's own offset when it has one throughout, else UTC; or a name such as `Europe/London`), `decimal_comma`, `encoding` utf8|latin1, `infer_rows`, `ignore_errors`, `columns`.
+- `load_folder` (all the files in a folder or glob as one table): `path` (a folder or glob), `pattern` (`*.csv`), `recursive`, `source_column` (the file name column; blank for none), `tables` (`first` | `all` every sheet/table/layer | `match` a named one), `table_match`, `table_name_column`, `unify` (`diagonal` union of columns | `strict` same columns only | `text` every column as text), `on_error` (fail | skip), and the read options of `load_file` (`has_header`, `layout`, `parse_dates`, `parse_numbers`, `encoding`, `decimal_comma`…). Each file is read by the same reader as `load_file`; the cache notices when any member file changes, is added or removed.
+- `load_url` (a table at a URL): `url`, `format` (auto|csv|tsv|parquet|json), `headers` (a mapping; put tokens in `${ENV_VAR}`), `check_remote` (ask the server whether it changed), `timeout`, and the CSV read options. http(s); standard library only.
+- `load_sql` (a database query or table): `connection` (a SQLite file or `${PG_DSN}`-style server URL; **secret**, redacted wherever settings are shown), `query` or `table`+`schema`, `version_column` (a value whose max says new rows arrived). SQLite is built in; a server needs `dancr[db]`.
+- `load_netcdf` / `load_hdf5` (scientific arrays): `path` and a `variable` / `dataset`; need `dancr[science]`.
 - `choose_columns`: `mode` keep|drop, `columns`, `rename`. `sort`: `columns`, `descending`. `remove_duplicates`: `columns`, `keep` first|last|none.
 - `fix_missing`: `method` drop|drop_all|value|forward|backward|interpolate|mean|zero, `value`, `columns`. `change_type`: `columns`, `to` number|integer|text|datetime|bool, `date_format`, `epoch_unit`, `time_zone` (as `load_file`).
 - `unpivot` (columns into rows): `columns` (e.g. Jan … Dec), `name_column` (month), `value_column` (value), `year` (month columns then also get a `date`). Answers add it by themselves in front of a wide table.
@@ -220,6 +263,94 @@ Here `log.csv` has the columns `time`, `value` and `temperature`.
 - `check_data` (is the data trustworthy): `columns` (blank = all). One pass: blanks, duplicates, numbers stored as text, columns with one value, and calculated columns (`D = PA - LA`, `m / LA * 10000`, found from the numbers) with the rows that break the rule (`report["calculated"]`). Output one row per column with an `issue` and `severity`.
 - `compare_groups` (do the groups differ): `by` (the group column), `columns` (numbers; blank = all), `test` `auto`|`welch`|`student`|`rank`|`none`, `pair_by` (a column matching the same thing across two groups: paired t-test / Wilcoxon), `label` (names rows in notes), `size_check` (default true), `relative_to`. Output one row per number: `measure`, `unit`, per group `<g> n/mean/SD/SE/median`, `difference`, `difference (%)`, `test`, `statistic`, `p value`, `effect size` (Hedges' g, dz or eta²), `effect`, `result`; rows `<number> per <size>` when the size check changed a result. Report: `results`, `relative`, a `finding`.
 - `forecast` (where it is heading): `time_column`, `column`, `horizon` (steps), `method` `linear`|`seasonal`, `cycle` (`weekday`|`hour`|`month`), `every` (step; blank = inferred), `threshold` (optional). Output: future times and the projected value with `_lower`/`_upper` (about 95%).
+- `make_point` (Location): `lat`, `lon` (numeric columns), `validate` (blank impossible coordinates), `drop_invalid`, `lat_out`, `lon_out`. Adds clean `latitude`/`longitude` columns.
+- `distance` (Location): `method` `between`|`from`; between: `lat1`,`lon1`,`lat2`,`lon2`; from: `lat`,`lon` + `to_lat`,`to_lon`; `units` `km`|`m`|`mi`|`nmi`|`ft`; `output`. Great-circle, one fixed sphere radius, deterministic.
+- `points_grid` (Location): `lat`, `lon`, `size` (degrees like `0.1`, or a length like `5km`), `columns`, `default_stats`, `count_column`, `aggregations`. Output has `cell_lat`, `cell_lon` and the statistics — ready to map.
+- `map` (Location, sink, no materialise): `lat`, `lon`, `color_by`, `size_by`, `label`, `cell_size` (blank = points, else grid squares), `basemap`, `extent` `auto`|`world`, `projection` `equirectangular`|`mercator`, `title`. Draws in the views; `render_map` / `dancr map` produce a PNG. Offline Natural Earth outlines; no network.
+- `project` (Location): `easting`, `northing`, `utm_zone` (or `crs`, e.g. `EPSG:32737`), `south`, `lon_out`, `lat_out`. Turns projected coordinates into longitude/latitude. UTM is built in; any other EPSG code uses the optional `pyproj` (`dancr[geo]`). Blank coordinates stay blank.
+- A GeoJSON, GeoPackage or shapefile loads as one row per feature: its attributes are columns, plus `geometry` (WKT) and a `longitude`/`latitude` centre. A layer in another CRS is reprojected to WGS84 lon/lat on load (needs `dancr[geo]`; a `.gpkg` with several layers becomes one load step per layer).
+- `combine` also has `method` `nearest_feature`: `left_lat`,`left_lon`,`right_lat`,`right_lon`,`max_distance` (e.g. `10km`, blank = any), `units`, `distance_column`, `near_how` `left`|`inner`. Adds a distance column and the nearest place's columns.
+- `combine` also has `method` `within` (point-in-polygon): `left_lat`,`left_lon`,`right_geometry` (a WKT polygon column), `place_column`, `near_how` `left`|`inner`. Looks up which polygon each point falls inside (holes handled) and adds the place's columns.
+- `export` accepts `.geojson` as well as `.csv`/`.tsv`/`.parquet`/`.xlsx` (needs latitude/longitude, or a `geometry` column).
+
+## Indexing a project for a knowledge base (and the Python API)
+
+`profile` (MCP) / `dancr context` (alias `dancr profile`) emits one **knowledge-base document** per project: for
+each dataset its schema (every column's role, type, unit and range), the per-column statistics, up to 100 example
+rows (`--samples`), and a one-paragraph **doc card** — deterministic prose (shape, size, source, time span,
+columns, relations) a search index can embed as language. Together they let an agent's RAG retrieve DANCR's
+*documents* while the engine keeps computing exact figures through the other tools; nothing is inferred by the
+model. Shape: `{kind: "dancr.context", version, engine_version, fingerprint, generated_at, project, dataset,
+tables[], relations[], inputs[], skipped{}, documents[]}`, where each `tables[]`/`documents[]` entry carries a
+**`content_hash`** (the step's plan hash, which folds in the code fingerprint, settings, inputs and source files)
+and `documents[]` is `{id, node, title, text, content_hash, rows, source, stats?, sample?}`. `--jsonl` /
+`context_jsonl` gives one JSON object per dataset, the unit an index ingests. `--changed OLD.jsonl` (MCP
+`profile(changed=…)`) returns only the datasets whose `content_hash` differs from an earlier context, so a RAG
+re-indexes what moved, never a stale document. Statistics and samples need a table's result; a source not run
+yet is computed first (samples alone may fall back to a preview of its first rows). This shares its schema layer
+with the Assistant's own profile (`dancr/core/profile.py`).
+
+```bash
+dancr context shop.json                         # human summary: a doc card per dataset
+dancr --json context shop.json                   # the whole document (schema + stats), for a script
+dancr context shop.json --samples --jsonl --output kb.jsonl   # one line per dataset, to embed
+dancr context shop.json --jsonl --changed kb.jsonl            # only what changed since the last export
+```
+
+**FAIR descriptors.** `dancr fair p.json --format …` / MCP `export_fair` (Python `dancr.export_fair`) turns the
+same context into a standards-shaped record: `schema.org` (JSON-LD `Dataset`, for Google Dataset Search),
+`frictionless` (a Data Package `datapackage.json`), `manifest` (provenance: engine and library versions, the code
+fingerprint, each source file's size/time/content sample, and every step's plan hash, rows and elapsed time), and
+`rocrate` (a metadata-only RO-Crate graph). Dataset-level metadata (creator, license, description, keywords,
+citation…) is set with `dancr dataset p.json --set license=CC-BY-4.0` / MCP `set_dataset_meta` and lives in the
+project's `meta["dataset"]`, so it travels with the file (an older DANCR preserves it). `dancr package p.json
+--out study.rocrate.zip [--copy data|results|all]` / MCP `package_project` writes a self-contained RO-Crate
+(directory or `.zip`): the descriptors, the pipeline file and the run manifest, plus optionally the source data
+and the files the project wrote. Column units are emitted as UCUM codes where known (`g`, `g/m2`, `Cel`, `%`…),
+with the written unit kept beside them. `dancr catalog DIR [--jsonl] [--changed old]` / MCP `catalog` describes
+every project under a folder and indexes each dataset's `content_hash`, so a team can re-index only what changed.
+
+The same engine is importable as a Python SDK (`import dancr`), for scripts and notebooks — an agent should
+still prefer MCP. Names are imported on first use, so `import dancr` stays light:
+
+```python
+import dancr
+project = dancr.read_project("shop.json")
+with dancr.editing("shop.json") as p:                  # saved under the file's lock
+    dancr.add_step(p, "load_file", {"path": "orders.csv"}, node_id="orders")
+ctx = dancr.build_context(dancr.read_project("shop.json"), samples=True)   # the KB document
+answer = dancr.ask_question(project, "total sales by region")              # spec + steps, deterministic
+```
+
+The public names: `read_project`, `editing`, `project_lock`, `ProjectBusy`, `Pipeline`, `Executor`, `NodeState`,
+`add_step`, `build_template`, `data_model`, `suggestions`, `build_answer`, `ask_question`, `change_answer`,
+`assistant_turn`, `connection_map`, `run_record`, `node_record`, `run_batch`, `build_context`, `context_jsonl`,
+`context_text`, `context_changes`, `export_fair`, `dataset_jsonld`, `datapackage`, `run_manifest`,
+`project_profile`, `table_card`.
+
+## The Assistant (the in-app AI, for people, not for agents)
+
+The window has an optional **Assistant** (button next to *Ask a question*, Ctrl+Shift+J): a chat whose model
+proposes answers and the deterministic engine proves them. It is the app's own client of the same engine —
+an agent should still drive the CLI/MCP directly, not the Assistant. Under the hood:
+
+- `dancr/core/assistant/` is pure core (no Qt): `client.py` (provider + OpenAI-style HTTP + fake),
+  `context.py` (re-exports the project profile from `dancr/core/profile.py`, which the knowledge-base export
+  shares), `tools.py` (read tools, `list_connections`, and the terminal `ask_choice`/`propose`), `session.py`
+  (the turn loop and the unverified-figure check), `store.py` (thread in `meta["assistant"]`).
+- Key, endpoint and model live in QSettings (`assistant/api_key`, `assistant/base_url`, `assistant/model`),
+  or `DANCR_ASSISTANT_API_KEY` / `DANCR_ASSISTANT_BASE_URL` / `DANCR_ASSISTANT_MODEL` /
+  `FIREWORKS_API_KEY`. `DANCR_ASSISTANT_FAKE=1` runs it with a scripted fake and no key.
+- Trust contract: the model never states a number that no tool result contains (unbacked figures are
+  flagged), `propose` changes nothing (the window applies it, undoably), data is delimited and never
+  treated as instructions, and sample rows are off by default. The first time data would leave the machine
+  it says what is sent and asks; the ⋮ menu can revoke it.
+- Headless: `dancr --json assistant p.json "question" [--file …] [--build] [--samples]` and the MCP
+  `assistant` tool run one turn (both call `headless.assistant_turn`); `--build` applies and runs the
+  proposal. The window's built card can also reveal the steps on the canvas, save them as a new project,
+  or replace the canvas (one undo step). The engine's connection map (links with match % and cardinality)
+  is saved with the project and available as `dancr --json connections p.json [--recompute]` and the MCP
+  `connections` tool. Design and extension: `docs/ASSISTANT.md`.
 
 ## Conventions that keep people happy
 

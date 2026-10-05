@@ -15,6 +15,31 @@ from .registry import registry
 
 FORMAT_VERSION = 2
 
+# Dataset-level metadata (FAIR reuse): who made it, under what license, how to cite it. Stored in
+# ``meta["dataset"]`` rather than as a top-level key, because Pipeline.from_dict reads ``meta`` wholesale but
+# drops unknown top-level keys — so an older DANCR opening the project preserves this rather than losing it.
+DATASET_FIELDS = ("title", "description", "creator", "contact", "publisher", "license",
+                  "keywords", "version", "created", "identifier", "citation", "language")
+
+
+def clean_dataset_meta(meta: dict[str, Any] | None) -> dict[str, Any]:
+    """Only the known dataset fields, with blanks dropped and text stripped; keywords become a list."""
+    out: dict[str, Any] = {}
+    for k, v in (meta or {}).items():
+        if k not in DATASET_FIELDS or v is None or (isinstance(v, str) and not v.strip()):
+            continue
+        if k == "keywords":
+            if isinstance(v, str):
+                v = [s.strip() for s in v.replace(";", ",").split(",") if s.strip()]
+            out[k] = [str(x).strip() for x in v if str(x).strip()] if isinstance(v, (list, tuple)) else [str(v).strip()]
+        elif isinstance(v, str):
+            out[k] = v.strip()
+        elif isinstance(v, dict):
+            out[k] = {str(a): b for a, b in v.items() if b not in (None, "")}
+        else:
+            out[k] = v
+    return out
+
 
 class PipelineError(Exception):
     pass
@@ -147,7 +172,7 @@ def rebase_params(node_type: str, params: dict[str, Any], old_dir: Path, new_dir
     out = params
     for prm in nt.params:
         v = params.get(prm.name)
-        if prm.kind != "path" or not isinstance(v, str) or not v.strip():
+        if prm.kind not in ("path", "dir") or not isinstance(v, str) or not v.strip():
             continue
         p = Path(v).expanduser()
         full = p if p.is_absolute() else Path(os.path.normpath(old_dir.resolve() / p))
@@ -226,6 +251,29 @@ class Pipeline:
             self.columns[name] = entry
         else:
             self.columns.pop(name, None)
+
+    # ---------------------------------------------------------------- dataset metadata
+    def dataset_meta(self) -> dict[str, Any]:
+        """The project's dataset-level metadata (creator, license, description…), from ``meta["dataset"]``."""
+        meta = self.meta.get("dataset") if isinstance(self.meta, dict) else None
+        return clean_dataset_meta(meta) if isinstance(meta, dict) else {}
+
+    def set_dataset_meta(self, **changes: Any) -> dict[str, Any]:
+        """Set dataset-level metadata fields; ``None`` removes one. Returns the stored metadata."""
+        current = self.dataset_meta()
+        for k, v in changes.items():
+            if k not in DATASET_FIELDS:
+                raise PipelineError(f"Unknown dataset field {k!r}. Valid: {list(DATASET_FIELDS)}")
+            if v is None:
+                current.pop(k, None)
+            else:
+                current[k] = v
+        current = clean_dataset_meta(current)
+        if current:
+            self.meta["dataset"] = current
+        else:
+            self.meta.pop("dataset", None)
+        return current
 
     # ------------------------------------------------------------------ ids
     def new_id(self, type_key: str) -> str:

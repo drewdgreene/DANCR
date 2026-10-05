@@ -167,3 +167,33 @@ def _wall_times(x: np.ndarray, tz: str | None = None) -> np.ndarray:
         out = (pl.Series(out).dt.replace_time_zone("UTC").dt.convert_time_zone(tz).dt.replace_time_zone(None)
                .to_numpy().astype("datetime64[us]"))
     return out
+
+
+# =================================================================== maps
+def render_map(lf: pl.LazyFrame, params: dict[str, Any], out: Path | str, width: int = 1400, height: int = 800,
+               dpi: int = 100, columns: dict[str, dict] | None = None, inputs: dict[str, Any] | None = None) -> Path:
+    """Draw a map of a node's output to PNG (matplotlib, Agg). Country outlines come from the bundled offline
+    basemap; points or grid cells are drawn from the data. Thread-safe: its own Figure, never pyplot state."""
+    from ..core.nodes.geo import validate_map
+    from .mapquery import query_map
+    from .geo_draw import draw_map
+    schema = dict(lf.collect_schema())
+    validate_map(schema, params)
+    md = query_map(lf, schema, params)
+    Figure, FigureCanvasAgg, _mdates = _mpl()
+    out = Path(out)
+    title = params.get("title") or ""
+    fig = Figure(figsize=(width / dpi, height / dpi), dpi=dpi)
+    FigureCanvasAgg(fig)
+    ax = fig.add_subplot(1, 1, 1)
+    sub = draw_map(ax, md, params, columns)
+    ax.set_xlabel(""); ax.set_ylabel("")
+    if title:
+        fig.suptitle(title, fontsize=11)
+        ax.text(0.99, 0.01, sub, transform=ax.transAxes, ha="right", va="bottom", fontsize=7, color="#888")
+    else:
+        ax.set_title(sub, fontsize=10)
+    fig.tight_layout()
+    out.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out)
+    return out

@@ -5,6 +5,8 @@ from collections import OrderedDict
 from datetime import datetime, date
 from typing import Any
 
+import threading
+
 import polars as pl
 
 from ..core.expr import kind_of_dtype
@@ -19,12 +21,17 @@ class TablePager:
         self.columns = list(self.schema)
         self.kinds = {c: kind_of_dtype(dt) for c, dt in self.schema.items()}
         self._rows = rows
+        self._rows_lock = threading.Lock()
         self._pages: OrderedDict[int, pl.DataFrame] = OrderedDict()
 
     @property
     def rows(self) -> int:
+        """The row count. Computed once, under a lock: two grid workers can ask at the same moment, and a
+        streaming count over a large table must not run twice."""
         if self._rows is None:
-            self._rows = int(self.lf.select(pl.len()).collect(engine="streaming")[0, 0])
+            with self._rows_lock:
+                if self._rows is None:
+                    self._rows = int(self.lf.select(pl.len()).collect(engine="streaming")[0, 0])
         return self._rows
 
     def fetch_page(self, i: int) -> pl.DataFrame:

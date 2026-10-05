@@ -6,9 +6,10 @@ import re
 from pathlib import Path
 from typing import Callable
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (QFrame, QWidget, QHBoxLayout, QVBoxLayout, QLabel, QPushButton, QDialog, QListWidget, QListWidgetItem,
-                               QDialogButtonBox)
+                               QDialogButtonBox, QLineEdit, QPlainTextEdit, QFormLayout, QTreeWidget, QTreeWidgetItem,
+                               QFileDialog)
 
 from .document import Document
 from .workers import Serial
@@ -85,3 +86,133 @@ def _step_count(path: Path) -> int | None:
         return len(json.loads(path.read_text(encoding="utf-8")).get("nodes") or [])
     except (OSError, ValueError, AttributeError):
         return None
+
+
+class CatalogDialog(QDialog):
+    """Every DANCR project under a folder, with each project's datasets below it. Double-click a dataset or a
+    project to open the project. The scan runs on a worker so a big folder never freezes the window."""
+
+    openProject = Signal(str)
+
+    def __init__(self, parent, root: Path | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Project catalog"); self.resize(820, 560)
+        self.root = root
+        lay = QVBoxLayout(self)
+        top = QHBoxLayout()
+        self.label = QLabel("Choose a folder of DANCR projects."); self.label.setObjectName("muted")
+        self.filter = QLineEdit(); self.filter.setPlaceholderText("Filter…"); self.filter.textChanged.connect(self._apply_filter)
+        choose = QPushButton("Choose folder…"); choose.clicked.connect(self._choose)
+        top.addWidget(self.label, 1); top.addWidget(self.filter); top.addWidget(choose)
+        lay.addLayout(top)
+        self.tree = QTreeWidget(); self.tree.setHeaderLabels(["Project / dataset", "What it is"])
+        self.tree.setColumnWidth(0, 320); self.tree.itemDoubleClicked.connect(self._open)
+        lay.addWidget(self.tree, 1)
+        bb = QDialogButtonBox(QDialogButtonBox.Close); bb.rejected.connect(self.reject); bb.accepted.connect(self.accept)
+        lay.addWidget(bb)
+        if root:
+            QTimer.singleShot(0, lambda: self.load(root))
+
+    def _choose(self) -> None:
+        start = str(self.root or Path.home())
+        d = QFileDialog.getExistingDirectory(self, "Choose a folder of projects", start)
+        if d:
+            self.load(Path(d))
+
+    def load(self, root) -> None:
+        self.root = Path(root)
+        self.label.setText(f"Scanning {self.root}…")
+        from ..headless import build_catalog
+        self._serial = Serial(self, waits_for_run=False)
+        self._serial.submit(lambda: build_catalog(self.root, recursive=True), self._show,
+                            lambda m: self.label.setText(f"Could not scan: {m}"))
+
+    def _show(self, cat: dict) -> None:
+        self.tree.clear()
+        self.label.setText(f"{cat['count']} project(s) under {cat['root']}")
+        for proj in cat["projects"]:
+            top = QTreeWidgetItem([proj["name"], proj["file"]])
+            top.setData(0, Qt.UserRole, proj["file"])
+            for d in proj.get("datasets", []):
+                child = QTreeWidgetItem([f"[{d['id']}] {d['title']}", (d.get("text") or "")[:140]])
+                child.setToolTip(1, d.get("text") or "")
+                top.addChild(child)
+            self.tree.addTopLevelItem(top)
+        for f, why in (cat.get("skipped") or {}).items():
+            self.tree.addTopLevelItem(QTreeWidgetItem(["!", f"{f}: {why}"]))
+        self.tree.expandToDepth(0)
+
+    def _apply_filter(self, text: str) -> None:
+        text = (text or "").lower()
+        for i in range(self.tree.topLevelItemCount()):
+            top = self.tree.topLevelItem(i)
+            match = text in top.text(0).lower() or text in top.text(1).lower()
+            for j in range(top.childCount()):
+                c = top.child(j)
+                cm = text in c.text(0).lower() or text in c.text(1).lower()
+                c.setHidden(bool(text) and not cm and not match)
+                match = match or cm
+            top.setHidden(bool(text) and not match)
+
+    def _open(self, item: QTreeWidgetItem, _col: int) -> None:
+        path = item.data(0, Qt.UserRole)
+        if path is None and item.parent() is not None:
+            path = item.parent().data(0, Qt.UserRole)
+        if path:
+            self.openProject.emit(str(path))
+
+
+class DatasetDialog(QDialog):
+    """Who made the data, under what license, how to cite it — the header of a FAIR record. Saved with the project
+    (in ``meta["dataset"]``) and used by every metadata export (schema.org, Frictionless, run manifest, RO-Crate)."""
+
+    FIELDS = [
+        ("title", "Title", "What the dataset is called"),
+        ("creator", "Creator", "A person or team. A name, or name <email> for more detail"),
+        ("contact", "Contact", "Who to ask about it"),
+        ("publisher", "Publisher / institution", ""),
+        ("license", "License", "An SPDX id (CC-BY-4.0) or a URL"),
+        ("version", "Version", ""),
+        ("identifier", "Identifier", "A DOI, accession or local id"),
+        ("citation", "How to cite it", ""),
+        ("language", "Language", "e.g. en"),
+        ("keywords", "Keywords", "Comma-separated"),
+    ]
+
+    def __init__(self, parent, meta: dict) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Dataset details"); self.resize(560, 460)
+        lay = QVBoxLayout(self)
+        intro = QLabel("These travel with the project and appear in every metadata export. They are not sent anywhere by themselves.")
+        intro.setWordWrap(True); lay.addWidget(intro)
+        form = QFormLayout(); self.edits: dict[str, QLineEdit] = {}
+        for key, label, tip in self.FIELDS:
+            e = QLineEdit(); e.setPlaceholderText(tip)
+            val = meta.get(key, "")
+            e.setText(", ".join(str(x) for x in val) if isinstance(val, list) else str(val or ""))
+            self.edits[key] = e; form.addRow(label, e)
+        self.description = QPlainTextEdit(); self.description.setPlainText(str(meta.get("description") or ""))
+        self.description.setPlaceholderText("A short paragraph about what the data is and what it is for")
+        form.addRow("Description", self.description)
+        lay.addLayout(form)
+        bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        bb.accepted.connect(self.accept); bb.rejected.connect(self.reject)
+        lay.addWidget(bb)
+
+    def fields(self) -> dict:
+        out: dict = {}
+        for key, _, _ in self.FIELDS:
+            text = self.edits[key].text().strip()
+            if not text:
+                continue
+            if key == "keywords":
+                out[key] = [s.strip() for s in text.replace(";", ",").split(",") if s.strip()]
+            elif key == "creator" and "<" in text and text.endswith(">"):
+                name, email = text[:-1].split("<", 1)
+                out[key] = {"name": name.strip(), "email": email.strip()}
+            else:
+                out[key] = text
+        desc = self.description.toPlainText().strip()
+        if desc:
+            out["description"] = desc
+        return out

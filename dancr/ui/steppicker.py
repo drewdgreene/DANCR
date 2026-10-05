@@ -11,7 +11,7 @@ from ..core import registry
 from .theme import T, category_color
 from .icons import icon, node_icon_name
 
-CATEGORY_ORDER = ["Get data", "Clean up", "Filter & sort", "Calculate", "Combine", "Time", "Analyse & model", "Share"]
+CATEGORY_ORDER = ["Get data", "Clean up", "Filter & sort", "Calculate", "Combine", "Time", "Location", "Analyse & model", "Share"]
 
 
 class StepDelegate(QStyledItemDelegate):

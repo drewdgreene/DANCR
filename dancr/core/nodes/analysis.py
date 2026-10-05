@@ -134,7 +134,7 @@ registry.register(NodeType(
             ("remove", "Remove the rows"), ("blank", "Blank out the value"), ("flag", "Add a true/false column"), ("clip", "Clip to the range")]),
         Param("flag_column", "Flag column name", "text", default="is_outlier", visible_when={"action": "flag"}),
         Param("by", "Within each", "columns", default=[], advanced=True, visible_when={"method": ["zscore", "iqr"]},
-              help="Judge each value against its own group (sun leaves against sun leaves), not the whole table"),
+              help="Judge each value against its own group (each group against itself), not the whole table"),
     ],
 ))
 

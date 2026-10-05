@@ -53,15 +53,22 @@ def _item_html(i: int, lf: pl.LazyFrame, meta: dict[str, Any], params: dict[str,
     shown = {k: v for k, v in rep.items() if k not in ("fits", "parameters") and not isinstance(v, (list, dict))}
     if shown:
         parts.append("<table class='kv'>" + "".join(f"<tr><th>{html.escape(k.replace('_', ' '))}</th><td>{_fmt(v)}</td></tr>" for k, v in shown.items()) + "</table>")
-    if meta.get("node_type") == "chart":
+    node_type = meta.get("node_type")
+    if node_type in ("chart", "map"):
         with tempfile.TemporaryDirectory() as td:
             png = Path(td) / "c.png"
             try:
-                render_chart(lf, meta.get("params") or {}, png, width=1400, height=620, columns=columns, inputs=project_inputs)
+                if node_type == "map":
+                    from ...views.render import render_map
+                    render_map(lf, meta.get("params") or {}, png, width=1400, height=800, columns=columns, inputs=project_inputs)
+                    alt = "map"
+                else:
+                    render_chart(lf, meta.get("params") or {}, png, width=1400, height=620, columns=columns, inputs=project_inputs)
+                    alt = "chart"
                 data = base64.b64encode(png.read_bytes()).decode()
-                parts.append(f"<img src='data:image/png;base64,{data}' alt='{heading}'>")
+                parts.append(f"<img src='data:image/png;base64,{data}' alt='{html.escape(alt)}'>")
             except Exception as e:
-                parts.append(f"<p class='error'>Could not draw this chart: {html.escape(str(e))}</p>")
+                parts.append(f"<p class='error'>Could not draw this {node_type}: {html.escape(str(e))}</p>")
     else:
         n = int(lf.select(pl.len()).collect(engine="streaming")[0, 0])
         df = strip_time_zones(lf.head(max_rows).collect(engine="streaming"))

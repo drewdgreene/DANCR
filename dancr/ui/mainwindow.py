@@ -27,10 +27,12 @@ from .steppicker import StepPicker
 from .rail import Rail, VIEW_TYPES, REPORT_TYPES
 from .tableview import TableView
 from .chartview import ChartView
+from .mapview import MapView
 from .reportview import ReportView
 from .inputsview import InputsView
 from .enterdata import EnterDataView
 from .answering import Understanding, AskBar, AnswerPanel
+from .assistant import AssistantPanel, SideDock
 from .startpage import StartPage
 from .theme import T
 from .icons import icon
@@ -58,9 +60,9 @@ class MainWindow(QMainWindow):
         self.rail = Rail(self.doc)
         self.pages = QStackedWidget()
         self.pages.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)     # hidden pages must not set the window's minimum width
-        self.start = StartPage(); self.table = TableView(self.doc); self.chart = ChartView(self.doc)
+        self.start = StartPage(); self.table = TableView(self.doc); self.chart = ChartView(self.doc); self.map = MapView(self.doc)
         self.report = ReportView(self.doc); self.inputs = InputsView(self.doc); self.entry = EnterDataView(self.doc)
-        for p in (self.start, self.table, self.chart, self.report, self.inputs, self.entry):
+        for p in (self.start, self.table, self.chart, self.map, self.report, self.inputs, self.entry):
             self.pages.addWidget(p)
         # Top row: project rail | content pages | settings. Below it the map runs the full width,
         # so the graph gets the whole window and the side panels stop at the top of the map.
@@ -74,8 +76,10 @@ class MainWindow(QMainWindow):
         cl.addWidget(self.pages, 1)
         self.toast = Toast(centre)
         self.inspector = InspectorPanel(self.doc, self)
+        self.assistant = AssistantPanel(self.doc, self.understanding)
+        self.side = SideDock(self.inspector, self.assistant)
         self.top_split = QSplitter(Qt.Horizontal)
-        self.top_split.addWidget(self.rail); self.top_split.addWidget(centre); self.top_split.addWidget(self.inspector)
+        self.top_split.addWidget(self.rail); self.top_split.addWidget(centre); self.top_split.addWidget(self.side)
         self.top_split.setStretchFactor(0, 0); self.top_split.setStretchFactor(1, 1); self.top_split.setStretchFactor(2, 0)
         self.top_split.setSizes([250, 820, 370]); self.top_split.setCollapsible(1, False)
         # the map drawer, full width
@@ -116,6 +120,8 @@ class MainWindow(QMainWindow):
         self.mode_label = QLabel(""); self.mode_label.setObjectName("faint"); self.status.addPermanentWidget(self.mode_label)
         self._current: str | None = None
         self._current_answer: str | None = None
+        self._assistant_terminal: str | None = None
+        self._assistant_answer: str | None = None
         self._ask_open = False                    # the ask bar shows only when asked for
         self._building: set[str] = set()          # answers queued until every row has been read
         self._tick = QTimer(self); self._tick.setInterval(100); self._tick.timeout.connect(self._tick_progress)
@@ -162,6 +168,8 @@ class MainWindow(QMainWindow):
         self.a_autosave.triggered.connect(self._set_autosave)
         self.doc.set_autosave(self.a_autosave.isChecked())
         self.a_open_data = self._act("Open data file…", "folder-open", "Ctrl+I", self.add_data_file, "Open a CSV, Excel or Parquet file as a new table (Ctrl+I)")
+        self.a_catalog = self._act("Browse &project folder…", None, None, self.browse_catalog,
+                                   "See every DANCR project in a folder and the datasets in each")
         self.a_quit = self._act("&Quit", None, QKeySequence.Quit, self.close)
         self.recent_menu = file_m.addMenu("Open &recent")
         self.template_menu = QMenu("New from &template", self)
@@ -173,7 +181,7 @@ class MainWindow(QMainWindow):
         for e in EXAMPLES:
             self.examples_menu.addAction(e["title"], lambda k=e["key"]: self.open_example(k))
         file_m.addAction(self.a_new); file_m.addMenu(self.template_menu); file_m.addMenu(self.examples_menu); file_m.addAction(self.a_open); file_m.addMenu(self.recent_menu)
-        file_m.addSeparator(); file_m.addAction(self.a_open_data); file_m.addSeparator()
+        file_m.addSeparator(); file_m.addAction(self.a_open_data); file_m.addAction(self.a_catalog); file_m.addSeparator()
         file_m.addAction(self.a_save); file_m.addAction(self.a_save_as); file_m.addAction(self.a_autosave)
         file_m.addAction(self.a_versions); file_m.addAction(self.a_revert)
         file_m.addSeparator(); file_m.addAction(self.a_quit)
@@ -188,6 +196,9 @@ class MainWindow(QMainWindow):
         self.a_add = self._act("Add &step…", "plus", ["Ctrl+K", "Insert"], lambda: self.open_picker(), "Add a step after the current table (Ctrl+K)")
         self.a_ask = self._act("Ask a question…", "sparkle", "Ctrl+J", self.focus_ask,
                                   "Ask about your data in plain words, or pick an answer DANCR offers (Ctrl+J)")
+        self.a_assistant = self._act("Assistant", "magic-wand", "Ctrl+Shift+J", self.focus_assistant,
+                                     "Talk to the Assistant: it builds real steps you approve (Ctrl+Shift+J)")
+        self.a_assistant.setCheckable(True)
         self.a_delete = self._act("&Delete step", "trash", None, self.delete_current, "Delete the selected step (Delete in the project list or the map)")
         self.a_dup = self._act("D&uplicate step", "copy", "Ctrl+D", lambda: self.doc.duplicate_nodes(self.scene.selected_node_ids()))
         self.a_note = self._act("Add &note to the map", "note-pencil", "Ctrl+Shift+N", lambda: self._add_note(self.view.mapToScene(self.view.viewport().rect().center())))
@@ -238,6 +249,20 @@ class MainWindow(QMainWindow):
             grp.addAction(a); self.theme_menu.addAction(a)
             self._theme_actions[value] = a
 
+        share_m = mb.addMenu("&Share")
+        self.a_dataset = self._act("&Dataset details…", "article", None, self.dataset_details,
+                                   "Who made the data, the license, how to cite it — the header of a FAIR record")
+        export_m = share_m.addMenu("Export metadata as")
+        for fmt, label in (("schema.org", "schema.org / JSON-LD (Dataset Search)"),
+                           ("frictionless", "Frictionless Data Package"),
+                           ("manifest", "Run manifest (provenance)"),
+                           ("rocrate", "RO-Crate (metadata graph)")):
+            export_m.addAction(self._act(label, None, None, lambda _=False, f=fmt: self.export_metadata(f)))
+        self.a_package = self._act("Package as RO-Crate…", None, None, self.package_crate,
+                                   "Write a self-contained RO-Crate: the FAIR descriptors, the project and its run manifest")
+        share_m.addAction(self.a_dataset)
+        share_m.addSeparator(); share_m.addAction(export_m.menuAction()); share_m.addAction(self.a_package)
+
         help_m = mb.addMenu("&Help")
         help_m.addAction(self._act("&User guide", "question", "F1", self.show_help))
         help_m.addAction(self._act("Formula &functions", None, None, lambda: self.show_help("formulas")))
@@ -249,7 +274,7 @@ class MainWindow(QMainWindow):
         tb = QToolBar("Main"); tb.setObjectName("maintoolbar"); tb.setMovable(False); tb.setIconSize(QSize(16, 16))
         tb.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         self.addToolBar(tb)
-        tb.addAction(self.a_open_data); tb.addAction(self.a_add); tb.addAction(self.a_ask); tb.addSeparator()
+        tb.addAction(self.a_open_data); tb.addAction(self.a_add); tb.addAction(self.a_ask); tb.addAction(self.a_assistant); tb.addSeparator()
         tb.addAction(self.a_run); tb.addAction(self.a_stop); tb.addSeparator()
         tb.addAction(self.a_undo); tb.addAction(self.a_redo); tb.addSeparator()
         tb.addAction(self.a_save); tb.addAction(self.a_versions)
@@ -281,7 +306,7 @@ class MainWindow(QMainWindow):
         return {"geometry": self.saveGeometry(), "current": self._current, "answer": self._current_answer,
                 "map": self.a_map.isChecked(), "tab": self.table.tabs.currentIndex(),
                 "top_split": self.top_split.saveState(), "outer_split": self.outer_split.saveState(),
-                "settings": self.a_settings.isChecked()}
+                "settings": self.a_settings.isChecked(), "assistant": self.a_assistant.isChecked()}
 
     def restore_ui_state(self, state: dict) -> None:
         g = state.get("geometry")
@@ -292,6 +317,7 @@ class MainWindow(QMainWindow):
         if state.get("outer_split"):
             self.outer_split.restoreState(state["outer_split"])
         self.a_settings.setChecked(bool(state.get("settings", True)))
+        self.a_assistant.setChecked(bool(state.get("assistant", False)))
         self.a_map.setChecked(bool(state.get("map", True)))
         if state.get("tab"):
             self.table.tabs.setCurrentIndex(int(state["tab"]))
@@ -367,6 +393,12 @@ class MainWindow(QMainWindow):
         self.scene.answerDeleteRequested.connect(self.delete_answer_dialog)
         self.askbar.build.connect(lambda spec: self.build_answer(spec))
         self.askbar.closed.connect(self.close_ask)
+        self.side.tabChanged.connect(self._on_side_tab)
+        self.assistant.buildRequested.connect(self.apply_assistant_proposal)
+        self.assistant.applyEditsRequested.connect(self.assistant_apply_edits)
+        self.assistant.revealRequested.connect(self._assistant_reveal)
+        self.assistant.saveProjectRequested.connect(self.assistant_save_as_project)
+        self.assistant.replaceCanvasRequested.connect(self.assistant_replace_canvas)
         self.answer_bar.change.connect(self.change_answer)
         self.answer_bar.showSteps.connect(self._show_answer_steps)
         self.answer_bar.delete.connect(self.delete_answer_dialog)
@@ -385,6 +417,7 @@ class MainWindow(QMainWindow):
         self.table.cellAction.connect(self.steps.cell_action)
         self.table.chartColumns.connect(self.steps.chart_columns)
         self.chart.addToReport.connect(self.steps.add_to_report)
+        self.map.addToReport.connect(self.steps.add_to_report)
         self.report.runRequested.connect(lambda nid: self.run([nid]))
         self.start.openProject.connect(self.open_dialog)
         self.start.openFiles.connect(self.add_data_files)
@@ -416,7 +449,7 @@ class MainWindow(QMainWindow):
                 self.table.set_node(None)
             return
         t = self.doc.pipeline.nodes[nid].type
-        page = {"chart": self.chart, "report": self.report, "enter_data": self.entry}.get(t, self.table)
+        page = {"chart": self.chart, "map": self.map, "report": self.report, "enter_data": self.entry}.get(t, self.table)
         if page.nid != nid:                     # the same step again: keep what is shown, no re-query
             page.set_node(nid)
         self.pages.setCurrentWidget(page)
@@ -431,6 +464,7 @@ class MainWindow(QMainWindow):
         self._current = nid
         self._focus_answers(nid)
         self.inspector.set_node(nid if nid != "inputs" else None)
+        self.assistant.set_focus(nid if nid != "inputs" else None)
         if nid and nid != "inputs":
             self.rail.select("node", nid, emit=False)
             if self.scene.selected_node_ids() != [nid]:
@@ -467,6 +501,155 @@ class MainWindow(QMainWindow):
         if self._ask_open and self.askbar.isVisible():
             self.close_ask(); return
         self.open_ask(focus=True)
+
+    def _on_side_tab(self, assistant_on: bool) -> None:
+        """The person switched the dock tab; keep the menu action in step so it is not flipped back."""
+        self.a_assistant.setChecked(assistant_on)
+        self._apply_side_panels()
+
+    def focus_assistant(self) -> None:
+        """Open the Assistant in the side column (or go back to Settings when it is already showing)."""
+        if not self.doc.pipeline.nodes:
+            self.add_data_files(); return
+        if self.a_assistant.isChecked():
+            self.a_assistant.setChecked(False)
+        else:
+            self.a_assistant.setChecked(True)
+        self._apply_side_panels()
+        if self.a_assistant.isChecked():
+            self.assistant.edit.setFocus()
+
+    def apply_assistant_proposal(self, proposal: dict) -> None:
+        """Build what the Assistant proposed: real steps, through the undo stack, then run them."""
+        from ..core.recipes import PlanError
+        model = self.understanding.model
+        if model is None:
+            self.assistant.built(message="Still reading your tables; try again in a moment.")
+            return
+        aid = None
+        try:
+            if proposal.get("kind") == "answer":
+                aid = self.doc.build_answer(model, proposal.get("spec") or {})
+                a = self.doc.pipeline.answer(aid)
+                terminal = a.terminal if a is not None else None
+            else:
+                terminal = self._apply_assistant_steps(proposal.get("steps") or [])
+        except (PlanError, KeyError, ValueError) as e:
+            self.assistant.built(message=f"The engine could not build that: {str(e).strip(chr(39) + chr(34))}")
+            return
+        if not terminal or terminal not in self.doc.pipeline.nodes:
+            self.assistant.built(message="Built, but there is nothing to run.")
+            return
+        # stay in the chat: do not move the view or the side panel. The result lands on the card; the person
+        # clicks "Canvas" when they want to look at the steps.
+        self._assistant_terminal = terminal
+        self._assistant_answer = aid
+        self.run([terminal])
+
+    def _apply_assistant_steps(self, steps: list) -> str | None:
+        """Add a hand-built plan as ordinary, undoable steps. Returns the last step's id."""
+        from .. import headless as hl
+        last = None
+        made: dict[str, str] = {}
+        with self.doc.macro("Assistant"):
+            for s in steps:
+                after = s.get("after")
+                after = made.get(after, after)
+                x, y = hl.place(self.doc.pipeline, after)
+                nid = self.doc.add_node(s["type"], x, y, params=s.get("params") or {}, title=s.get("title"),
+                                        connect_from=after if after in self.doc.pipeline.nodes else None,
+                                        port=s.get("port"))
+                made[s.get("id")] = nid
+                last = nid
+        return last
+
+    def _on_assistant_run_finished(self, ok: bool, states: dict) -> None:
+        """The Assistant's proposed steps finished: give the card the engine's own finding."""
+        terminal = getattr(self, "_assistant_terminal", None)
+        if not terminal:
+            return
+        self._assistant_terminal = None
+        answer_id, self._assistant_answer = self._assistant_answer, None
+        st = states.get(terminal) or self.doc.state(terminal)
+        if st.status == "done":
+            finding = ((st.report or {}).get("finding") or {}).get("statement") or ""
+            self.assistant.built(finding=finding or "Ran over every row.", terminal=terminal, answer_id=answer_id)
+        elif st.status == "failed":
+            self.assistant.built(message=f"That step failed: {st.error}", terminal=terminal, answer_id=answer_id)
+
+    def assistant_apply_edits(self, edits: list) -> None:
+        """Apply the Assistant's project changes (renames, settings, column labels, inputs) as one undo step."""
+        if not edits:
+            return
+        try:
+            with self.doc.macro("Assistant changes"):
+                for e in edits:
+                    op = e.get("op")
+                    if op == "rename":
+                        self.doc.rename(str(e["node"]), str(e["title"]))
+                    elif op == "set_params":
+                        self.doc.set_params(str(e["node"]), e.get("params") or {})
+                    elif op == "set_input":
+                        self.doc.set_input(str(e["name"]), e.get("value"), e.get("unit"), e.get("note"))
+                    elif op == "column_label":
+                        self.doc.set_column_meta(str(e["column"]), e.get("label"), e.get("unit"))
+        except (PipelineError, KeyError, ValueError) as e:
+            self.assistant.built(message=f"Could not apply the changes: {str(e).strip(chr(39) + chr(34))}")
+            return
+        n = len(edits)
+        self.status.showMessage(f"Applied {n} change{'s' if n != 1 else ''} from the Assistant", 6000)
+        self.assistant.edits_applied(n)
+
+    def _assistant_reveal(self, terminal: str) -> None:
+        """Show the built steps on the canvas, centred on the answer, with its branch lit up."""
+        if terminal not in self.doc.pipeline.nodes:
+            return
+        self.a_map.setChecked(True)
+        self._apply_map_visibility()
+        self.show_node(terminal)
+        branch = self.doc.pipeline.upstream_closure(terminal) | {terminal}
+
+        def show() -> None:
+            if terminal in self.scene.nodes:
+                self.view.reveal(terminal)
+                self.scene.highlight_branch({n for n in branch if n in self.scene.nodes})
+        QTimer.singleShot(0, show)
+
+    def assistant_save_as_project(self, terminal: str) -> None:
+        """Save just the steps behind this answer to a new project file (paths kept pointing at the same files)."""
+        from PySide6.QtWidgets import QFileDialog
+        from ..core.answers import save_as_project
+        base = self.doc.pipeline.path
+        start = str(base.with_name(f"{base.stem} (assistant).json")) if base else str(Path.home() / "assistant.json")
+        path, _ = QFileDialog.getSaveFileName(self, "Save the Assistant's steps as a project", start, FILE_FILTER)
+        if not path:
+            return
+        try:
+            out = save_as_project(self.doc.pipeline, terminal, path)
+        except (OSError, PipelineError, ValueError) as e:
+            self.assistant.built(message=f"Could not save a project: {e}")
+            return
+        self.status.showMessage(f"Saved a new project: {out}", 8000)
+
+    def assistant_replace_canvas(self, terminal: str, confirm: bool = True) -> None:
+        """Leave only the Assistant's steps on the canvas (one undo step), then run them."""
+        from ..core.answers import project_from_answer
+        if terminal not in self.doc.pipeline.nodes:
+            return
+        from PySide6.QtWidgets import QMessageBox
+        if confirm and QMessageBox.question(
+                self, "Replace the canvas?",
+                "Leave only the Assistant's steps for this result on the canvas?\n\n"
+                "Your other steps are hidden, not deleted — Ctrl+Z brings everything back.",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+            return
+        title = self.doc.pipeline.nodes[terminal].title
+        new = project_from_answer(self.doc.pipeline, terminal, name=self.doc.pipeline.name)
+        self.doc.replace_canvas(new.to_dict(), text=f"Assistant: {title}")
+        self.show_node(terminal)
+        self._assistant_terminal = terminal
+        self._assistant_answer = None
+        self.run([terminal])
 
     def open_ask(self, focus: bool = False) -> None:
         self._ask_open = True
@@ -547,7 +730,7 @@ class MainWindow(QMainWindow):
     def _focus_answers(self, nid: str | None) -> None:
         """The tray offers answers about the table being looked at; a chart or report is not a table to ask about."""
         n = self.doc.pipeline.nodes.get(nid) if nid else None
-        self.understanding.set_focus(nid if n is not None and registry.get(n.type).kind != "sink" and n.type != "chart" else None)
+        self.understanding.set_focus(nid if n is not None and registry.get(n.type).kind != "sink" and n.type not in VIEW_TYPES else None)
 
     def show_answer(self, aid: str) -> None:
         """Select an Answer: show its result in the centre and highlight its branch on the map."""
@@ -618,12 +801,16 @@ class MainWindow(QMainWindow):
         return not self.doc.pipeline.nodes and self._current is None
 
     def _apply_side_panels(self) -> None:
-        """The project list and the settings panel have nothing to show until the project has a step."""
+        """The project list and the side column have nothing to show until the project has a step."""
         start = self._on_start_page()
         self.rail.setVisible(not start)
-        self.inspector.setVisible(not start and self.a_settings.isChecked())
-        for a in (self.a_settings, self.a_map, self.a_add, self.a_ask, self.a_run):
-            a.setEnabled(not start)
+        show = not start and (self.a_settings.isChecked() or self.a_assistant.isChecked())
+        self.side.setVisible(show)
+        if show:
+            self.side.set_assistant(self.a_assistant.isChecked())
+        self.inspector.setVisible(not start and self.a_settings.isChecked() and not self.a_assistant.isChecked())
+        for a in (self.a_settings, self.a_map, self.a_add, self.a_ask, self.a_assistant, self.a_run):
+            a.setEnabled(not start and (a is not self.a_assistant or bool(self.doc.pipeline.nodes)))
 
     def _toggle_map(self, on: bool) -> None:
         self._apply_map_visibility()
@@ -852,6 +1039,53 @@ class MainWindow(QMainWindow):
                 QMessageBox.critical(self, "Cannot restore", str(e)); return
             self.status.showMessage("Restored. Save to keep it, or Revert to go back."
                                     + (" Autosave is paused until then." if self.doc.autosave else ""), 8000)
+
+    # ------------------------------------------------------------ dataset metadata (FAIR)
+    def dataset_details(self) -> None:
+        from .dialogs import DatasetDialog
+        dlg = DatasetDialog(self, self.doc.pipeline.dataset_meta())
+        if dlg.exec() == QDialog.Accepted:
+            self.doc.set_dataset_meta(**dlg.fields())
+
+    def export_metadata(self, fmt: str) -> None:
+        from ..headless import export_fair
+        from ..core.executor import Executor
+        p = self.doc.pipeline
+        default = {"schema.org": "dataset.jsonld", "frictionless": "datapackage.json",
+                   "manifest": "dancr-manifest.json", "rocrate": "ro-crate-metadata.json"}.get(fmt, "metadata.json")
+        f, _ = QFileDialog.getSaveFileName(self, "Export metadata", str(p.directory / default),
+                                           "JSON (*.json);;JSON-LD (*.jsonld);;All files (*)")
+        if not f:
+            return
+        try:
+            export_fair(p, Executor(p), fmt=fmt, out=f)
+        except Exception as e:  # noqa: BLE001 - shown to the person, never a traceback
+            QMessageBox.warning(self, "Export metadata", str(e)); return
+        self.status.showMessage(f"Wrote {f}", 8000)
+
+    def browse_catalog(self) -> None:
+        from .dialogs import CatalogDialog
+        start = self.doc.path.parent if self.doc.path else None
+        dlg = CatalogDialog(self, start)
+        dlg.openProject.connect(self.open_path)
+        dlg.exec()
+
+    def package_crate(self) -> None:
+        from ..headless import package_rocrate
+        from ..core.executor import Executor
+        p = self.doc.pipeline
+        default = f"{(p.path.stem if p.path else 'dataset')}.rocrate.zip"
+        f, _ = QFileDialog.getSaveFileName(self, "Package as RO-Crate", str(p.directory / default),
+                                           "RO-Crate (*.zip);;All files (*)")
+        if not f:
+            return
+        if not f.lower().endswith(".zip"):
+            f += ".zip"
+        try:
+            rec = package_rocrate(p, Executor(p), out=f, zip=True)
+        except Exception as e:  # noqa: BLE001 - shown to the person, never a traceback
+            QMessageBox.warning(self, "Package as RO-Crate", str(e)); return
+        self.status.showMessage(f"Wrote {rec['path']}", 8000)
 
     def terminate(self) -> None:
         """The system asked us to quit (SIGTERM): no questions, keep an unsaved project recoverable, close cleanly."""
@@ -1176,6 +1410,7 @@ class MainWindow(QMainWindow):
         self._tick.stop(); self.progress_bar.setValue(1000)
         QTimer.singleShot(350, self._hide_progress)      # let the full bar be seen, then hide
         self._refresh_mode()
+        self._on_assistant_run_finished(ok, results)
         failed = [k for k, s in results.items() if s.status == "failed" and k in self.doc.pipeline.nodes]
         if self.doc.last_run_outcome == "stopped":
             self.status.showMessage("Stopped", 5000)

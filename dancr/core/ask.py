@@ -86,8 +86,19 @@ RECIPE_WORDS = {"over time": "trend", "trend": "trend", "trends": "trend", "time
                 "affect": "drivers", "influences": "drivers", "influence": "drivers",
                 "data quality": "quality", "quality": "quality", "check the data": "quality", "check data": "quality",
                 "problems": "quality", "issues": "quality", "clean": "quality", "missing values": "quality",
-                "forecast": "forecast", "projected": "forecast", "projection": "forecast", "future": "forecast",
-                "heading": "forecast", "when will": "forecast"}
+                 "forecast": "forecast", "projected": "forecast", "projection": "forecast", "future": "forecast",
+                 "heading": "forecast", "when will": "forecast",
+                 # places: draw the points, count them per cell, or match each row to its nearest place
+                 "map": "map", "mapped": "map", "map of": "map", "on a map": "map", "geographic": "map",
+                 "geographical": "map", "geographically": "map", "location": "map", "locations": "map",
+                 "on the map": "map",
+                 "density": "density", "hotspot": "density", "hotspots": "density", "hot spot": "density",
+                 "hot spots": "density", "cluster": "density", "clusters": "density", "clustered": "density",
+                 "per cell": "density", "grid": "density", "concentration": "density",
+                 "nearest": "nearest", "closest": "nearest", "nearest place": "nearest", "closest place": "nearest",
+                 "how far": "nearest", "distance to": "nearest", "distance from": "nearest", "distance between": "nearest",
+                 "proximity": "nearest", "nearby": "nearest", "near to": "nearest",
+                 "inside": "place", "inside which": "place", "falls inside": "place"}
 BY_WORDS = {"by", "per", "for each", "each", "grouped by", "split by", "broken down by", "across", "by each"}
 OPS = {"above": "gt", "over": "gt", "more than": "gt", "greater than": "gt", ">": "gt", "exceeds": "gt",
        "exceeding": "gt", "higher than": "gt", "below": "lt", "under": "lt", "less than": "lt", "<": "lt",
@@ -104,7 +115,7 @@ STOP = {"show", "me", "the", "a", "an", "of", "what", "whats", "what's", "how", 
         "for", "in", "where", "when", "with", "to", "on", "data", "all", "it", "its", "that",
         "which", "who", "there", "any", "can", "you", "get", "tell", "about", "has", "have", "had", "only",
         "rows", "row", "values", "readings", "reading", "records", "time", "at", "?", "these", "then",
-        "table", "tables", "file", "files", "their", "them", "look", "into", "during", "within", "thing", "things",
+        "table", "tables", "file", "files", "their", "them", "look", "into", "during", "thing", "things",
         "most", "least", "gets", "got", "goes", "went", "been", "be", "being",
         "our", "we", "us", "every", "some", "much", "many", "there's", "theres",
         "respondents", "people", "users", "entries", "responses", "cases", "answers", "answered", "said", "say"}
@@ -273,7 +284,7 @@ def _vocabulary(model: DataModel) -> dict[tuple[str, ...], list[Meaning]]:
                 for form in _plural_forms(stem):
                     _add_ref(voc, tuple(_tokens(form)), ref, alias=True)
             if c.role == ID and len(words) > 1 and words[0] in ("n", "no", "nr", "num", "number"):
-                for form in _plural_forms(" ".join(words[1:])):   # "N - Leaf" numbers the leaves: "leaves" are the rows
+                for form in _plural_forms(" ".join(words[1:])):   # "N - Sample" numbers the samples: "samples" are the rows
                     _add_ref(voc, tuple(_tokens(form)), ref, alias=True)
             for phrase, short in _column_phrases(c.name, c.label):
                 for form in _plural_forms(phrase):              # "customers" for a column called customer
@@ -283,7 +294,7 @@ def _vocabulary(model: DataModel) -> dict[tuple[str, ...], list[Meaning]]:
             if c.role in (MEASURE, TIME_ROLE):                  # "revenue" for Amount, "pays" for salary, "started" for start_date
                 for syn in sorted(_synonyms(words + name_words(c.label or ""))):
                     _add_ref(voc, tuple(_tokens(syn)), ref, alias=True)
-            if c.abbrev:                                        # "LA" for 'Leaf area (LA) cm2'
+            if c.abbrev:                                        # "IA" for 'inner area (IA) cm2'
                 _add_ref(voc, tuple(_tokens(c.abbrev)), ref)
             if c.role == MEASURE and c.quantity:                # "mass" for 'm (g)', "mass per area" for g/m2
                 q = c.quantity
@@ -344,13 +355,13 @@ def _plural_forms(phrase: str) -> list[str]:
     p = phrase.strip()
     out = [p]
     if len(p) > 3 and p.endswith("ves"):
-        out.append(p[:-3] + "f")                          # leaves -> leaf
+        out.append(p[:-3] + "f")                          # shelves -> shelf
     if len(p) > 3 and p.endswith("s") and not p.endswith("ss"):
         out.append(p[:-1])
     elif len(p) > 2:
         out.append(p + "s")
         if p.endswith("f"):
-            out.append(p[:-1] + "ves")                    # leaf -> leaves
+            out.append(p[:-1] + "ves")                    # shelf -> shelves
         elif p.endswith("fe"):
             out.append(p[:-2] + "ves")                    # knife -> knives
         elif p.endswith("y") and p[-2:-1] not in "aeiou":
@@ -386,11 +397,11 @@ def _add_ref(voc, key, ref, alias: bool = False) -> None:
 
 def _column_phrases(name: str, label: str) -> list[tuple[str, bool]]:
     """(phrase, shortened?): pressure_psia -> 'pressure_psia', 'pressure psia', and 'pressure' (shortened);
-    'Pressure (bar)' -> 'pressure (bar)', 'pressure'; 'Leaf area (LA) cm2' -> 'leaf area' too."""
+    'Pressure (bar)' -> 'pressure (bar)', 'pressure'; 'inner area (IA) cm2' -> 'inner area' too."""
     full = {name, name.replace("_", " "), label, re.sub(r"\s*[\(\[].*?[\)\]]\s*$", "", label),
             header_parts(name)[0], header_parts(label)[0]}
     full |= {re.sub(r"^(avg|average|mean|total|sum of|number of|no of|count of)[\s_.:]+", "", f, flags=re.IGNORECASE) for f in list(full)}
-    full |= {re.sub(r"\s*[x×*]\s*[\d,.]+$", "", f) for f in list(full)}          # 'm/LA x 10000' is also 'm/LA'
+    full |= {re.sub(r"\s*[x×*]\s*[\d,.]+$", "", f) for f in list(full)}          # 'mass/area x 10000' is also 'mass/area'
 
     words = name_words(name)
     if words:
@@ -429,7 +440,7 @@ def ask(model: DataModel, text: str, bank: "Bank | None" = None, aliases: dict[s
                 items = trial_items
     if out.unknown:
         phrases = [" ".join(k) for k in voc]
-        # the project's names that hold the word ('leaf area' for 'area') before names that merely look like it
+        # the project's names that hold the word ('inner area' for 'area') before names that merely look like it
         holding = {u: sorted(" ".join(k) for k in voc if len(k) > 1 and u in k and any(m.kind in ("col", "table", "value") for m in voc[k]))[:3]
                    for u in out.unknown}
         out.hints = sorted({h for u in out.unknown for h in (holding[u] or difflib.get_close_matches(u, phrases, n=3, cutoff=0.6))})
@@ -1007,6 +1018,23 @@ def _build(model: DataModel, items: list[Item], q: _Parts, used: set[int], out: 
     if q.rows_tables and lookups_named and q.rows_tables[0] not in tables:
         tables = [q.rows_tables[0]] + tables           # "which supplier has the most items": items per supplier
     by = (q.by[1], q.by[2].refs) if q.by else None
+    # "nearest clinic to each village": two tables joined by their coordinates, not by a key. The near
+    # relation picks the points table (the one with more rows); every word that names either table is used.
+    refs = [(w, m.refs) for _, w, m in q.cols]
+    if q.by is not None:
+        refs.append((q.by[1], q.by[2].refs))
+    if "nearest" in q.recipes:
+        near = _near_relation(model, tables, refs)
+        if near is not None:
+            for idx, _, _ in q.cols:
+                used.add(idx)
+            return {"table": near.tables[0], "other": near.tables[1], "recipe": "nearest"}
+    if "place" in q.recipes:
+        cont = _containment_relation(model, tables, refs)
+        if cont is not None:
+            for idx, _, _ in q.cols:
+                used.add(idx)
+            return {"table": cont.tables[0], "other": cont.tables[1], "recipe": "place"}
     base = _base_table(model, tables, [(w, m.refs) for _, w, m in q.cols], by, q.filters)
     t0 = model.tables[base]
     if t0.shape == LOOKUP and ((q.whens and q.top is not None and not t0.time) or
@@ -1037,6 +1065,16 @@ def _build(model: DataModel, items: list[Item], q: _Parts, used: set[int], out: 
     if by_ref is not None and _role(model, by_ref) == TIME_ROLE:
         time_ref, by_ref = by_ref, None
     stat = q.stat or q.sup_stat
+    # a table that holds points is named by its table word ("the villages"); on a map that names the points,
+    # so a column word like it is dropped and marked used rather than refused as a stray word
+    if t0.geo is not None and (set(q.recipes) & {"map", "density", "nearest"}) and measures:
+        keep = []
+        for k, r, m in measures:
+            if r[0] == base and _named_by([(items[k][0], m.refs)], r[1]):
+                used.add(k)
+            else:
+                keep.append((k, r, m))
+        measures = keep
     numbers = [(k, r) for k, r, _ in measures if _role(model, r) == MEASURE or (_role(model, r) == CONSTANT and _is_number(model, r))]
     groups = [(k, _readable(model, r, m, base)) for k, r, m in measures if _role(model, r) in (CATEGORY, ID, TEXT, FLAG)]
     adjective = next((w for w, m in items if m.kind == "stat" and w in ADJECTIVES), None)
@@ -1153,7 +1191,7 @@ def _build(model: DataModel, items: list[Item], q: _Parts, used: set[int], out: 
         return _finish(spec, q, numbers, groups, items, used, resolve)
     recipe = next((r for r in q.recipes if r == "groups"), q.recipes[0] if q.recipes else None)
     if recipe == "higher":
-        # "is mass higher in sun leaves": in a study, a test of the groups; "is price higher in North" in a table of
+        # "is mass higher in treated samples": in a study, a test of the groups; "is price higher in North" in a table of
         # orders: price by region, every region, so North can be read against the others
         if experiment(t0, model):
             recipe = "groups"
@@ -1172,7 +1210,7 @@ def _build(model: DataModel, items: list[Item], q: _Parts, used: set[int], out: 
             recipe = None
     if recipe == "compare" and q.values and len(set(others)) < 2 and by_ref is None:
         if experiment(t0, model):
-            recipe = "groups"                              # "compare sun and shade": two groups of a study, tested
+            recipe = "groups"                              # "compare treated and control": two groups of a study, tested
         else:
             by_ref, recipe = q.values[-1]["column"], None  # "compare Leeds and York": sales by store, those two stores
             nums = nums or [r for r in [_first_measure_ref(model, base)] if r]
@@ -1261,6 +1299,28 @@ def _choose_recipe(model, spec, recipe, numbers, by_ref, stat, every, top, botto
     if recipe in ("gaps", "describe", "stacked", "linked"):
         spec["recipe"] = recipe
         return _tidy(spec)
+    if recipe == "map":
+        spec["recipe"] = "map"
+        if numbers:
+            spec["color_by"] = numbers[0][1][1]
+        elif by_ref is not None and by_ref[0] == spec.get("table"):
+            spec["color_by"] = by_ref[1]            # "map the villages by status": colour by that column
+        return _tidy(spec)
+    if recipe == "density":
+        spec["recipe"] = "density"
+        return _tidy(spec)
+    if recipe == "nearest":
+        rel = next((r for r in model.relations if r.kind == "near" and base in r.tables), None)
+        if rel is None:
+            raise PlanError(f"{t0.title} has no second table of places to match against, or no coordinates")
+        spec.update({"recipe": "nearest", "table": rel.tables[0], "other": rel.tables[1]})
+        return _tidy(spec)
+    if recipe == "place":
+        rel = next((r for r in model.relations if r.kind == "containment" and base in r.tables), None)
+        if rel is None:
+            raise PlanError(f"{t0.title} has no table of regions to match its points against")
+        spec.update({"recipe": "place", "table": rel.tables[0], "other": rel.tables[1]})
+        return _tidy(spec)
     if recipe == "quality":
         spec["recipe"] = "quality"
         return _tidy(spec)
@@ -1282,7 +1342,7 @@ def _choose_recipe(model, spec, recipe, numbers, by_ref, stat, every, top, botto
                      "every": every, "method": None, "horizon": None})
         return _tidy(spec)
     if recipe == "outliers" and not numbers and experiment(t0, model):
-        spec.update({"recipe": "outliers"})                  # "unusual leaves": every number, each group on its own
+        spec.update({"recipe": "outliers"})                  # "unusual samples": every number, each group on its own
         spec.pop("superlative", None)
         return _tidy(spec)
     if recipe in ("outliers", "distribution"):
@@ -1362,7 +1422,7 @@ TEST_WORDS = {"t test": "welch", "t-test": "welch", "ttest": "welch", "welch": "
 
 
 def _groups_spec(model: DataModel, spec: dict, numbers: list, by_ref: list | None, base: str, items) -> dict[str, Any]:
-    """"compare sun and shade", "is mass higher in sun leaves", "t test leaf area": the groups compared, number by
+    """"compare treated and control", "is mass higher in treated samples", "t test inner area": the groups compared, number by
     number. The groups are the column the values named belong to (else the one named after "by", else the table's
     first few-valued column); a filter is kept only when it picks two or more groups out of more."""
     filters = spec.get("filters") or []
@@ -1904,3 +1964,34 @@ def _resolve(model: DataModel, words: str, m: Meaning, base: str, out: Asked) ->
         out.ambiguous.append({"text": words, "chose": chosen,
                               "choices": [{"label": f"{r[1]} ({model.tables[r[0]].title})", "value": r} for r in others]})
     return chosen
+
+
+def words_for(model: DataModel, items: list[Item]) -> list[tuple[str, list[list]]]:
+    """The (word, column refs) of every column phrase read from the question, for checking which words name a
+    table's own rows rather than a column."""
+    return [(w, m.refs) for _, (w, m) in enumerate(items) if m.kind in ("col", "value") and m.refs]
+
+
+def _named_by(items: list[tuple[str, list[list]]], column: str) -> bool:
+    """True when some word in the question names this column, so dropping it loses nothing: only reached for a
+    mappable table's columns, where a word like 'villages' names the points (village) as much as a column."""
+    return any(ref and ref[1] == column for _, refs in items for ref in refs)
+
+
+def _containment_relation(model: DataModel, tables: list[str], cols) -> "object | None":
+    """The containment relation (points inside polygons) connecting the tables a question names, or None."""
+    mentioned = {r[0] for _, refs in cols for r in refs if not r[0].startswith("stack:")} | set(tables)
+    for rel in model.relations:
+        if rel.kind == "containment" and set(rel.tables) <= mentioned:
+            return rel
+    return None
+
+
+def _near_relation(model: DataModel, tables: list[str], cols) -> "object | None":
+    """The near relation that connects the tables a question names ('nearest clinic to each village'), or None.
+    ``cols`` is [(words, refs), …]."""
+    mentioned = {r[0] for _, refs in cols for r in refs if not r[0].startswith("stack:")} | set(tables)
+    for rel in model.relations:
+        if rel.kind == "near" and set(rel.tables) <= mentioned:
+            return rel
+    return None

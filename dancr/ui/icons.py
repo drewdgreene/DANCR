@@ -11,7 +11,7 @@ from PySide6.QtSvg import QSvgRenderer
 ICON_DIR = Path(__file__).resolve().parent.parent / "assets" / "icons"
 
 NODE_ICONS = {
-    "load_file": "file-csv", "keep_rows": "funnel", "choose_columns": "columns", "sort": "sort-ascending",
+    "load_file": "file-csv", "load_folder": "folder-open", "keep_rows": "funnel", "choose_columns": "columns", "sort": "sort-ascending",
     "calculate": "function", "take_sample": "scissors", "fix_missing": "bandaids", "change_type": "text-aa",
     "remove_duplicates": "copy-simple", "remove_outliers": "lightning-slash", "stack": "rows",
     "combine": "arrows-merge", "time_buckets": "clock", "rolling": "wave-sine", "rate_of_change": "trend-up",
@@ -21,6 +21,7 @@ NODE_ICONS = {
     "enter_data": "note-pencil", "fix_values": "note-pencil", "summarise_around": "clock", "workbook": "table",
     "compare_groups": "columns", "check_data": "warning-circle", "associations": "chart-scatter", "contribution": "sigma",
     "compare_periods": "clock-counter-clockwise", "forecast": "trend-up", "unpivot": "rows",
+    "make_point": "map-pin", "distance": "line-segment", "points_grid": "grid-four", "map": "map-trifold",
 }
 
 

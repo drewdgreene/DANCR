@@ -134,6 +134,43 @@ def describe(pipe, a: Answer) -> dict[str, Any]:
     return {**a.to_dict(), "built": a.terminal in pipe.nodes, "kept_by_hand": kept_by_hand(pipe, a)}
 
 
+# =================================================================== a project of their own
+def project_from_answer(pipe, terminal: str, name: str | None = None):
+    """A new project holding only the steps that answer ``terminal`` needs (the tables they read and the steps
+    between), the answers built on them, the inputs, the column labels and the Assistant conversation."""
+    from .model import Pipeline
+    keep = pipe.upstream_closure(terminal) | {terminal}
+    out = Pipeline(name or pipe.name)
+    for nid in pipe.topological_order([terminal]):
+        n = pipe.nodes[nid]
+        out.add_node(n.type, title=n.title, params=copy.deepcopy(n.params), x=n.x, y=n.y, id=nid)
+    for e in pipe.edges:
+        if e.source in keep and e.target in keep:
+            out.connect(e.source, e.target, e.port)
+    out.inputs = copy.deepcopy(pipe.inputs)
+    out.columns = copy.deepcopy(pipe.columns)
+    out.answers = [copy.deepcopy(a) for a in pipe.answers if a.terminal in keep]
+    if "assistant" in (pipe.meta or {}):
+        out.meta["assistant"] = copy.deepcopy(pipe.meta["assistant"])
+    return out
+
+
+def save_as_project(pipe, terminal: str, target, *, name: str | None = None):
+    """Write the steps behind ``terminal`` to a new project file, with every path setting kept pointing at
+    the same files. Returns the path written."""
+    from pathlib import Path
+    from .model import rebase_params
+    target = Path(target).expanduser().resolve()
+    new = project_from_answer(pipe, terminal, name=name or target.stem)
+    old_dir = pipe.directory.resolve()
+    if old_dir != target.parent:
+        for n in new.nodes.values():
+            n.params = rebase_params(n.type, n.params, old_dir, target.parent)
+    new.path = target
+    new.save(target)
+    return target
+
+
 def set_aside_note(titles: list[str]) -> str:
     if not titles:
         return ""

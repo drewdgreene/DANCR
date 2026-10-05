@@ -1,6 +1,7 @@
 """Undo commands for Document edits. Each one mutates ``doc.pipeline`` and emits the matching signals."""
 from __future__ import annotations
 
+import copy
 import json
 import time
 from typing import TYPE_CHECKING
@@ -337,6 +338,82 @@ class EditAnswer(QUndoCommand):
         for k, v in fields.items():
             setattr(answer, k, v)
         self.doc.answerChanged.emit(self.answer_id)
+
+    def redo(self) -> None:
+        self._apply(self.after)
+
+    def undo(self) -> None:
+        self._apply(self.before)
+
+
+class SetThread(QUndoCommand):
+    """The Assistant's conversation changed. It lives in ``meta``, so it is not part of the dataflow; keeping
+    it as a command makes the change undoable and marks the project as changed so it is saved with the file."""
+
+    def __init__(self, doc: Document, before: dict | None, after: dict | None, text: str = "Assistant") -> None:
+        super().__init__(text)
+        self.doc, self.before, self.after = doc, before, after
+
+    def _apply(self, value: dict | None) -> None:
+        meta = self.doc.pipeline.meta
+        if value is None:
+            meta.pop("assistant", None)
+        else:
+            meta["assistant"] = value
+        self.doc.message.emit("Assistant conversation saved with the project")
+
+    def redo(self) -> None:
+        self._apply(self.after)
+
+    def undo(self) -> None:
+        self._apply(self.before)
+
+
+class SetDatasetMeta(QUndoCommand):
+    """The project's dataset-level metadata (creator, license, description…) changed. It lives in ``meta``, so it
+    is not part of the dataflow, but keeping it as a command makes the change undoable and saves it with the file."""
+
+    def __init__(self, doc: "Document", before: dict | None, after: dict | None, text: str = "Dataset details") -> None:
+        super().__init__(text)
+        self.doc, self.before, self.after = doc, before, after
+
+    def _apply(self, value: dict | None) -> None:
+        meta = self.doc.pipeline.meta
+        if value:
+            meta["dataset"] = copy.deepcopy(value)
+        else:
+            meta.pop("dataset", None)
+        self.doc.message.emit("Dataset details saved with the project")
+
+    def redo(self) -> None:
+        self._apply(self.after)
+
+    def undo(self) -> None:
+        self._apply(self.before)
+
+
+class ReplacePipeline(QUndoCommand):
+    """Replace the whole canvas (nodes, edges, answers, inputs, columns, meta) as one undo step. Used by the
+    Assistant's "replace the canvas with this": the file and the cache stay, so shared steps keep their results."""
+
+    def __init__(self, doc: Document, before: dict, after: dict, text: str = "Replace the canvas") -> None:
+        super().__init__(text)
+        self.doc, self.before, self.after = doc, before, after
+
+    def _apply(self, data: dict) -> None:
+        from ..core.model import Pipeline
+        p = Pipeline.from_dict(json.loads(json.dumps(data)), self.doc.pipeline.path)
+        cur = self.doc.pipeline
+        cur.name = p.name
+        cur.nodes, cur.edges, cur.notes = p.nodes, p.edges, p.notes
+        cur.answers, cur.inputs, cur.columns, cur.meta = p.answers, p.inputs, p.columns, p.meta
+        self.doc._states_cache = {}
+        try:
+            self.doc._rewatch()
+        except Exception:  # noqa: BLE001 - a watcher hiccup must not undo the replacement
+            pass
+        self.doc.reloaded.emit()
+        self.doc.refresh_states()
 
     def redo(self) -> None:
         self._apply(self.after)

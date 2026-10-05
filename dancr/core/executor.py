@@ -44,6 +44,15 @@ def _version_of(package: str) -> str:
         return "none"
 
 
+LIBRARIES = ("polars", "numpy", "fastexcel", "scipy", "matplotlib", "xlsxwriter")
+
+
+def engine_versions() -> dict[str, str]:
+    """The version of DANCR's compute and read libraries, as a run manifest records them (a build has them
+    pinned, but a manifest should say so explicitly)."""
+    return {m: (pl.__version__ if m == "polars" else _version_of(m)) for m in LIBRARIES}
+
+
 def engine_files() -> list[Path]:
     """The DANCR modules a run executes: this module, every step module, and every DANCR module they import,
     read from their import statements (imports inside functions too). Nothing is listed by hand, so a module
@@ -297,6 +306,25 @@ class Executor:
                     fp.append([str(path.resolve()), st.st_size, st.st_mtime_ns, _content_sample(path, st.st_size)])
                 except (OSError, ValueError, TypeError):
                     fp.append([str(params[p.name]), "missing"])
+        if node_type.source_files is not None:
+            # a source that reads many files (a folder or a glob): fingerprint every file it matches, so adding,
+            # removing or changing a member invalidates the cache even though the folder path itself did not change
+            try:
+                files = node_type.source_files(self.pipeline.directory, params)
+            except Exception:  # noqa: BLE001 - an unreadable folder is "missing" (the run reports it properly)
+                files = []
+            for f in files:
+                try:
+                    st = Path(f).stat()
+                    fp.append([str(Path(f).resolve()), st.st_size, st.st_mtime_ns, _content_sample(Path(f), st.st_size)])
+                except (OSError, ValueError, TypeError):
+                    fp.append([str(f), "missing"])
+        if node_type.source_digest is not None:
+            # a source with no local file (a URL, a database): the node says what changes when its data does
+            try:
+                fp.append(["digest", node_type.source_digest(self.pipeline.directory, params)])
+            except Exception:  # noqa: BLE001 - an unreachable source is "unknown", not fatal to the hash
+                fp.append(["digest", "unavailable"])
         return fp
 
     def _resolved_paths(self, node_type: NodeType, params: dict[str, Any]) -> dict[str, str]:
@@ -530,7 +558,7 @@ class Executor:
 
     # ------------------------------------------------------------ running
     def run(self, targets: list[str] | None = None, on_event: EventFn | None = None,
-            cancel: threading.Event | None = None, force: bool = False) -> dict[str, NodeState]:
+            cancel: threading.Event | None = None, force: bool = False, sweep: bool = True) -> dict[str, NodeState]:
         emit = on_event or (lambda e: None)
         order = self.pipeline.topological_order(targets)
         memo: dict[str, str] = {}
@@ -539,7 +567,7 @@ class Executor:
         run_lease = f"{self._lease}-run"
         self._write_lease(run_lease, {nid: self.safe_hash(nid, memo) for nid in order})
         try:
-            return self._run(order, emit, cancel, force, memo, results)
+            return self._run(order, emit, cancel, force, memo, results, sweep)
         finally:
             self._remove_lease(run_lease)
 
@@ -551,7 +579,7 @@ class Executor:
             return None
 
     def _run(self, order: list[str], emit: EventFn, cancel: threading.Event | None, force: bool,
-             memo: dict[str, str], results: dict[str, NodeState]) -> dict[str, NodeState]:
+             memo: dict[str, str], results: dict[str, NodeState], sweep: bool = True) -> dict[str, NodeState]:
         emit({"type": "run_started", "order": order})
         t_run = time.perf_counter()
         for i, nid in enumerate(order):
@@ -577,10 +605,11 @@ class Executor:
             st = self._run_node(nid, nt, h, results, memo, force)
             results[nid] = st
             emit({"type": "node_finished" if st.status == "done" else "node_failed", "node": nid, "state": st, "index": i, "total": len(order)})
-        try:
-            self.gc(only=order, memo=memo)
-        except Exception as e:  # never fail a run because of housekeeping
-            log.warning("cache gc failed: %s", e)
+        if sweep:
+            try:
+                self.gc(only=order, memo=memo)
+            except Exception as e:  # never fail a run because of housekeeping
+                log.warning("cache gc failed: %s", e)
         emit({"type": "run_finished", "elapsed": time.perf_counter() - t_run, "states": results})
         return results
 

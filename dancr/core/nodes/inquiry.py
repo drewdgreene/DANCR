@@ -455,6 +455,13 @@ def _check_data(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[st
             issues.append((2, f"{fmt_pct(pct)} missing"))
         if rows > 1 and distinct <= 1:
             issues.append((2, "one value only"))
+        if dt.is_numeric():
+            from ..geo import name_suggests_lat, name_suggests_lon
+            lo, hi = row.get(f"lo{i}"), row.get(f"hi{i}")
+            if lo is not None and name_suggests_lat(c) and (float(lo) < -90.0 or float(hi) > 90.0):
+                issues.append((3, "latitude values outside −90…90: are latitude and longitude the wrong way round?"))
+            elif lo is not None and name_suggests_lon(c) and (float(lo) < -180.0 or float(hi) > 180.0):
+                issues.append((2, "longitude values outside −180…180 (0…360 written as 180…540?)"))
         if kind_of_dtype(dt) == STR:
             num_like = int(row[f"num{i}"] or 0)
             filled = max(rows - miss, 1)

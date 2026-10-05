@@ -126,7 +126,8 @@ class ReportView(QWidget):
                 it = QListWidgetItem(icon("text-aa", T.muted, 16), (txt[0][:80] if txt else "(text)"))
             else:
                 n = self.doc.pipeline.nodes.get(b.get("node"))
-                it = QListWidgetItem(icon(node_icon_name(n.type) if n else "table", T.muted, 16), (n.title if n else "?") + (" (chart)" if n and n.type == "chart" else " (table)"))
+                kind = "" if not n else {"chart": " (chart)", "map": " (map)"}.get(n.type, " (table)")
+                it = QListWidgetItem(icon(node_icon_name(n.type) if n else "table", T.muted, 16), (n.title if n else "?") + kind)
             it.setData(Qt.UserRole, dict(b))
             self.blocks.addItem(it)
         self._suppress = False

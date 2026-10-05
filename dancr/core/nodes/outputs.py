@@ -118,19 +118,21 @@ def excel_frame(lf: pl.LazyFrame, what: str = "This table") -> pl.DataFrame:
 
 
 def write_table(lf: pl.LazyFrame, out: Path) -> None:
-    """Write a LazyFrame to csv/tsv/txt/parquet/xlsx safely: temp file, then atomic replace."""
+    """Write a LazyFrame to csv/tsv/txt/parquet/xlsx/geojson safely: temp file, then atomic replace."""
     import os
     out = Path(out)
     out.parent.mkdir(parents=True, exist_ok=True)
     ext = out.suffix.lower()
-    if ext not in (".parquet", ".pq", ".xlsx", ".csv", ".txt", ".tsv"):
-        raise ValueError("Use a .csv, .tsv, .txt, .parquet or .xlsx file name")
+    if ext not in (".parquet", ".pq", ".xlsx", ".csv", ".txt", ".tsv", ".geojson"):
+        raise ValueError("Use a .csv, .tsv, .txt, .parquet, .xlsx or .geojson file name")
     tmp = private_temp(out)
     try:
         if ext in (".parquet", ".pq"):
             lf.sink_parquet(tmp)
         elif ext == ".xlsx":
             excel_frame(lf).write_excel(tmp)
+        elif ext == ".geojson":
+            write_geojson(lf, tmp)
         else:
             lf.sink_csv(tmp, separator="\t" if ext == ".tsv" else ",")
         os.replace(tmp, out)
@@ -138,12 +140,86 @@ def write_table(lf: pl.LazyFrame, out: Path) -> None:
         tmp.unlink(missing_ok=True)
 
 
+def write_geojson(lf: pl.LazyFrame, out: Path) -> None:
+    """Write a table of points as GeoJSON. Needs a latitude and a longitude column (a WKT `geometry`
+    column is used as-is when present); every other column becomes a property."""
+    import json
+    from ..dtypes import json_safe
+    from ..geo import lat_lon_pair
+    schema = dict(lf.collect_schema())
+    df = lf.collect(engine="streaming")
+    pair = None
+    if "geometry" in schema:
+        geom_col = "geometry"
+    else:
+        numeric = [(c, df[c].min(), df[c].max()) for c, dt in schema.items() if dt.is_numeric()]
+        pair = lat_lon_pair(numeric)
+        if pair is None:
+            raise ValueError("To save GeoJSON the table needs latitude and longitude columns (or a 'geometry' column). "
+                             "Use 'Make a point' first.")
+        geom_col = None
+    lat, lon = pair if pair else (None, None)
+    prop_cols = [c for c in df.columns if c not in (lat, lon, "geometry")]
+    features = []
+    for row in df.iter_rows(named=True):
+        if geom_col:
+            geom = _wkt_geometry(row.get(geom_col))
+        else:
+            la, lo = row.get(lat), row.get(lon)
+            if la is None or lo is None:
+                continue
+            geom = {"type": "Point", "coordinates": [float(lo), float(la)]}
+        if geom is None:
+            continue
+        features.append({"type": "Feature", "geometry": geom,
+                         "properties": json_safe({c: _json_value(row.get(c)) for c in prop_cols})})
+    out.write_text(json.dumps({"type": "FeatureCollection", "features": features}, ensure_ascii=False, default=str),
+                   encoding="utf-8")
+
+
+def _json_value(v: Any) -> Any:
+    import datetime
+    if isinstance(v, (datetime.date, datetime.datetime, datetime.time)):
+        return v.isoformat()
+    return v
+
+
+def _wkt_geometry(text: Any) -> dict[str, Any] | None:
+    """A WKT Point/LineString/Polygon (and Multi*) as GeoJSON geometry, or None if unreadable."""
+    s = str(text or "").strip()
+    if not s or "(" not in s:
+        return None
+    kind = s.split("(", 1)[0].strip().upper()
+    body = s[s.index("("):]
+    try:
+        if kind == "POINT":
+            x, y = [float(t) for t in body[1:-1].split()[:2]]
+            return {"type": "Point", "coordinates": [x, y]}
+        if kind == "LINESTRING":
+            coords = [[float(t) for t in pt.split()[:2]] for pt in body[1:-1].split(",")]
+            return {"type": "LineString", "coordinates": coords}
+        if kind in ("POLYGON", "MULTIPOLYGON"):
+            return _wkt_polygon(kind, body)
+    except (ValueError, IndexError):
+        return None
+    return None
+
+
+def _wkt_polygon(kind: str, body: str) -> dict[str, Any] | None:
+    import re
+    rings = re.findall(r"\(([^()]*)\)", body)
+    parsed = [[[float(t) for t in pt.split()[:2]] for pt in ring.split(",")] for ring in rings]
+    if kind == "POLYGON":
+        return {"type": "Polygon", "coordinates": parsed}
+    return {"type": "MultiPolygon", "coordinates": [[r] for r in parsed]}
+
+
 registry.register(NodeType(
     key="export", label="Save to file", category="Share", icon="⇩",
-    description="Write the table to CSV, Excel or Parquet.",
+    description="Write the table to CSV, Excel, Parquet or GeoJSON (a table with latitude/longitude columns).",
     apply=_export,
     kind="sink",
     materialize=False,      # the table is the upstream result; keeping a second copy in the cache wastes the disk
     summary=lambda p: Path(p.get("path") or "").name or "no file chosen",
-    params=[Param("path", "Save as", "path", required=True, help=".csv, .tsv, .xlsx or .parquet")],
+    params=[Param("path", "Save as", "path", required=True, help=".csv, .tsv, .xlsx, .parquet or .geojson")],
 ))

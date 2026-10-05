@@ -229,12 +229,14 @@ def build_template(path: str, template: str, data_file: str | None = None) -> st
 @friendly
 def describe_pipeline(path: str) -> str:
     """Nodes, connections, settings, statuses and configuration problems of a pipeline."""
+    from .core.secrets import redact_params
     p = _load(path)
     ex = Executor(p)
     memo: dict[str, str] = {}                           # each step's hash once, not again for every step below it
     return _dump({
         "name": p.name, "path": str(p.path),
-        "nodes": [{**n.to_dict(), "inputs": p.inputs_of(n.id), "state": _record(p, ex, n.id, memo)} for n in p.nodes.values()],
+        "nodes": [{**n.to_dict(), "params": redact_params(registry.get(n.type), n.params),
+                   "inputs": p.inputs_of(n.id), "state": _record(p, ex, n.id, memo)} for n in p.nodes.values()],
         "edges": [e.to_dict() for e in p.edges],
         "inputs": [{"name": i.name, "value": i.value, "unit": i.unit, "note": i.note} for i in p.inputs],
         "columns": p.columns,
@@ -269,6 +271,103 @@ def understand_data(path: str, files: list[str] | None = None) -> str:
 
 @mcp.tool()
 @friendly
+def connections(path: str, recompute: bool = False) -> str:
+    """How the project's tables relate: links (each with its match percentage and cardinality), stacks and time
+    alignments. The map is saved with the project; recompute=true works it out again."""
+    with _editing(path) as p:
+        out = hl.connection_map(p, recompute=recompute)
+    return _dump(out)
+
+
+@mcp.tool()
+@friendly
+def profile(path: str, files: list[str] | None = None, node: str | None = None, samples: bool = False,
+            sample_rows: int = 10, stats: bool = True, deep: bool = True, changed: str | None = None) -> str:
+    """A knowledge-base document for the project's datasets: each table's schema (columns with roles, types,
+    units and ranges), how tables relate, per-column statistics, and a prose doc card per table. With samples=true,
+    up to `sample_rows` example rows (max 100) are included too. One call to index DANCR's metadata for a RAG;
+    DANCR still computes exact figures with run_pipeline/get_stats. `files` adds data files first; `node` limits it
+    to one step. With stats or samples, a table that has not run yet is computed first. Each document carries a
+    `content_hash`; pass `changed` = an earlier context file (JSON or JSONL) to return only what changed since."""
+    p = _with_files(path, files)
+    ctx = hl.build_context(p, _executor(p), nodes=[node] if node else None, deep=deep,
+                           stats=stats, samples=samples, sample_rows=sample_rows)
+    if changed:
+        cp = _from_root(changed)
+        text = cp.read_text(encoding="utf-8") if cp.is_file() else changed
+        ctx = hl.context_changes(ctx, text)
+    return _dump(ctx)
+
+
+@mcp.tool()
+@friendly
+def get_dataset_meta(path: str) -> str:
+    """The project's dataset-level metadata (creator, license, description, citation…), the header of its FAIR record."""
+    p = _load(path)
+    return _dump(p.dataset_meta())
+
+
+@mcp.tool()
+@friendly
+def set_dataset_meta(path: str, fields: dict[str, Any]) -> str:
+    """Set dataset-level metadata on the project, for a FAIR record: fields is an object such as
+    {"license": "CC-BY-4.0", "creator": {"name": "Jane Doe", "email": "jane@example.org"}, "description": "…",
+    "keywords": ["maize", "yield"]}. A field set to null removes it. Known fields: title, description, creator,
+    contact, publisher, license, keywords, version, created, identifier, citation, language."""
+    with _editing(path) as p:
+        meta = p.set_dataset_meta(**fields)
+    return _dump({"ok": True, "dataset": meta})
+
+
+@mcp.tool()
+@friendly
+def export_fair(path: str, format: str = "schema.org", out_path: str | None = None, samples: bool = False) -> str:
+    """A FAIR descriptor for the project's datasets: `schema.org` (JSON-LD Dataset), `frictionless` (Data Package),
+    `manifest` (what produced the results: engine, library and input versions, per-step hashes) or `rocrate`.
+    With out_path (inside the pipeline file's folder) it is written to a file; otherwise the JSON is returned."""
+    from .core.fair import FORMATS
+    key = format.strip().lower().replace("_", ".")
+    if key not in FORMATS and key not in ("provenance", "run", "data-package", "datapackage", "jsonld", "schemaorg"):
+        raise ToolError(f"Unknown format {format!r}. Choose one of: {', '.join(FORMATS)}")
+    p = _load(path)
+    out = _inside_project(p, out_path) if out_path else None
+    doc = hl.export_fair(p, _executor(p), fmt=format, samples=samples, out=out)
+    return _dump(doc)
+
+
+@mcp.tool()
+@friendly
+def catalog(root: str = ".", pattern: str = "*.json", recursive: bool = True, samples: bool = False,
+            stats: bool = True, fair: str | None = None, changed: str | None = None, jobs: int = 1) -> str:
+    """A catalog of every DANCR project under `root` (relative to the server's root folder): each project's
+    datasets — schema, relations, a prose doc card, and each dataset's `content_hash`. `fair` adds a descriptor
+    per project (schema.org, frictionless, manifest, rocrate). `changed` limits it to what moved since an
+    earlier catalog (JSON or JSONL). Everything is read-only; `stats`/`samples` compute a table if needed."""
+    base = _from_root(root)
+    cat = hl.build_catalog(base, pattern=pattern, recursive=recursive, stats=stats, samples=samples,
+                           fair_format=fair, jobs=int(jobs))
+    if changed:
+        cp = _from_root(changed)
+        text = cp.read_text(encoding="utf-8") if cp.is_file() else changed
+        cat = hl.catalog_changes(cat, text)
+    return _dump(cat)
+
+
+@mcp.tool()
+@friendly
+def package_project(path: str, out_path: str, copy: str = "metadata", zip: bool = True, overwrite: bool = False) -> str:
+    """Write a self-contained RO-Crate: the FAIR descriptors (schema.org, Frictionless, run manifest), the
+    pipeline file and a knowledge-base context file, as a `.zip` or a folder inside the pipeline's folder.
+    `copy` controls extra files: `metadata` (none), `data` (the source files), `results` (files the project
+    wrote) or `all`."""
+    p = _load(path)
+    out = _inside_project(p, out_path)
+    rec = hl.package_rocrate(p, _executor(p), out=out, copy=copy, zip=bool(zip), overwrite=overwrite)
+    return _dump(rec)
+
+
+@mcp.tool()
+@friendly
 def suggest_answers(path: str, files: list[str] | None = None, focus: str | None = None, build: int | None = None) -> str:
     """Answers DANCR can give on its own for the project's tables, best first ({index, title, recipe, why, spec}).
     `files` adds data files first; `focus` limits them to one step's output; `build` = an index builds that answer
@@ -298,6 +397,23 @@ def ask(path: str, question: str, files: list[str] | None = None, dry_run: bool 
     if not out["question"]["ok"]:
         q = out["question"]
         raise ToolError(q["message"] + (f" (unknown: {', '.join(q['unknown'])})" if q["unknown"] else ""))
+    return _dump(out)
+
+
+@mcp.tool()
+@friendly
+def assistant(path: str, question: str, files: list[str] | None = None, build: bool = False,
+              allow_samples: bool = False, focus: str | None = None) -> str:
+    """Talk to the Assistant: an AI front end to the same engine. It proposes steps and answers; the engine does
+    every number, so no figure is ever made up. Needs a model key (DANCR_ASSISTANT_API_KEY, with optional
+    DANCR_ASSISTANT_BASE_URL / DANCR_ASSISTANT_MODEL; DANCR_ASSISTANT_FAKE=1 runs a scripted fake with no key).
+    `files` adds data files first; `focus` limits it to one step's output. With build=true it applies the proposal
+    (its steps and an Answer) and runs it. Returns {kind, text, proposal, flags, usage, tool_calls}."""
+    with _editing(path) as p:
+        hl.add_files(p, _data_files(files))
+        out = hl.assistant_turn(p, question, allow_samples=allow_samples, focus=focus, build=build)
+    if out.get("error"):
+        raise ToolError(out["error"])
     return _dump(out)
 
 
@@ -441,6 +557,23 @@ def run_pipeline(path: str, node_ids: list[str] | None = None, force: bool = Fal
 
 @mcp.tool()
 @friendly
+def run_batch(path: str, files: list[str], out_dir: str, node_id: str | None = None, loader: str | None = None,
+              format: str = "csv", jobs: int = 1, force: bool = False, combined: bool = True,
+              manifest: str | None = None) -> str:
+    """Run one step of the pipeline over many files (a folder or globs in `files`), writing one output per file
+    to `out_dir` plus a combined table with a `source_file` column. The project's cache is shared, so unchanged
+    files are served from cache. `node_id` defaults to the last step; `loader` is the source step whose file
+    setting is swapped (default: the only source). All files are confined to the pipeline file's folder."""
+    p = _load(path)
+    out = _inside_project(p, out_dir)
+    man = _inside_project(p, manifest) if manifest else None
+    rec = hl.run_batch(p, list(files), target=node_id, out_dir=out, loader=loader,
+                       ext=format, jobs=int(jobs), force=force, combined=combined, manifest=man)
+    return _dump(rec)
+
+
+@mcp.tool()
+@friendly
 def node_status(path: str, node_id: str) -> str:
     """Status, row count, columns, messages and report (e.g. fit coefficients, gap statistics) of one node."""
     p = _load(path)
@@ -524,8 +657,41 @@ def render_chart(path: str, node_id: str, out_png: str | None = None, kind: str 
 
 @mcp.tool()
 @friendly
+def render_map(path: str, node_id: str, out_png: str | None = None, lat: str | None = None, lon: str | None = None,
+               color_by: str | None = None, size_by: str | None = None, label: str | None = None,
+               cell_size: str | None = None, title: str | None = None, basemap: bool = True,
+               width: int = 1200, height: int = 800, run: bool = True) -> Image:
+    """Render a map of a node's output to PNG and return the image. If the node is a map node its settings are
+    used and any argument given here overrides them; otherwise give lat and lon (and optionally color_by, size_by,
+    cell_size). Country outlines come from the app's offline basemap. out_png (optional) must be inside the
+    pipeline file's folder; otherwise the PNG goes to the cache."""
+    from .views.render import render_map as _render
+    import tempfile
+    with _frame(path, node_id, run) as (p, lf):
+        params = dict(p.nodes[node_id].params) if p.nodes[node_id].type == "map" else {}
+        for k, v in (("lat", lat), ("lon", lon), ("color_by", color_by), ("size_by", size_by),
+                     ("label", label), ("cell_size", cell_size), ("title", title)):
+            if v is not None:
+                params[k] = v
+        if not basemap:
+            params["basemap"] = False
+        if out_png:
+            out = _inside_project(p, out_png)
+            _render(lf, params, out, width=width, height=height, columns=p.columns, inputs=p.input_values())
+            return Image(data=out.read_bytes(), format="png")
+        fd, tmp = tempfile.mkstemp(suffix=".png", prefix="dancr-map-")
+        os.close(fd)
+        try:
+            _render(lf, params, Path(tmp), width=width, height=height, columns=p.columns, inputs=p.input_values())
+            return Image(data=Path(tmp).read_bytes(), format="png")
+        finally:
+            Path(tmp).unlink(missing_ok=True)
+
+
+@mcp.tool()
+@friendly
 def export_node(path: str, node_id: str, out_path: str, run: bool = True) -> str:
-    """Write a node's full output to a .csv, .tsv, .parquet or .xlsx file inside the pipeline file's folder."""
+    """Write a node's full output to a .csv, .tsv, .parquet, .xlsx or .geojson file inside the pipeline file's folder."""
     from .core.nodes.outputs import write_table
     with _frame(path, node_id, run) as (p, lf):
         out = _inside_project(p, out_path)

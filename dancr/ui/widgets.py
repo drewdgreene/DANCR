@@ -197,11 +197,12 @@ class ChoiceWidget(ParamWidget):
 class PathWidget(ParamWidget):
     immediate = False
 
-    def __init__(self, param: Param, parent=None, save: bool = False) -> None:
+    def __init__(self, param: Param, parent=None, save: bool = False, directory: bool = False) -> None:
         super().__init__(param, parent)
         self.save = save
+        self.directory = directory
         lay = QHBoxLayout(self); lay.setContentsMargins(0, 0, 0, 0)
-        self.edit = QLineEdit(); self.edit.setPlaceholderText("Choose a file…"); self.edit.setMinimumWidth(60)
+        self.edit = QLineEdit(); self.edit.setPlaceholderText("Choose a folder…" if directory else "Choose a file…"); self.edit.setMinimumWidth(60)
         btn = QPushButton("Browse…"); btn.clicked.connect(self.browse)
         lay.addWidget(self.edit, 1); lay.addWidget(btn)
         self.edit.textEdited.connect(lambda _: self.changed.emit())
@@ -209,7 +210,13 @@ class PathWidget(ParamWidget):
 
     def browse(self) -> None:
         start = str(self.base_dir or Path.home())
-        if self.save:
+        if self.directory:
+            cur = self.edit.text().strip()
+            if cur:
+                cand = (self.base_dir / cur) if (self.base_dir and not Path(cur).is_absolute()) else Path(cur)
+                start = str(cand if cand.is_dir() else (self.base_dir or Path.home()))
+            f = QFileDialog.getExistingDirectory(self, "Choose a folder", start)
+        elif self.save:
             filt = "Report (*.html)" if self.param.help and ".html" in self.param.help else "CSV (*.csv);;Excel (*.xlsx);;Parquet (*.parquet)"
             cur = self.edit.text().strip()
             if cur:
@@ -995,7 +1002,10 @@ def make_widget(param: Param, node_type_key: str, suggest: Callable[[str], list[
     if node_type_key == "load_file" and param.name == "sheet":
         return SheetWidget(param)
     if k == "text":
-        return TextWidget(param)
+        w = TextWidget(param)
+        if param.secret:
+            w.edit.setEchoMode(QLineEdit.Password)   # a credential is not shown on screen
+        return w
     if k == "int":
         return IntWidget(param)
     if k == "float":
@@ -1006,6 +1016,8 @@ def make_widget(param: Param, node_type_key: str, suggest: Callable[[str], list[
         return ChoiceWidget(param)
     if k == "path":
         return PathWidget(param, save=(node_type_key in ("export", "report", "workbook")))
+    if k == "dir":
+        return PathWidget(param, directory=True)
     if k in ("duration", "bucket"):
         return DurationWidget(param)
     if k == "column":

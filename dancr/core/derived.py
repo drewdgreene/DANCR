@@ -1,12 +1,12 @@
 """Columns worked out from other columns, found from the numbers alone — and the rows that break the rule.
 
-Spreadsheets are full of columns someone calculated: ``D`` is polygon area minus leaf area, ``m/LA x 10000`` is
-mass per leaf area in g/m², ``Total`` is price times quantity. Knowing that is worth two things:
+Spreadsheets are full of columns someone calculated: ``gap`` is outer area minus inner area, ``mass/area x
+10000`` is mass per area in g/m², ``Total`` is price times quantity. Knowing that is worth two things:
 
-- a row where the rule does not hold is almost always a typing slip (a D of 1.26 where polygon area minus leaf area
-  is 54.1), and saying so catches what a summary never shows;
-- a column and the columns it is made from are related by definition, so "D rises with polygon area" is not a
-  finding.
+- a row where the rule does not hold is almost always a typing slip (a gap of 1.26 where outer area minus inner
+  area is 54.1), and saying so catches what a summary never shows;
+- a column and the columns it is made from are related by definition, so "the gap rises with the outer area"
+  is not a finding.
 
 A small, fixed set of rules is tried — ``a + b``, ``a − b``, ``k·a·b``, ``k·a/b`` and ``k·a`` (a unit change) — on
 each number column against the number columns to its left (people calculate to the right of what they
@@ -41,7 +41,7 @@ class Derivation:
 
     @property
     def formula(self) -> str:
-        """The rule in DANCR's formula language: [polygon area] - [leaf area], [m] / [LA] * 10000."""
+        """The rule in DANCR's formula language: [outer area] - [inner area], [mass] / [area] * 10000."""
         a, b = (f"[{c}]" for c in (self.operands + [""])[:2])
         k = _nice(self.k)
         body = {"sum": f"{a} + {b}", "diff": f"{a} - {b}", "product": f"{a} * {b}", "ratio": f"{a} / {b}",
@@ -50,7 +50,7 @@ class Derivation:
 
     @property
     def words(self) -> str:
-        """The rule as people say it: polygon area minus leaf area."""
+        """The rule as people say it: outer area minus inner area."""
         from .units import header_parts
         a, b = (header_parts(c)[0] if c else "" for c in (self.operands + [""])[:2])
         body = {"sum": f"{a} plus {b}", "diff": f"{a} minus {b}", "product": f"{a} times {b}",

@@ -74,9 +74,10 @@ class Column:
     cadence: float | None = None    # time: the typical seconds between one row and the next
     regular: bool = False           # time: most steps are that typical step
     spellings: dict[str, str] = field(default_factory=dict)   # category: a variant -> the spelling most rows use
-    abbrev: str = ""                # the short name its header gives it: 'LA' in 'Leaf area (LA) cm2'
+    abbrev: str = ""                # the short name its header gives it: 'IA' in 'inner area (IA) cm2'
     quantity: str = ""              # what its unit measures: mass, area, mass per area …
     derived: dict[str, Any] | None = None   # worked out from other columns: {formula, words, operands, holds, rows, breaks}
+    geo: str = ""                   # "lat" / "lon" when the column is a coordinate of a detected pair
     _keys: set[str] = field(default_factory=set, repr=False)       # capped distinct values, for link overlap
     _key_cut: int | None = field(default=None, repr=False)
 
@@ -109,6 +110,7 @@ class Table:
     wide: dict[str, Any] | None = None        # months as columns: {"columns": [Jan, Feb …], "year": 2024 or None}
     blank_rows: int = 0             # rows with nothing in them (a blank line in a CSV)
     deep: bool = False              # deepen() has read every row
+    geo: dict[str, str] | None = None   # {"lat": name, "lon": name} when the table holds points
 
     def column(self, name: str) -> Column | None:
         return next((c for c in self.columns if c.name == name), None)
@@ -154,6 +156,7 @@ class Relation:
     pairs: dict[str, str] = field(default_factory=dict)  # align: first table's column -> the second table's
     tolerance: str = ""
     why: str = ""
+    geo: dict[str, str] = field(default_factory=dict)   # near: left_lat/left_lon/right_lat/right_lon
 
     def to_dict(self) -> dict[str, Any]:
         return _json(asdict(self))
@@ -238,16 +241,45 @@ def _read_table(pipe, executor, nid: str) -> Table:
     _as_long(t, node)
     t.shape = _shape_of(t)
     t.pairs = _pairs(sample, t.measures, _definitions(t))
+    _settle_geo(t)
     return t
 
 
+def _settle_geo(t: Table) -> None:
+    """Note a table's latitude/longitude pair, if it has one, so answers can offer a map or a nearest-place match.
+
+    A pair needs a name that says latitude (lat, latitude, y) and one that says longitude, and both ranges must
+    fit their coordinate; a plain x/y is only accepted when the values leave no doubt. This never changes a
+    column's role: a coordinate stays a number, it just also carries where it is."""
+    from .geo import lat_lon_pair
+    nums = [(c.name, c.minimum, c.maximum) for c in t.columns if c.kind == NUM]
+    pair = lat_lon_pair(nums)
+    if not pair:
+        return
+    t.geo = {"lat": pair[0], "lon": pair[1]}
+    for c in t.columns:
+        if c.name == pair[0]:
+            c.geo = "lat"
+        elif c.name == pair[1]:
+            c.geo = "lon"
+
+
+def _polygon_column(t: Table) -> str | None:
+    """The column of a table that holds polygons as WKT text (a GeoJSON file loads one called 'geometry'), or
+    None. Detected by the column's name and the WKT it starts with in a sample."""
+    for c in t.columns:
+        if c.name == "geometry" or (c.kind == STR and "geom" in norm(c.name)):
+            return c.name
+    return None
+
+
 NUMBERING_WORDS = {"n", "no", "nr", "num", "number", "rep", "replicate", "trial", "sample", "plot", "quadrat", "subject",
-                   "run", "specimen", "individual", "plant", "leaf", "tree", "site", "station", "animal", "patient"}
+                   "run", "specimen", "individual", "plant", "tree", "site", "station", "animal", "patient"}
 
 
 def _numbering(t: Table, sample: pl.DataFrame) -> None:
-    """A column that numbers the rows within each group (1 … 15 for the sun leaves, 1 … 15 again for the shade
-    leaves) names the rows; it is not a quantity. Whole numbers 1 … k, each the same number of times, in the first
+    """A column that numbers the rows within each group (1 … 15 for one group, 1 … 15 again for the other) names
+    the rows; it is not a quantity. Whole numbers 1 … k, each the same number of times, in the first
     column or under a name like 'N', 'Rep' or 'Plot'."""
     for i, c in enumerate(t.columns):
         if c.role != MEASURE or not sample[c.name].dtype.is_integer() or c.distinct < 3:
@@ -579,6 +611,8 @@ def find_relations(model: DataModel) -> list[Relation]:
     stacks = _find_stacks(tables)
     out += stacks
     out += _find_aligns(tables)
+    out += _find_nears(tables, stacks)
+    out += _find_contains(tables, stacks)
     same = [set(r.tables) for r in stacks]
     # tables of one stack are the same kind of table, not lookups of each other
     out += [r for r in _find_links(tables) if not any(set(r.tables) <= g for g in same)]
@@ -739,6 +773,67 @@ def _find_aligns(tables: list[Table]) -> list[Relation]:
                        f"nearest reading of {b.title}" + (f" within {tol}" if tol else ""))
             out.append(rel)
     return out
+
+
+def _find_contains(tables: list[Table], stacks: list[Relation]) -> list[Relation]:
+    """A table of points and a table of polygons (a WKT 'geometry' column): each point can be matched to the
+    place it falls inside."""
+    out: list[Relation] = []
+    stack_pairs = [set(r.tables) for r in stacks]
+    points = [t for t in tables if t.geo]
+    polys = [t for t in tables if _polygon_column(t) is not None]
+    for p in points:
+        for poly in polys:
+            if p.node == poly.node or any({p.node, poly.node} == sp for sp in stack_pairs):
+                continue
+            geom = _polygon_column(poly)
+            rel = Relation(id=f"within:{p.node}>{poly.node}", kind="containment", tables=[p.node, poly.node],
+                           score=0.7, exact=False,
+                           left_on=p.geo["lat"], right_on=geom, geo={"left_lat": p.geo["lat"], "left_lon": p.geo["lon"],
+                                                                     "right_geometry": geom or "geometry"})
+            rel.why = f"Each place of {p.title} can be matched to the {poly.title} region it falls inside"
+            out.append(rel)
+    return out
+
+
+def _find_nears(tables: list[Table], stacks: list[Relation]) -> list[Relation]:
+    """Two tables that both hold points: every row of one can be matched to its nearest place in the other.
+    The table with more rows is the points (the left side); the smaller is the set of places to search."""
+    out: list[Relation] = []
+    stack_pairs = [set(r.tables) for r in stacks]
+    geo_tables = [t for t in tables if t.geo]
+    for i, a in enumerate(geo_tables):
+        for b in geo_tables[i + 1:]:
+            if any({a.node, b.node} == sp for sp in stack_pairs):
+                continue
+            ra, rb = (a.rows or a.sampled or 0), (b.rows or b.sampled or 0)
+            left, right = (a, b) if ra >= rb else (b, a)
+            score = round(0.7 + 0.25 * _geo_overlap(left, right), 3)
+            rel = Relation(id=f"near:{left.node}>{right.node}", kind="near", tables=[left.node, right.node],
+                           left_on=left.geo["lat"], right_on=right.geo["lat"], score=score, exact=False,
+                           geo={"left_lat": left.geo["lat"], "left_lon": left.geo["lon"],
+                                "right_lat": right.geo["lat"], "right_lon": right.geo["lon"]})
+            rel.why = (f"Both have coordinates: each row of {left.title} can be matched to its nearest place in "
+                       f"{right.title}")
+            out.append(rel)
+    out.sort(key=lambda r: (-r.score, r.id))
+    return out
+
+
+def _geo_overlap(a: Table, b: Table) -> float:
+    """How much of the smaller table's coordinate box the other covers (0..1): a share of places side."""
+    try:
+        def box(t: Table) -> tuple:
+            la, lo = t.column(t.geo["lat"]), t.column(t.geo["lon"])
+            return (float(lo.minimum), float(lo.maximum), float(la.minimum), float(la.maximum))
+        ax0, ax1, ay0, ay1 = box(a)
+        bx0, bx1, by0, by1 = box(b)
+        ix = max(0.0, min(ax1, bx1) - max(ax0, bx0))
+        iy = max(0.0, min(ay1, by1) - max(ay0, by0))
+        smaller = min((ax1 - ax0) * (ay1 - ay0) or 1e-9, (bx1 - bx0) * (by1 - by0) or 1e-9)
+        return max(0.0, min(1.0, (ix * iy) / smaller))
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _time_overlap(a: Table, b: Table) -> float | None:

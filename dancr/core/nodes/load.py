@@ -14,6 +14,8 @@ from ..dtypes import LEADING_ZERO
 CSV_EXT = {".csv", ".tsv", ".txt", ".dat", ".tab", ".log"}
 EXCEL_EXT = {".xlsx", ".xlsm", ".xls", ".xlsb", ".ods"}
 PARQUET_EXT = {".parquet", ".pq"}
+GEOJSON_EXT = {".geojson", ".json"}
+VECTOR_EXT = {".gpkg", ".shp"}
 
 
 def sniff_separator(path: Path, encoding: str = "utf8") -> str:
@@ -54,6 +56,18 @@ def scan_file(ctx: Ctx, params: dict[str, Any]) -> tuple[pl.LazyFrame, list[str]
     if path.stat().st_size == 0:
         raise ValueError(f"{path.name} is empty")
     ext = path.suffix.lower()
+    if ext in GEOJSON_EXT:
+        from ..geo import is_geojson, geojson_table
+        if is_geojson(path):
+            df = geojson_table(path)
+            messages.append(f"Read a GeoJSON file: {len(df):,} feature{'s' if len(df) != 1 else ''}. "
+                            "Each feature's properties are columns, with 'geometry' (WKT) and a centre point")
+            return df.lazy(), messages, {"geojson": True}
+    if ext in VECTOR_EXT:
+        from ..geo import vector_table
+        layer = str(params.get("layer") or "").strip() or None
+        df, notes = vector_table(path, layer)
+        return df.lazy(), messages + notes, {"vector": True, "layer": layer or ""}
     encoding = params.get("encoding") or "utf8"
     has_header = params.get("has_header")
     has_header = True if has_header is None else bool(has_header)
@@ -541,12 +555,15 @@ registry.register(NodeType(
     icon="▤",
     kind="source",
     inputs=[],
-    description="Open a CSV, text, Excel or Parquet file. Dates and numbers are detected automatically.",
+    description="Open a CSV, text, Excel, Parquet, GeoJSON, GeoPackage or shapefile. Dates and numbers are "
+                "detected automatically, and a map layer's geometry is reprojected to longitude/latitude.",
     apply=_apply,
     summary=_summary,
     params=[
-        Param("path", "File", "path", required=True, help="CSV, TSV, TXT, Excel (.xlsx) or Parquet"),
+        Param("path", "File", "path", required=True,
+              help="CSV, TSV, TXT, Excel (.xlsx), Parquet, GeoJSON (.geojson), GeoPackage (.gpkg) or shapefile (.shp)"),
         Param("sheet", "Sheet", "text", default="", help="Excel only. Leave blank for the first sheet"),
+        Param("layer", "Layer", "text", default="", help="GeoPackage only. Leave blank for the first layer"),
         Param("has_header", "First row is column names", "bool", default=True),
         Param("layout", "Layout", "choice", default="auto",
               choices=[("auto", "work out the layout"), ("as_is", "read the rows as they are")],
@@ -594,7 +611,16 @@ def tables_in(path: str | Path) -> list[tuple[str, dict[str, Any]]]:
     workbook with several (Orders, Customers …), and one per table on a sheet that holds several, so dropping a
     workbook brings in every table in it."""
     p = Path(path)
-    if p.suffix.lower() not in EXCEL_EXT:
+    ext = p.suffix.lower()
+    if ext in VECTOR_EXT:
+        from ..geo import vector_layers
+        layers = vector_layers(p)
+        if not layers:
+            return [(p.stem, {})]
+        if len(layers) == 1:
+            return [(layers[0], {"layer": layers[0]})]
+        return [(name, {"layer": name}) for name in layers]
+    if ext not in EXCEL_EXT:
         return [(p.stem, {})]
     sheets = list_sheets(p)
     out: list[tuple[str, dict[str, Any]]] = []

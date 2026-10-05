@@ -51,7 +51,7 @@ def correct(tokens: list[str], vocab: dict[tuple[str, ...], Any],
     # a near miss is only ever one of the project's own names (a column, a table, a value): "season" must not become
     # the grammar word "reason" and change what is asked. A swapped pair of letters is a typo of any word
     own = [w for w in words if any(getattr(m, "kind", "") in ("col", "table", "value") for m in vocab.get((w,), []))]
-    # a word that is part of one of the project's own names ('area' in 'leaf area') is a real word here: it is
+    # a word that is part of one of the project's own names ('area' in 'inner area') is a real word here: it is
     # never "corrected" into something else ('are'); the refusal names the phrases it belongs to instead
     inside = {w for k in vocab if len(k) > 1 for w in k}
     learned = {str(k).strip().lower(): str(v).strip() for k, v in (aliases or {}).items() if k and v}

@@ -185,7 +185,7 @@ def test_compare_groups_edges():
     ("name,score,age\nAnn,1,20\nBob,2,3\nCat,3,4\nDan,4,5\nEve,,\n", 5, ["name", "score", "age"]),     # not a title
     ("name,city,country,age\nAnn,Paris,FR,30\nDee,Lima,PE,31\n\nBob,Rome,IT,\nCy,Oslo,NO,50\n", 4, ["name", "city", "country", "age"]),
     (",a,b\n0,x,y\n1,z,w\n2,q,r\n", 3, ["", "a", "b"]),                                              # pandas' index column
-    ("stat,sun,shade\nmean,10,20\nmedian,9,19\nsd,1,2\nn,15,15\n", 4, ["stat", "sun", "shade"]),        # a table of statistics
+    ("stat,group_a,group_b\nmean,10,20\nmedian,9,19\nsd,1,2\nn,15,15\n", 4, ["stat", "group_a", "group_b"]),  # a table of statistics
     ("Sales by year\nRegion,2019,2020,2021\nNorth,1,2,3\nSouth,4,5,6\nEast,7,8,9\n", 3, ["Region", "2019", "2020", "2021"]),
     ("sample,flag,value\ns1,outlier,1\ns2,,2\ns3,,3\ns4,recheck,4\ns5,,5\ns6,,6\n", 6, ["sample", "flag", "value"]),
 ])
@@ -198,7 +198,7 @@ def test_plain_sheets_are_not_read_as_layouts(tmp_path, text, rows, columns):
 
 
 def test_a_sheet_that_starts_below_and_right_of_a1(tmp_path):
-    write_rows(tmp_path / "off.xlsx", [(2, 1, ["Leaf report"]), (4, 1, ["a", "b"])] + [(5 + i, 1, [i, i * 2]) for i in range(3)])
+    write_rows(tmp_path / "off.xlsx", [(2, 1, ["Sample report"]), (4, 1, ["a", "b"])] + [(5 + i, 1, [i, i * 2]) for i in range(3)])
     df = load(tmp_path, "off.xlsx").frame.collect()
     assert df.columns == ["a", "b"] and df["b"].to_list() == [0, 2, 4]
     write_rows(tmp_path / "sec.xlsx", [(1, 1, ["Item", "Qty"]), (2, 1, ["Fruit"]), (3, 1, ["F0", 1]), (4, 1, ["F1", 2]),
@@ -238,7 +238,7 @@ def test_a_relabelled_column_reruns_the_steps_that_say_it(tmp_path):
     p.add_node("compare_groups", params={"by": "g", "columns": ["m"]}, id="c"); p.connect("l", "c")
     ex = Executor(p); ex.run()
     h = ex.plan_hash("c"); hl = ex.plan_hash("l")
-    p.set_column_label("m", "Leaf mass", "g") if hasattr(p, "set_column_label") else p.columns.update({"m": {"label": "Leaf mass"}})
+    p.set_column_label("m", "Sample mass", "g") if hasattr(p, "set_column_label") else p.columns.update({"m": {"label": "Sample mass"}})
     ex2 = Executor(p)
     assert ex2.plan_hash("c") != h and ex2.plan_hash("l") == hl                 # the loader does not rerun
 

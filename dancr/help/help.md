@@ -99,9 +99,9 @@ your columns, tables and values:
 | `fastest vehicle` · `cheapest order` | the one row with the highest or lowest value |
 | `share of sales by region` · `what share agree` | each group's part of the whole, in per cent |
 | `tips by hour of day` · `busiest day of the week` · `sales by month of the year` | totals by a part of the time, across every day, week or year |
-| `compare sun and shade` · `is mass higher in sun leaves` · `t test leaf area` | the groups compared: each one's average, spread and standard error, a test, how big the difference is, in a sentence |
+| `compare treated and control` · `is mass higher in treated samples` · `t test inner area` | the groups compared: each one's average, spread and standard error, a test, how big the difference is, in a sentence |
 | `compare before and after` · `compare control and treated` | numbers kept in a column per group, compared (a paired test when each row is one thing measured twice) |
-| `standard deviation of weight` · `unusual leaves` | one statistic; the rows with a value far from the rest of their group |
+| `standard deviation of weight` · `unusual samples` | one statistic; the rows with a value far from the rest of their group |
 
 ### How DANCR decides
 
@@ -129,8 +129,8 @@ It also tidies up things spreadsheets often get wrong, and lists each fix in the
 answer's assumptions, where one click undoes it. Empty rows are left out, and
 North, north and "North " count as one region.
 
-A small table of measurements in groups, with no dates (sun and shade leaves,
-treated and control plots), is read as a study. Its first suggestion compares
+A small table of measurements in groups, with no dates (treated and control
+plots, before and after), is read as a study. Its first suggestion compares
 the groups: each group's count, average, standard deviation, standard error and
 median, the difference, a test of whether it is more than chance, and how big
 it is. DANCR picks the test and says why (Welch's t-test when the groups vary
@@ -140,7 +140,7 @@ with the size of what was measured and the groups differ in size, compares it
 relative to size too and says when that turns the result round. Every choice is
 a chip: the test, the numbers, the groups.
 
-A column worked out from others (D = polygon area − leaf area, price × quantity)
+A column worked out from others (gap = outer area − inner area, price × quantity)
 is noticed. A row where the rule does not hold is almost always a typing slip:
 *Check the data* names it, and answers offer to use the calculated value
 instead of the typed one.
@@ -156,8 +156,8 @@ DANCR reads a sheet the way a person does, and says in the step's notes what
 it did (set **Layout** to *read the rows as they are* to turn this off):
 
 - a title line or notes above the column names are skipped
-- tables side by side under banners (SUN LEAVES over five columns, SHADE LEAVES
-  over the same five) become one table with a *group* column (Sun, Shade)
+- tables side by side under banners (TREATED over five columns, CONTROL over the
+  same five) become one table with a *group* column (Treated, Control)
 - the same column names again further down, each block under its own title line
   (Site A, Site B), become one table with a *group* column
 - a line on its own inside the data (*Fruit*, then its rows, *Veg*, then its
@@ -177,8 +177,8 @@ When a file is opened:
 - codes with leading zeros (`00042`) stay as typed
 - a Date column and a Time column are also combined into one date/time
 - every sheet of a workbook becomes a table
-- a header like `Leaf area (LA) cm2` is read as a name, a short name and a unit,
-  so *leaf area*, *LA* and *area* all find it; a column in grams answers to *mass*.
+- a header like `inner area (IA) cm2` is read as a name, a short name and a unit,
+  so *inner area*, *IA* and *area* all find it; a column in grams answers to *mass*.
 
 ### Changing an answer
 
@@ -198,6 +198,53 @@ you attached to an answer's steps is never removed.
 **Delete** asks whether to remove only the card or also the steps that only it
 uses. Your tables, and steps that other answers need, are always kept. Every
 build and change is one undo step.
+
+## Assistant (AI)
+
+**Assistant** sits next to **Ask a question** (Ctrl+Shift+J). It is the same
+idea, but conversational: you talk to it in plain English, and it builds the
+same kind of steps and Answer cards for you to approve.
+
+The rules are fixed and simple:
+
+- **The engine does the maths.** The Assistant never gives you a number it did
+  not get from a DANCR run. If it ever shows a figure that cannot be traced to a
+  run, it is marked *unverified* rather than presented as fact.
+- **It proposes; you approve.** A reply may carry a **Plan** card listing the
+  steps it would build. Nothing changes until you press **Build & run**. The
+  steps it adds are ordinary nodes you can edit, and the whole build is one undo
+  step.
+- **It never invents joins or columns.** It uses your tables' own names and
+  what the engine has already worked out about how they relate.
+
+The Assistant sends only a compact **profile** of your project to the model —
+column names, types, ranges, counts and category values, never your rows. Real
+sample rows are off unless you turn them on in the Assistant menu (⋮, *Send
+sample rows*). This is the one DANCR feature that uses the internet; everything
+else works without it.
+
+To use it, open its **⋮** menu and add an API key and endpoint (any OpenAI-style
+service). The key is stored on your machine, never in the project. Funds run out
+or the key is missing, the Assistant says so and pauses — your project keeps
+working. The conversation is saved with the project.
+
+Drop several files and ask how they connect: the Assistant uses the engine's own
+detection to name the link, its match percentage and its cardinality. If more
+than one link is plausible, it shows you the options as buttons rather than
+guessing. A few shortcuts work in the box: `/profile`, `/connections`,
+`/explain`, `/clean`, `/report`, `/build <question>` and `/undo`.
+
+Ask it to tidy the project itself — "name all the steps in plain English", "give
+the amount column a friendlier name" — and it offers a card listing each change;
+**Apply** does them all in one undo step. It won't loop or stop on a dead end:
+if it needs to keep going it offers a **Carry on** button.
+
+Once it has built something, the card shows the engine's **Result**, then
+**Canvas** (show the steps on the map), **Save** (just those steps, as a new
+file) and **Replace** (leave only those steps — one Ctrl+Z brings everything
+back). The
+first time data would be sent, DANCR says exactly what goes and asks; the ⋮ menu
+can turn it off again. The footer shows the tokens used and a rough cost.
 
 ## Working with a table
 
@@ -236,7 +283,12 @@ the **+** on a step in the map. New steps attach to the table you're looking at.
 
 | Category | Step | What it does |
 |---|---|---|
-| Get data | Load file | CSV, TSV, text, Excel, Parquet. Separators and dates are detected. |
+| Get data | Load file | CSV, TSV, text, Excel, Parquet, GeoJSON, GeoPackage or shapefile. Separators and dates are detected, and a map layer's geometry is reprojected to longitude/latitude. |
+| Get data | Load folder | Every file matching a folder and a pattern (say `exports/*.csv`) as one table, with a column naming the file each row came from. Files with different columns are joined into the union; the cache notices when any file changes. Can read every sheet, table or layer each file holds. |
+| Get data | Load from a URL | A CSV, text, Parquet or JSON table on the web (http/https). CSV and text are read like a local file. Needs the network. |
+| Get data | Load from a database | A query or a whole table from SQLite (built in) or a database server (PostgreSQL and others, with an extra). Put the password in an environment variable and write `${VAR}`. |
+| Get data | Load NetCDF | One variable of a NetCDF file (`.nc`) as a table. Needs an extra package. |
+| Get data | Load HDF5 | One dataset of an HDF5 file as a table. Needs an extra package. |
 | Get data | Type in a table | A small table you fill in yourself, like a short list of items or a lookup table. You can paste from Excel, and a pasted header row becomes the column names. |
 | Filter & sort | Filter rows | Keep or remove rows that match plain-English conditions or a formula. |
 | Filter & sort | Pick columns | Keep, remove, reorder or rename columns. |
@@ -248,7 +300,7 @@ the **+** on a step in the map. New steps attach to the table you're looking at.
 | Clean up | Remove duplicates | Drop repeated rows. |
 | Clean up | Remove spikes | Finds values far from the rolling median, by z-score, by IQR or outside a fixed range. Remove, blank, flag or clip them. |
 | Clean up | Fix values | Individual cell corrections with notes, made from the cell menu. |
-| Combine | Combine two tables | Match on a key (like VLOOKUP), line up two time series by nearest time, or put tables side by side. |
+| Combine | Combine two tables | Match on a key (like VLOOKUP), line up two time series by nearest time, line up two tables of places by nearest latitude/longitude, keep the points that fall inside a region's shape, or put tables side by side. |
 | Combine | Columns into rows | Turns a wide sheet with a column per month (Jan, Feb, Mar …) into one row per item and month, so it can be totalled and charted over time. |
 | Combine | Stack tables | Append the rows of several tables. |
 | Time | Average over time | Groups rows by second, minute, hour or day and summarises each group. It's the fastest way to shrink millions of rows. |
@@ -257,13 +309,18 @@ the **+** on a step in the map. New steps attach to the table you're looking at.
 | Time | Find gaps | One row per dropout, with when it started, when it ended and how long it lasted. |
 | Time | Even out the timing | Resample onto evenly spaced timestamps. |
 | Time | Summarise around each sample | For each row of a short table (weekly samples, say), averages a continuous log over a window before, after or around it. |
+| Location | Make a point | Turns a latitude and a longitude column (or easting/northing, or a named pair) into a clean point; impossible coordinates are left blank and rows without a location can be dropped. |
+| Location | Distance | Great-circle distance between two coordinate pairs in a row, or from one fixed point you type in, in km, m, miles or feet. |
+| Location | Count points per cell | Groups points into square grid cells and summarises each cell. The fastest way to turn a cloud of points into a density or a list of hotspots. |
+| Location | Projected to lat/long | Turns projected coordinates (UTM easting/northing, or another EPSG code) into ordinary latitude/longitude. UTM is built in; other systems use the optional pyproj package. |
+| Location | Map | Draws the points (or grid cells) on a map, with country outlines from a basemap built into the app — no internet and no tile server needed. |
 | Analyse & model | Describe the columns | Count, blanks, mean, std, min, quartiles and max for each column. |
 | Analyse & model | Totals by group | Like a pivot table, with one row per group. |
 | Analyse & model | Fit a curve | Fits a straight line, levelling-off, exponential, power, logarithmic or polynomial curve between two columns, optionally per group. Reports the equation, R² and typical error, and adds fitted and residual columns. |
 | Analyse & model | Predict from a fit | Apply a fit to new x values, from a typed-in table for example. |
 | Analyse & model | Check against limits | Flag, keep or drop rows outside a minimum/maximum. Limits can be numbers or Inputs. Reports PASS/FAIL and counts. |
 | Share | Chart | Line, scatter, histogram, bar. Data is summarised per pixel, so even 100 million points draw quickly. |
-| Share | Save to file | CSV, Excel or Parquet. |
+| Share | Save to file | CSV, Excel, Parquet or GeoJSON (a table with latitude/longitude columns). |
 | Share | Excel workbook | Several tables in one .xlsx, one sheet each. |
 | Share | Report | Charts and tables on one page, with a title block, an introduction and your own headings and text. Saves HTML and PDF. |
 
@@ -288,6 +345,38 @@ maximum for each pixel.
 The buttons at the top right copy the chart as an image, save it as PNG or SVG,
 or **Add to report**.
 
+## Maps
+
+A **Map** step draws points on a map. Give it a latitude and a longitude column
+(use **Make a point** first if the file needs tidying), and change it with the
+chips along the top:
+
+- **Latitude** and **Longitude** choose the coordinate columns (they are
+  recognised automatically when a table has a clear pair).
+- **Colour by** colours each point by a number (a colour scale) or a category (a
+  colour each).
+- **Size by** makes bigger points for bigger values.
+- **Squares of …** draws grid cells instead of points — connect the output of
+  **Count points per cell** and set the cell size, for a density map.
+- **Outlines** turns the country outlines on or off.
+
+Country outlines come from a basemap built into the app (public-domain Natural
+Earth data), so a map needs **no internet and no tile server** — the locations
+never leave your machine. The map is drawn in the same way in the window, in a
+saved PNG and in a report. **Add to report** puts it on a page like a chart.
+
+To match each row to its nearest place (the nearest clinic to each village, say),
+use **Combine two tables → Line up by nearest place**, giving the latitude and
+longitude columns on each side and the greatest distance to consider. To ask
+*which region each point falls in*, load a GeoJSON, GeoPackage or shapefile of
+regions and use **Combine two tables → Find which place each point is inside
+(polygons)**, naming the layer's `geometry` column and the column that names the
+place.
+
+Coordinates in a projected system (a UTM easting/northing, or another EPSG
+code) come onto the map through **Projected to lat/long**; UTM zones need
+nothing extra, and other systems use the optional `dancr[geo]` packages.
+
 ## Reports
 
 A report collects charts and tables on one page. Fill in the title, company and
@@ -296,6 +385,23 @@ Then press **Build report**. DANCR writes an HTML file that opens in any browser
 with a PDF next to it.
 
 If the data changes, build it again. The layout is kept.
+
+## Sharing metadata (FAIR)
+
+**Share → Dataset details…** records who made the data, the license, a description, keywords and how to cite it.
+It travels with the project file. **Share → Export metadata as** writes a standard descriptor next to the project:
+a schema.org/Dataset file (so it can be found in Google Dataset Search), a Frictionless data package, a run
+manifest (exactly which version of DANCR, which files and which steps produced the results), or an RO-Crate
+metadata graph. Nothing is sent anywhere by itself.
+
+For a self-contained record, **Share → Package as RO-Crate…** writes a `.zip` holding the descriptors, the project
+and its run manifest (and, with the command line, the data or result files too). Column units are recorded as UCUM
+codes so other tools can read them. The knowledge-base export stamps each dataset with a content hash, so a search
+index can refresh only what changed.
+
+Running the same project over a whole folder of files, automatically rerunning when data changes, and cataloging a
+whole folder of projects are command-line tools: `dancr batch p.json --files 'exports/*.csv' --out-dir results`,
+`dancr watch p.json`, and `dancr catalog .` (see *For scripts and AI agents*).
 
 ## Inputs
 
@@ -354,6 +460,7 @@ recomputes every step and replaces the stored results.
 | Ctrl+I | Open data file |
 | Ctrl+K / Insert | Add step |
 | Ctrl+J | Ask a question about your data |
+| Ctrl+Shift+J | Open the Assistant (the conversational version) |
 | Ctrl+F | Find in the table / jump to a time |
 | Ctrl+R / F5 | Run everything |
 | Ctrl+Shift+R | Run up to this step |

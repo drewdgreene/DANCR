@@ -220,14 +220,31 @@ class Document(QObject):
 
     # ------------------------------------------------------------ sources and auto-run
     def source_paths(self) -> list[Path]:
-        out = []
+        """The files a project reads, for watching: a path or folder setting, and every member a folder source
+        matches (so adding, changing or removing a file in the folder is noticed)."""
+        out: list[Path] = []
+        seen: set[str] = set()
+
+        def add(p: Path) -> None:
+            key = str(p)
+            if key not in seen:
+                seen.add(key)
+                out.append(p)
+
         for n in self.pipeline.nodes.values():
             nt = registry.get(n.type)
             if nt.kind != "source":
                 continue
             for p in nt.params:
-                if p.kind == "path" and n.params.get(p.name):
-                    out.append(self.pipeline.directory / str(n.params[p.name]))
+                if p.kind in ("path", "dir") and n.params.get(p.name):
+                    v = Path(str(n.params[p.name])).expanduser()
+                    add(v if v.is_absolute() else self.pipeline.directory / v)
+            if nt.source_files is not None:
+                try:
+                    for f in nt.source_files(self.pipeline.directory, n.params):
+                        add(Path(f))
+                except Exception:  # noqa: BLE001 - an unreadable folder simply contributes no paths to watch
+                    pass
         return out
 
     def _rewatch_sources(self) -> None:
@@ -703,10 +720,15 @@ class Document(QObject):
         changed = set(new) != set(self._states_cache) or any(
             new[k].status != self._states_cache[k].status or new[k].hash != self._states_cache[k].hash for k in new)
         self._states_cache = new
-        held = {k: st.hash for k, st in new.items()}
-        if held != self._held:                       # other processes' cache sweeps keep what this window shows
-            self._held = held
-            self.executor.hold(held)
+        # While a run is in flight this read is over a snapshot taken before it: its hashes are not what the live
+        # executor now holds, so writing them would drop the run's own held results from this window's lease and let
+        # another process's cache sweep delete them. The run holds its own lease; refresh this window's right after
+        # it finishes (`_on_run_done` -> `refresh_states`).
+        if not self.running:
+            held = {k: st.hash for k, st in new.items()}
+            if held != self._held:                   # other processes' cache sweeps keep what this window shows
+                self._held = held
+                self.executor.hold(held)
         if changed:
             self.statesChanged.emit()
 
@@ -841,6 +863,32 @@ class Document(QObject):
                 aid = answer_id
         self.refresh_states()
         return aid
+
+    def set_dataset_meta(self, **changes: Any) -> None:
+        """Set the project's dataset-level metadata (creator, license, description…), undoably."""
+        before = copy.deepcopy(self.pipeline.meta.get("dataset"))
+        probe = Pipeline()                              # validated on a throwaway project
+        if before:
+            probe.meta = {"dataset": copy.deepcopy(before)}
+        probe.set_dataset_meta(**changes)
+        after = copy.deepcopy(probe.meta.get("dataset"))
+        if before != after:
+            self.undo.push(cmd.SetDatasetMeta(self, before, after))
+
+    def set_thread(self, thread: dict | None) -> None:
+        """Save the Assistant's conversation into the project (undoable, and it marks the project changed)."""
+        before = copy.deepcopy(self.pipeline.meta.get("assistant"))
+        after = copy.deepcopy(thread) if thread is not None else None
+        if before == after:
+            return
+        self.undo.push(cmd.SetThread(self, before, after))
+
+    def replace_canvas(self, data: dict, text: str = "Replace the canvas") -> None:
+        """Swap the whole canvas for another project, as one undo step (the Assistant's overwrite)."""
+        before = self.pipeline.to_dict()
+        if before == data:
+            return
+        self.undo.push(cmd.ReplacePipeline(self, before, copy.deepcopy(data), text))
 
     def delete_answer(self, answer_id: str, remove_steps: bool = False) -> None:
         """Delete an Answer card, and optionally the steps only it uses. Steps another answer needs, and steps

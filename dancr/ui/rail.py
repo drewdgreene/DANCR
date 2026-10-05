@@ -23,8 +23,9 @@ from .common import listen
 from .theme import T, category_color, STATUS_COLORS
 from .icons import icon, node_icon_name
 
-SECTIONS = [("tables", "Tables"), ("charts", "Charts"), ("reports", "Reports")]
-VIEW_TYPES = {"chart"}
+SECTIONS = [("tables", "Tables"), ("charts", "Charts"), ("maps", "Maps"), ("reports", "Reports")]
+VIEW_TYPES = {"chart", "map"}
+MAP_TYPES = {"map"}
 REPORT_TYPES = {"report", "workbook", "export"}
 
 KIND_ROLE = Qt.UserRole          # "node" | "inputs" | "hint" | "ref" | None (a section header)
@@ -168,15 +169,17 @@ class Rail(QWidget):
     # ------------------------------------------------------------ building
     def _section_items(self) -> dict[str, list]:
         p = self.doc.pipeline
-        tables, charts, reports = [], [], []
+        tables, charts, maps, reports = [], [], [], []
         for n in p.nodes.values():
-            if n.type in VIEW_TYPES:
+            if n.type in MAP_TYPES:
+                maps.append(n)
+            elif n.type in VIEW_TYPES:
                 charts.append(n)
             elif n.type in REPORT_TYPES:
                 reports.append(n)
             else:
                 tables.append(n)
-        return {"tables": tables, "charts": charts, "reports": reports}
+        return {"tables": tables, "charts": charts, "maps": maps, "reports": reports}
 
     def _header(self, text: str) -> QTreeWidgetItem:
         it = QTreeWidgetItem(self.tree)
@@ -256,7 +259,8 @@ class Rail(QWidget):
 
     def _build_type(self) -> None:
         secs = self._section_items()
-        hints = {"tables": "none yet. Open a data file", "charts": "none yet. Right-click a column", "reports": "none yet"}
+        hints = {"tables": "none yet. Open a data file", "charts": "none yet. Right-click a column",
+                 "maps": "none yet. Add a Map step to a table with coordinates", "reports": "none yet"}
         for key, label in SECTIONS:
             self._header(label)
             for n in secs[key]:

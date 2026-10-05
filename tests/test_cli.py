@@ -43,6 +43,32 @@ def _logs(folder: Path) -> None:
     pl.DataFrame({"time": t2, "value": np.linspace(1, 3, 3000), "temperature": np.linspace(10, 20, 3000)}).write_csv(folder / "log.csv")
 
 
+def test_cli_connections_saves_and_reuses_the_map(tmp_path):
+    pj = tmp_path / "p.json"
+    pl.DataFrame({"id": [1, 2, 3]}).write_csv(tmp_path / "customers.csv")
+    pl.DataFrame({"customer_id": [1, 1, 2, 3], "amount": [1.0, 2.0, 3.0, 4.0]}).write_csv(tmp_path / "orders.csv")
+    run("new", str(pj))
+    run("--json", "add", str(pj), "load_file", "--id", "customers", "--title", "Customers", "--set", f"path={tmp_path / 'customers.csv'}")
+    run("--json", "add", str(pj), "load_file", "--id", "orders", "--title", "Orders", "--set", f"path={tmp_path / 'orders.csv'}")
+    code, out, err = run("--json", "connections", str(pj))
+    assert code == 0, err
+    assert json.loads(out)["count"] >= 1
+    code, out, _ = run("--json", "connections", str(pj))
+    assert json.loads(out)["source"] == "saved"
+
+
+def test_cli_assistant_runs_with_a_scripted_fake(tmp_path):
+    pj = tmp_path / "p.json"
+    pl.DataFrame({"region": ["N", "S"], "amount": [1.0, 2.0]}).write_csv(tmp_path / "o.csv")
+    run("new", str(pj))
+    r = subprocess.run([sys.executable, "-m", "dancr.cli", "--json", "assistant", str(pj), "hello",
+                        "--file", str(tmp_path / "o.csv")],
+                       capture_output=True, text=True, cwd=str(ROOT), env={**os.environ, "DANCR_ASSISTANT_FAKE": "1"})
+    assert r.returncode == 0, r.stderr
+    data = json.loads(r.stdout)
+    assert data["kind"] == "text" and "text" in data
+
+
 def test_cli_flow(probe_dir, tmp_path):
     pj = tmp_path / "p.json"
     code, out, err = run("new", str(pj)); assert code == 0
@@ -76,8 +102,24 @@ def test_cli_flow(probe_dir, tmp_path):
 def test_cli_nodes_and_formulas():
     code, out, _ = run("--json", "nodes")
     assert code == 0 and any(t["key"] == "combine" for t in json.loads(out))
+    assert any(t["key"] == "map" for t in json.loads(out))
     code, out, _ = run("formulas")
     assert "ROLLING_MEAN" in out
+
+
+def test_cli_map_and_geojson(tmp_path):
+    pl.DataFrame({"lat": [-1.29, -6.79], "lon": [36.82, 39.21], "n": [4.4, 6.7]}).write_csv(tmp_path / "cities.csv")
+    pj = tmp_path / "p.json"
+    assert run("new", str(pj))[0] == 0
+    assert run("add", str(pj), "load_file", "--id", "a", "--set", f"path={tmp_path / 'cities.csv'}")[0] == 0
+    assert run("add", str(pj), "map", "--id", "m", "--after", "a", "--set", "lat=lat", "--set", "lon=lon", "--set", "color_by=n")[0] == 0
+    assert run("add", str(pj), "export", "--id", "e", "--after", "a", "--set", "path=out.geojson")[0] == 0
+    assert run("run", str(pj))[0] == 0
+    png = tmp_path / "m.png"
+    code, out, err = run("map", str(pj), "m", "--out", str(png))
+    assert code == 0, err
+    assert png.exists() and png.stat().st_size > 3000
+    assert (tmp_path / "out.geojson").exists()
 
 
 def test_cli_errors_are_json(tmp_path):

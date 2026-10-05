@@ -20,14 +20,14 @@ from dancr.views.lod import bar_data
 
 from sheets import lab_sheet
 
-MEASURES = ["Leaf area (LA) cm2", "polygon area (PA) cm2", "D", "m (g)", "m/LA x 10000 (g/m2)"]
+MEASURES = ["inner area (IA) cm2", "outer area (OA) cm2", "gap", "mass (m) g", "mass/area x 10000 (g/m2)"]
 
 
 @pytest.fixture
 def lab(tmp_path):
-    data = lab_sheet(tmp_path / "Leaves & Light Data Sheet.xlsx")
+    data = lab_sheet(tmp_path / "lab data.xlsx")
     p = Pipeline("lab"); p.path = tmp_path / "lab.json"
-    p.add_node("load_file", title="leaves", params={"path": "Leaves & Light Data Sheet.xlsx"}, id="leaves")
+    p.add_node("load_file", title="samples", params={"path": "lab data.xlsx"}, id="samples")
     ex = Executor(p)
     return p, deepen(p, ex, understand(p, ex)), data
 
@@ -53,27 +53,27 @@ def compare(df: pl.DataFrame, **params):
 # ------------------------------------------------------------------ what DANCR understands
 def test_the_study_is_understood(lab):
     _, m, _ = lab
-    t = m.tables["leaves"]
+    t = m.tables["samples"]
     assert t.rows == 30
     roles = {c.name: c.role for c in t.columns}
-    assert roles["N - Leaf"] == "id" and roles["group"] == "category" and all(roles[c] == "measure" for c in MEASURES)
-    la = t.column("Leaf area (LA) cm2")
-    assert (la.abbrev, la.unit, la.quantity) == ("LA", "cm2", "area")
-    assert t.column("m (g)").quantity == "mass" and t.column("m/LA x 10000 (g/m2)").quantity == "mass per area"
-    d = t.column("D").derived
-    assert d["formula"] == "[polygon area (PA) cm2] - [Leaf area (LA) cm2]" and d["holds"] == 29
-    assert d["breaks"] == [{"row": 15, "value": 1.26, "expected": pytest.approx(d["breaks"][0]["expected"]),
-                            "where": {"N - Leaf": 1, "group": "Shade"}}]
-    assert t.column("m/LA x 10000 (g/m2)").derived["k"] == 10000
+    assert roles["N - Sample"] == "id" and roles["group"] == "category" and all(roles[c] == "measure" for c in MEASURES)
+    ia = t.column("inner area (IA) cm2")
+    assert (ia.abbrev, ia.unit, ia.quantity) == ("IA", "cm2", "area")
+    assert t.column("mass (m) g").quantity == "mass" and t.column("mass/area x 10000 (g/m2)").quantity == "mass per area"
+    g = t.column("gap").derived
+    assert g["formula"] == "[outer area (OA) cm2] - [inner area (IA) cm2]" and g["holds"] == 29
+    assert g["breaks"] == [{"row": 15, "value": 1.26, "expected": pytest.approx(g["breaks"][0]["expected"]),
+                            "where": {"N - Sample": 1, "group": "Control"}}]
+    assert t.column("mass/area x 10000 (g/m2)").derived["k"] == 10000
     # related by definition, so not offered as a finding
-    assert not any({p_["x"], p_["y"]} in ({"D", "polygon area (PA) cm2"}, {"D", "Leaf area (LA) cm2"}) for p_ in t.pairs)
+    assert not any({p_["x"], p_["y"]} in ({"gap", "outer area (OA) cm2"}, {"gap", "inner area (IA) cm2"}) for p_ in t.pairs)
 
 
 def test_the_first_suggestion_compares_the_groups_and_the_second_catches_the_slip(lab):
     _, m, _ = lab
     s = suggest(m)
     assert [x.recipe for x in s[:2]] == ["groups", "quality"]
-    assert "D" in s[1].why and "break" in s[1].why
+    assert "gap" in s[1].why and "break" in s[1].why
 
 
 def test_the_groups_answer(lab):
@@ -81,18 +81,18 @@ def test_the_groups_answer(lab):
     st, pl_ = run(p, suggest(m)[0].spec)
     assert st.status == "done", st.error
     df = pl.read_parquet(st.output)
-    row = df.filter(pl.col("measure") == "Leaf area").row(0, named=True)
+    row = df.filter(pl.col("measure") == "inner area").row(0, named=True)
     assert row["unit"] == "cm2"
-    sun = [r[0] for r in data["sun"]]; shade = [r[0] for r in data["shade"]]
-    assert row["Sun mean"] == pytest.approx(np.mean(sun)) and row["Shade SD"] == pytest.approx(np.std(shade, ddof=1))
-    assert row["Sun SE"] == pytest.approx(np.std(sun, ddof=1) / np.sqrt(15)) and row["Sun n"] == 15
-    assert row["p value"] == pytest.approx(stats.ttest_ind(sun, shade, equal_var=False).pvalue)
-    assert row["test"] == "Welch's t-test" and row["result"].startswith("Shade higher")
+    treated = [r[0] for r in data["treated"]]; control = [r[0] for r in data["control"]]
+    assert row["Treated mean"] == pytest.approx(np.mean(treated)) and row["Control SD"] == pytest.approx(np.std(control, ddof=1))
+    assert row["Treated SE"] == pytest.approx(np.std(treated, ddof=1) / np.sqrt(15)) and row["Treated n"] == 15
+    assert row["p value"] == pytest.approx(stats.ttest_ind(treated, control, equal_var=False).pvalue)
+    assert row["test"] == "Welch's t-test" and row["result"].startswith("Control higher")
     statement = st.report["finding"]["statement"]
-    assert statement.startswith("Shade has") and "Leaf area" in statement
-    # the size check: D is bigger in shade leaves only because they are bigger; for their size, sun leaves are more lobed
+    assert statement.startswith("Control has") and "inner area" in statement
+    # the size check: the gap is bigger in control samples only because they are bigger; for their size, treated samples differ
     rel = [r for r in st.report["relative"] if r["turned"]]
-    assert rel and rel[0]["measure"].startswith("D per") and "Sun" in rel[0]["sentence"]
+    assert rel and rel[0]["measure"].startswith("gap per") and "Treated" in rel[0]["sentence"]
     assert "the other way round" in statement
     assert any("Welch's t-test, which does not assume the groups vary alike" in msg for msg in st.messages)
     texts = [a["text"] for a in pl_.assumptions]
@@ -108,37 +108,37 @@ def test_using_the_calculated_value_puts_the_slip_right(lab):
     df = pl.read_parquet(st.output)
     fix = next(s for s in pl2.steps if s.type == "fix_values")
     assert fix.params["fixes"][0]["row"] == 16 and fix.params["fixes"][0]["was"] == 1.26
-    d = df.filter(pl.col("measure") == "D").row(0, named=True)
-    assert d["p value"] < 0.05                                         # with the slip put right, D clearly differs
-    assert any("Used the calculated D" in a["text"] for a in pl2.assumptions)
+    g = df.filter(pl.col("measure") == "gap").row(0, named=True)
+    assert g["p value"] < 0.05                                         # with the slip put right, the gap clearly differs
+    assert any("Used the calculated gap" in a["text"] for a in pl2.assumptions)
 
 
 def test_the_check_names_the_slip(lab):
     p, m, _ = lab
-    st, _ = run(p, {"recipe": "quality", "table": "leaves"})
+    st, _ = run(p, {"recipe": "quality", "table": "samples"})
     s = st.report["finding"]["statement"]
-    assert s.startswith("A calculated value looks mistyped") and "row 16 (N - Leaf 1, group Shade) says 1.26" in s
+    assert s.startswith("A calculated value looks mistyped") and "row 16 (N - Sample 1, group Control) says 1.26" in s
 
 
 # ------------------------------------------------------------------ the questions students ask
 @pytest.mark.parametrize("question,expect", [
-    ("compare sun and shade leaves", {"recipe": "groups", "by": ["leaves", "group"]}),
-    ("is there a difference between sun and shade", {"recipe": "groups"}),
-    ("compare sun and shade leaf area", {"recipe": "groups", "measures": [["leaves", "Leaf area (LA) cm2"]]}),
-    ("is leaf mass per area higher in sun leaves", {"recipe": "groups", "measures": [["leaves", "m/LA x 10000 (g/m2)"]]}),
-    ("t test leaf area", {"recipe": "groups", "test": "welch"}),
-    ("mann whitney mass", {"recipe": "groups", "test": "rank", "measures": [["leaves", "m (g)"]]}),
-    ("what is the standard deviation of leaf area", {"recipe": "single", "stat": "std"}),
-    ("average LA", {"recipe": "single", "measure": ["leaves", "Leaf area (LA) cm2"]}),
-    ("average D", {"recipe": "single", "measure": ["leaves", "D"]}),
-    ("median mass", {"recipe": "single", "measure": ["leaves", "m (g)"], "stat": "median"}),
-    ("average m/LA", {"recipe": "single", "measure": ["leaves", "m/LA x 10000 (g/m2)"]}),
-    ("average leaf area of sun leaves", {"recipe": "single", "filters": [{"column": ["leaves", "group"], "op": "eq", "value": "Sun"}]}),
-    ("relationship between mass and leaf area", {"recipe": "relationship", "y": ["leaves", "m (g)"]}),
-    ("which leaf is biggest", {"recipe": "toprows", "n": 1}),
-    ("top 5 leaves by leaf area", {"recipe": "toprows", "n": 5}),
-    ("what drives mass", {"recipe": "drivers", "target": ["leaves", "m (g)"]}),
-    ("unusual leaves", {"recipe": "outliers"}),
+    ("compare treated and control", {"recipe": "groups", "by": ["samples", "group"]}),
+    ("is there a difference between treated and control", {"recipe": "groups"}),
+    ("compare treated and control inner area", {"recipe": "groups", "measures": [["samples", "inner area (IA) cm2"]]}),
+    ("is mass per area higher in treated samples", {"recipe": "groups", "measures": [["samples", "mass/area x 10000 (g/m2)"]]}),
+    ("t test inner area", {"recipe": "groups", "test": "welch"}),
+    ("mann whitney mass", {"recipe": "groups", "test": "rank", "measures": [["samples", "mass (m) g"]]}),
+    ("what is the standard deviation of inner area", {"recipe": "single", "stat": "std"}),
+    ("average IA", {"recipe": "single", "measure": ["samples", "inner area (IA) cm2"]}),
+    ("average gap", {"recipe": "single", "measure": ["samples", "gap"]}),
+    ("median mass", {"recipe": "single", "measure": ["samples", "mass (m) g"], "stat": "median"}),
+    ("average mass/area", {"recipe": "single", "measure": ["samples", "mass/area x 10000 (g/m2)"]}),
+    ("average inner area of treated samples", {"recipe": "single", "filters": [{"column": ["samples", "group"], "op": "eq", "value": "Treated"}]}),
+    ("relationship between mass and inner area", {"recipe": "relationship", "y": ["samples", "mass (m) g"]}),
+    ("which sample is biggest", {"recipe": "toprows"}),
+    ("top 5 samples by inner area", {"recipe": "toprows", "n": 5}),
+    ("what drives mass", {"recipe": "drivers", "target": ["samples", "mass (m) g"]}),
+    ("unusual samples", {"recipe": "outliers"}),
 ])
 def test_student_questions(lab, question, expect):
     _, m, _ = lab
@@ -148,21 +148,21 @@ def test_student_questions(lab, question, expect):
         assert a.spec.get(k) == v, (question, a.spec)
 
 
-def test_unusual_leaves_are_judged_against_their_own_group(lab):
+def test_unusual_samples_are_judged_against_their_own_group(lab):
     p, m, data = lab
-    a = ask(m, "unusual leaves")
+    a = ask(m, "unusual samples")
     st, pl_ = run(p, a.spec)
-    assert pl_.title == "Unusual leaves" and st.status == "done"
+    assert pl_.title == "Unusual samples" and st.status == "done"
     flag = next(s for s in pl_.steps if s.type == "remove_outliers")
     assert flag.params["by"] == ["group"] and flag.params["method"] == "iqr" and len(flag.params["columns"]) == 5
 
 
 def test_a_word_inside_a_column_name_is_not_corrected_into_another(lab):
     _, m, _ = lab
-    a = ask(m, "average polygon")
-    assert a.ok and a.spec["measure"] == ["leaves", "polygon area (PA) cm2"]
-    b = ask(m, "average blade")                                        # not a word of this project
-    assert not b.ok and "blade" in b.unknown
+    a = ask(m, "average outer")
+    assert a.ok and a.spec["measure"] == ["samples", "outer area (OA) cm2"]
+    b = ask(m, "average turbine")                                      # not a word of this project
+    assert not b.ok and "turbine" in b.unknown
 
 
 # ------------------------------------------------------------------ the step on its own
@@ -217,21 +217,21 @@ def test_calculated_columns():
 
 
 @pytest.mark.parametrize("name,parts,quantity", [
-    ("Leaf area (LA) cm2", ("Leaf area", "LA", "cm2"), "area"), ("m (g)", ("m", "", "g"), "mass"),
-    ("m/LA x 10000 (g/m2)", ("m/LA x 10000", "", "g/m2"), "mass per area"), ("Pressure (bar)", ("Pressure", "", "bar"), "pressure"),
-    ("polygon area (PA)", ("polygon area", "PA", ""), ""), ("Amount (£)", ("Amount", "", "£"), ""), ("Region", ("Region", "", ""), ""),
+    ("inner area (IA) cm2", ("inner area", "IA", "cm2"), "area"), ("mass (m) g", ("mass", "", "g"), "mass"),
+    ("mass/area x 10000 (g/m2)", ("mass/area x 10000", "", "g/m2"), "mass per area"), ("Pressure (bar)", ("Pressure", "", "bar"), "pressure"),
+    ("outer area (OA)", ("outer area", "OA", ""), ""), ("Amount (£)", ("Amount", "", "£"), ""), ("Region", ("Region", "", ""), ""),
 ])
 def test_headers(name, parts, quantity):
     assert header_parts(name) == parts and quantity_of(parts[2]) == quantity
 
 
 def test_bars_with_error_bars_keep_the_groups_in_order():
-    df = pl.DataFrame({"g": ["sun"] * 4 + ["shade"] * 4, "x": [1.0, 2.0, 3.0, 4.0, 10.0, 12.0, 14.0, 16.0]})
+    df = pl.DataFrame({"g": ["treated"] * 4 + ["control"] * 4, "x": [1.0, 2.0, 3.0, 4.0, 10.0, 12.0, 14.0, 16.0]})
     b = bar_data(df.lazy(), "g", "x", "mean", error="se")
-    assert b.labels == ["sun", "shade"] and list(b.values) == [2.5, 13.0]
+    assert b.labels == ["treated", "control"] and list(b.values) == [2.5, 13.0]
     assert b.errors[0] == pytest.approx(np.std([1, 2, 3, 4], ddof=1) / 2) and b.error == "se"
     plain = bar_data(df.lazy(), "g", "x", "mean")
-    assert plain.labels == ["shade", "sun"] and plain.errors is None
+    assert plain.labels == ["control", "treated"] and plain.errors is None
 
 
 # ------------------------------------------------------------------ groups kept in columns
@@ -248,7 +248,7 @@ def test_before_and_after_columns_are_a_paired_comparison(tmp_path):
     rng = np.random.default_rng(4)
     before = np.round(rng.normal(12, 2, 10), 1)
     after = np.round(before + rng.normal(1.5, 0.6, 10), 1)
-    p, m = column_sheet(tmp_path, "growth", ["Plant", "Before (cm)", "After (cm)"],
+    p, m = column_sheet(tmp_path, "growth", ["Subject", "Before (cm)", "After (cm)"],
                         [[i + 1, float(b), float(a)] for i, (b, a) in enumerate(zip(before, after))])
     s = suggest(m)[0]
     assert s.recipe == "groups" and s.spec["columns"] == [["growth", "Before (cm)"], ["growth", "After (cm)"]]
@@ -281,23 +281,23 @@ def test_control_and_treated_columns_are_groups(tmp_path):
 
 
 def test_a_study_kept_in_a_file_per_group(tmp_path):
-    from sheets import leaves, HEADERS
-    data = leaves()
+    from sheets import measurements, HEADERS
+    data = measurements()
     p = Pipeline("two"); p.path = tmp_path / "two.json"
-    for g in ("sun", "shade"):
-        pl.DataFrame({"Leaf": list(range(1, 16)), **{h: [r[k] for r in data[g]] for k, h in enumerate(HEADERS)}}) \
-            .write_csv(tmp_path / f"{g}_leaves.csv")
-        p.add_node("load_file", title=f"{g}_leaves", params={"path": f"{g}_leaves.csv"}, id=g)
+    for g in ("treated", "control"):
+        pl.DataFrame({"Sample": list(range(1, 16)), **{h: [r[k] for r in data[g]] for k, h in enumerate(HEADERS)}}) \
+            .write_csv(tmp_path / f"{g}_samples.csv")
+        p.add_node("load_file", title=f"{g}_samples", params={"path": f"{g}_samples.csv"}, id=g)
     ex = Executor(p)
     m = deepen(p, ex, understand(p, ex))
     s = suggest(m)[0]
-    assert s.recipe == "groups" and s.spec["by"][1] == "source" and s.title == "sun and shade compared"
-    a = ask(m, "compare sun and shade")
+    assert s.recipe == "groups" and s.spec["by"][1] == "source" and s.title == "treated and control compared"
+    a = ask(m, "compare treated and control")
     assert a.ok and a.spec["recipe"] == "groups"
     pl_ = plan(m, s.spec)
-    assert any(x["id"] == "breaks" and "1.26" in x["text"] for x in pl_.assumptions)     # the slip is in the shade file
+    assert any(x["id"] == "breaks" and "1.26" in x["text"] for x in pl_.assumptions)     # the slip is in the control file
     st, _ = run(p, s.spec)
-    assert st.status == "done" and st.report["groups"] == ["sun", "shade"]
+    assert st.status == "done" and st.report["groups"] == ["treated", "control"]
 
 
 # ------------------------------------------------------------------ the same words on a table of sales

@@ -20,6 +20,7 @@ KINDS = {
     "column",        # a column name from the upstream schema
     "columns",       # list of column names
     "path",          # file path (str)
+    "dir",           # a folder or glob path (str)
     "duration",      # str like "1m", "30s", "2h", "1d" (Polars duration syntax)
     "bucket",        # a duration, or calendar months, quarters and years ("1mo", "1q", "1y")
     "expr",          # formula text in the DANCR expression language
@@ -57,6 +58,7 @@ class Param:
     advanced: bool = False           # collapsed by default in the inspector
     visible_when: dict[str, Any] = field(default_factory=dict)  # {other_param: value or [values]}
     placeholder: str = ""
+    secret: bool = False             # a credential: blanked wherever settings are shown (dancr.core.secrets)
 
     def __post_init__(self) -> None:
         if self.kind not in KINDS:
@@ -107,7 +109,7 @@ class Param:
                     from .timeutil import parse_duration, parse_bucket
                     (parse_bucket if k == "bucket" else parse_duration)(text)   # raises with a helpful message
                 return text
-            if k in ("text", "path", "expr", "column"):
+            if k in ("text", "path", "dir", "expr", "column"):
                 return str(value)
             if k == "choice":
                 if self.choices is not None:
@@ -173,6 +175,8 @@ class Param:
             d["visible_when"] = self.visible_when
         if self.advanced:
             d["advanced"] = True
+        if self.secret:
+            d["secret"] = True
         return d
 
 

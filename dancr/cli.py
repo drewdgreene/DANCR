@@ -225,12 +225,14 @@ def cmd_remove(a: argparse.Namespace) -> None:
 
 
 def cmd_show(a: argparse.Namespace) -> None:
+    from .core.secrets import redact_params
     p = _load(a.pipeline)
     ex = Executor(p)
     states = ex.states()
     data = {
         "path": str(p.path), "name": p.name,
-        "nodes": [{**n.to_dict(), "state": hl.node_record(p, states[n.id])} for n in p.nodes.values()],
+        "nodes": [{**n.to_dict(), "params": redact_params(registry.get(n.type), n.params),
+                   "state": hl.node_record(p, states[n.id])} for n in p.nodes.values()],
         "edges": [e.to_dict() for e in p.edges],
         "answers": [a.to_dict() for a in p.answers],
         "problems": p.problems(),
@@ -248,7 +250,7 @@ def cmd_show(a: argparse.Namespace) -> None:
         ins = p.inputs_of(n.id)
         src = ", ".join(f"{port}←{'+'.join(s)}" for port, s in ins.items()) if ins else "(source)"
         print(f"  {_fmt_state(states[n.id], n.title)}")
-        print(f"      {n.type}: {nt.summarize(n.params)}    inputs: {src}")
+        print(f"      {n.type}: {nt.summarize(redact_params(nt, n.params))}    inputs: {src}")
     if data["problems"]:
         print("Problems:")
         for pr in data["problems"]:
@@ -276,6 +278,119 @@ def cmd_understand(a: argparse.Namespace) -> None:
         print(f"  {r['kind']}: {r['why']}")
     for nid, why in data["skipped"].items():
         print(f"  could not read {nid}: {why}")
+
+
+def cmd_context(a: argparse.Namespace) -> None:
+    """A knowledge-base export of the project's datasets: schema, relations, statistics, an optional sample
+    and a prose doc card per table. JSON by default (--jsonl for one line per dataset), or --output to a file."""
+    from .core.dtypes import json_safe
+    p = _with_files(a.pipeline, a.file)
+    ctx = hl.build_context(p, nodes=[a.node] if a.node else None, deep=not a.quick,
+                           stats=not a.no_stats, samples=a.samples, sample_rows=a.sample_rows)
+    if a.changed:
+        ctx = hl.context_changes(ctx, a.changed)
+    if a.jsonl:
+        text = hl.context_jsonl(ctx)
+    elif a.json:
+        text = json.dumps(json_safe(ctx), indent=2, default=str)
+    else:
+        text = hl.context_text(ctx)
+    if a.output:
+        target = hl.write_text_atomic(a.output, text)
+        print(f"Wrote {target} ({len(ctx['tables'])} dataset(s), context version {ctx['version']})")
+        return
+    print(text)
+
+
+def cmd_dataset(a: argparse.Namespace) -> None:
+    """Show or set the project's dataset-level metadata (creator, license, description…)."""
+    if a.set or a.remove:
+        with _editing(a.pipeline) as p:
+            if a.remove:
+                p.set_dataset_meta(**{a.remove: None})
+            if a.set:
+                p.set_dataset_meta(**_parse_kv(a.set))
+            meta = p.dataset_meta()
+    else:
+        p = _load(a.pipeline)
+        meta = p.dataset_meta()
+    _print(a, meta, "\n".join(f"{k}: {v}" for k, v in meta.items()) or "no dataset metadata")
+
+
+def cmd_fair(a: argparse.Namespace) -> None:
+    """Write a FAIR descriptor for the project's datasets."""
+    p = _load(a.pipeline)
+    ex = Executor(p)
+    out = Path(a.out) if a.out else None
+    doc = hl.export_fair(p, ex, fmt=a.format, samples=a.samples, out=out)
+    if out is not None:
+        _print(a, {"path": str(out), "format": a.format}, f"Wrote {out}")
+    else:
+        _print(a, doc)
+
+
+def cmd_watch(a: argparse.Namespace) -> None:
+    """Watch a project and its data files, and rerun when anything changes."""
+    if a.batch and (not a.files or not a.out_dir):
+        raise CliError("--batch needs --files and --out-dir")
+
+    def on_event(e: dict[str, Any]) -> None:
+        if a.json:
+            return
+        t = e.get("type")
+        if t == "watch_started":
+            print(f"Watching {e['path']} every {a.interval:g}s (Ctrl+C to stop)")
+        elif t == "watch_changed":
+            print("changed: " + ", ".join(Path(x).name for x in e["files"]), flush=True)
+        elif t == "watch_ran":
+            rec = e["record"]
+            print(f"ran: {'ok' if rec.get('ok') else 'failed'}", flush=True)
+        elif t == "watch_error":
+            print(f"error: {e['error']}", file=sys.stderr)
+
+    try:
+        rec = hl.watch(a.pipeline, node=a.node, batch=a.batch, files=a.files, out_dir=a.out_dir,
+                       loader=a.loader, interval=a.interval, once=a.once, on_event=on_event)
+    except KeyboardInterrupt:
+        rec = {"ok": True, "stopped": True}
+    if a.json:
+        _print(a, rec)
+    else:
+        print("Stopped." if rec.get("stopped") else "Done.")
+
+
+def cmd_catalog(a: argparse.Namespace) -> None:
+    """A catalog of every DANCR project in a folder: each project's datasets, for an index or an overview."""
+    from .core.dtypes import json_safe
+    cat = hl.build_catalog(a.root, pattern=a.pattern, recursive=not a.no_recursive,
+                           stats=not a.no_stats, samples=a.samples, fair_format=a.fair, jobs=a.jobs)
+    if a.changed:
+        cat = hl.catalog_changes(cat, a.changed)
+    if a.jsonl:
+        text = hl.catalog_jsonl(cat, by_project=a.by_project)
+    elif a.json:
+        text = json.dumps(json_safe(cat), indent=2, default=str)
+    else:
+        lines = [f"{cat['count']} project(s) under {cat['root']}"]
+        for proj in cat["projects"]:
+            lines.append(f"  {proj['name']}  ({proj['file']})")
+            for d in proj.get("datasets", []):
+                lines.append(f"      [{d['id']}] {d['title']}" + (f"  ({d['rows']:,} rows)" if d.get("rows") else ""))
+        for f, why in cat.get("skipped", {}).items():
+            lines.append(f"  ! {f}: {why}")
+        text = "\n".join(lines)
+    if a.output:
+        target = hl.write_text_atomic(a.output, text)
+        print(f"Wrote {target} ({cat['count']} project(s))")
+        return
+    print(text)
+
+
+def cmd_package(a: argparse.Namespace) -> None:
+    """Write a self-contained RO-Crate (FAIR descriptors, the project and its run manifest)."""
+    p = _load(a.pipeline)
+    rec = hl.package_rocrate(p, Executor(p), out=a.out, copy=a.copy, zip=not a.dir, overwrite=a.force)
+    _print(a, rec, f"Wrote a RO-Crate to {rec['path']} ({rec['format']}, {rec['count']} data/result file(s))")
 
 
 def cmd_suggest(a: argparse.Namespace) -> None:
@@ -310,6 +425,41 @@ def cmd_ask(a: argparse.Namespace) -> None:
     lines += [f"  assumed: {x['text']}" for x in ans["assumptions"]]
     lines += [f"  note: “{x['text']}” could also mean " + ", ".join(c["label"] for c in x["choices"]) for x in q["ambiguous"]]
     _print(a, out, "\n".join(lines))
+
+
+def cmd_connections(a: argparse.Namespace) -> None:
+    with _editing(a.pipeline) as p:
+        out = hl.connection_map(p, recompute=a.recompute)
+    lines = []
+    for c in out.get("connections", []):
+        bits = [c.get("kind", "")]
+        if c.get("left_on"):
+            bits.append(f"{c['left_on']} = {c.get('right_on')}")
+        if c.get("match_pct") is not None:
+            bits.append(f"{c['match_pct']}% match")
+        if c.get("cardinality"):
+            bits.append(c["cardinality"])
+        lines.append(" ↔ ".join(c.get("tables", [])) + "  (" + ", ".join(str(b) for b in bits if b) + ")")
+    _print(a, out, "\n".join(lines) or "No relations found between the tables")
+
+
+def cmd_assistant(a: argparse.Namespace) -> None:
+    with _editing(a.pipeline) as p:
+        hl.add_files(p, _abs(a.file))
+        out = hl.assistant_turn(p, a.question, allow_samples=a.samples, focus=a.focus, build=a.build)
+    if out.get("error"):
+        if a.json:
+            print(json.dumps(out))
+            sys.exit(EXIT_ERROR)
+        raise CliError(out["error"])
+    text = out.get("text") or ""
+    if out.get("answer"):
+        text += f"\nBuilt “{out['answer']['title']}” as {out['answer']['id']} (step {out.get('terminal')}, {out.get('status')})."
+        if out.get("finding"):
+            text += f"\nFinding: {out['finding']}"
+    elif out.get("terminal"):
+        text += f"\nBuilt and ran step {out['terminal']} ({out.get('status')})."
+    _print(a, out, text)
 
 
 def cmd_answer(a: argparse.Namespace) -> None:
@@ -375,6 +525,31 @@ def cmd_run(a: argparse.Namespace) -> None:
         if rec.get("headline"):
             print(f"→ {rec['headline']}")
     if failed:
+        sys.exit(EXIT_FAILED)
+
+
+def cmd_batch(a: argparse.Namespace) -> None:
+    """Run the project's target step over many files, writing one output each and a combined table."""
+    p = _load(a.pipeline)
+    if a.node:
+        _check_node(p, a.node)
+
+    def on_event(e: dict[str, Any]) -> None:
+        if not a.json and e.get("type") == "batch_file":
+            print(f"  {e.get('status', ''):7} {e.get('file', '')}", flush=True)
+
+    rec = hl.run_batch(p, a.files, target=a.node, out_dir=a.out_dir, loader=a.loader,
+                       ext=a.format, jobs=a.jobs, force=a.force, combined=not a.no_combined,
+                       manifest=a.manifest, on_event=on_event)
+    if a.json:
+        _print(a, rec)
+    else:
+        print(f"{rec['count']} file(s) → {rec['out_dir']}  ({'all done' if rec['ok'] else 'some failed'})")
+        if rec.get("combined"):
+            print(f"combined: {rec['combined']}")
+        if rec.get("manifest"):
+            print(f"manifest: {rec['manifest']}")
+    if not rec["ok"]:
         sys.exit(EXIT_FAILED)
 
 
@@ -464,6 +639,34 @@ def cmd_chart(a: argparse.Namespace) -> None:
     params = hl.chart_params(p.nodes[a.node], a.kind, a.x, a.y.split(",") if a.y else None, a.column, a.title)
     with _frame(a, p, ex, a.node) as lf:
         out = render_chart(lf, params, a.out, width=a.width, height=a.height, columns=p.columns, inputs=p.input_values())
+    _print(a, {"path": str(out), "params": params}, f"Wrote {out}")
+
+
+def cmd_map(a: argparse.Namespace) -> None:
+    from .views.render import render_map
+    p = _load(a.pipeline)
+    ex = Executor(p)
+    _check_node(p, a.node)
+    node = p.nodes[a.node]
+    params = dict(node.params) if node.type == "map" else {}
+    if a.lat:
+        params["lat"] = a.lat
+    if a.lon:
+        params["lon"] = a.lon
+    if a.color:
+        params["color_by"] = a.color
+    if a.size_by:
+        params["size_by"] = a.size_by
+    if a.label:
+        params["label"] = a.label
+    if a.cell_size:
+        params["cell_size"] = a.cell_size
+    if a.title is not None:
+        params["title"] = a.title
+    if a.no_basemap:
+        params["basemap"] = False
+    with _frame(a, p, ex, a.node) as lf:
+        out = render_map(lf, params, a.out, width=a.width, height=a.height, columns=p.columns, inputs=p.input_values())
     _print(a, {"path": str(out), "params": params}, f"Wrote {out}")
 
 
@@ -618,10 +821,57 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("remove", help="delete a step"); s.add_argument("pipeline"); s.add_argument("node"); s.set_defaults(fn=cmd_remove)
     s = sub.add_parser("show", help="print the project and the status of each step"); s.add_argument("pipeline"); s.set_defaults(fn=cmd_show)
     s = sub.add_parser("understand", help="describe the project's tables: column roles, table shapes, how tables relate"); s.add_argument("pipeline"); s.add_argument("--file", action="append", help="add a data file first (repeatable)"); s.add_argument("--quick", action="store_true", help="from a sample only, without reading every row"); s.set_defaults(fn=cmd_understand)
+    s = sub.add_parser("context", aliases=["profile"], help="knowledge-base export: schema, stats, samples and a doc card per dataset")
+    s.add_argument("pipeline"); s.add_argument("--file", action="append", help="add a data file first (repeatable)"); s.add_argument("--node", help="only this step's output")
+    s.add_argument("--samples", action="store_true", help="include example rows (up to 100)"); s.add_argument("--sample-rows", type=int, default=10)
+    s.add_argument("--no-stats", action="store_true", help="skip per-column statistics"); s.add_argument("--quick", action="store_true", help="from a sample only, without reading every row")
+    s.add_argument("--jsonl", action="store_true", help="one JSON object per dataset, for a search index"); s.add_argument("--output", help="write to this file instead of printing")
+    s.add_argument("--changed", metavar="OLD_CONTEXT", help="only datasets whose content changed since this earlier context file (JSON or JSONL)")
+    s.set_defaults(fn=cmd_context)
+    s = sub.add_parser("dataset", help="show or set the project's dataset metadata (creator, license, description…)")
+    s.add_argument("pipeline"); s.add_argument("--set", action="append", metavar="KEY=VALUE", help="a field, e.g. license=CC-BY-4.0 or keywords=a,b")
+    s.add_argument("--remove", metavar="FIELD", help="remove a field"); s.set_defaults(fn=cmd_dataset)
+    s = sub.add_parser("fair", help="export a FAIR descriptor (schema.org, frictionless, manifest or rocrate)")
+    s.add_argument("pipeline"); s.add_argument("--format", default="schema.org", choices=["schema.org", "frictionless", "manifest", "rocrate"])
+    s.add_argument("--out", help="write to this file instead of printing"); s.add_argument("--samples", action="store_true", help="include example rows")
+    s.set_defaults(fn=cmd_fair)
+    s = sub.add_parser("package", help="write a self-contained RO-Crate (FAIR descriptors + pipeline + manifest)")
+    s.add_argument("pipeline"); s.add_argument("--out", required=True, help="a .zip file, or a folder with --dir")
+    s.add_argument("--copy", default="metadata", choices=list(hl.ROCRATE_COPY), help="include the data files, the result files, both, or neither")
+    s.add_argument("--dir", action="store_true", help="write a folder instead of a .zip"); s.add_argument("--force", action="store_true", help="replace an existing crate")
+    s.set_defaults(fn=cmd_package)
+    s = sub.add_parser("watch", help="watch a project and its data files, and rerun when anything changes")
+    s.add_argument("pipeline"); s.add_argument("--node", help="only this step and what it needs"); s.add_argument("--interval", type=float, default=2.0, help="seconds between checks")
+    s.add_argument("--once", action="store_true", help="run once and exit instead of watching")
+    s.add_argument("--batch", action="store_true", help="run a batch over --files instead of the whole project")
+    s.add_argument("--files", action="append", help="with --batch, a file/folder/glob (repeatable)"); s.add_argument("--out-dir", dest="out_dir", help="with --batch, where results go"); s.add_argument("--loader", help="with --batch, the source step to swap")
+    s.set_defaults(fn=cmd_watch)
+    s = sub.add_parser("catalog", help="a catalog of every DANCR project in a folder, for an index or an overview")
+    s.add_argument("root", help="the folder to search"); s.add_argument("--pattern", default="*.json"); s.add_argument("--no-recursive", action="store_true", dest="no_recursive")
+    s.add_argument("--samples", action="store_true"); s.add_argument("--no-stats", action="store_true", dest="no_stats"); s.add_argument("--fair", help="include a FAIR descriptor per project (schema.org, frictionless, manifest, rocrate)")
+    s.add_argument("--jsonl", action="store_true", help="one JSON object per dataset"); s.add_argument("--by-project", action="store_true", dest="by_project", help="with --jsonl, one line per project")
+    s.add_argument("--changed", metavar="OLD", help="only what changed since an earlier catalog (JSON or JSONL)"); s.add_argument("--output", help="write to this file"); s.add_argument("--jobs", type=int, default=1)
+    s.set_defaults(fn=cmd_catalog)
     s = sub.add_parser("suggest", help="answers DANCR can give for the project's tables, best first"); s.add_argument("pipeline"); s.add_argument("--file", action="append", help="add a data file first (repeatable)"); s.add_argument("--focus", help="only answers about this step's output"); s.add_argument("--build", type=int, metavar="N", help="build suggestion N"); s.set_defaults(fn=cmd_suggest)
     s = sub.add_parser("ask", help="answer a question typed in plain words (for example \"total sales by region\")"); s.add_argument("pipeline"); s.add_argument("question"); s.add_argument("--file", action="append", help="add a data file first (repeatable)"); s.add_argument("--dry-run", action="store_true", help="show how the question is read without building it"); s.set_defaults(fn=cmd_ask)
+    s = sub.add_parser("connections", help="how the project's tables relate (links, stacks, alignments); saved with the project")
+    s.add_argument("pipeline"); s.add_argument("--recompute", action="store_true", help="work it out again instead of using the saved map")
+    s.set_defaults(fn=cmd_connections)
+    s = sub.add_parser("assistant", help="ask the Assistant (an AI front end that builds real steps; needs a model key)")
+    s.add_argument("pipeline"); s.add_argument("question"); s.add_argument("--file", action="append", help="add a data file first (repeatable)")
+    s.add_argument("--build", action="store_true", help="build and run what it proposes")
+    s.add_argument("--samples", action="store_true", help="allow sample rows to be sent to the model")
+    s.add_argument("--focus", help="focus on this step's output")
+    s.set_defaults(fn=cmd_assistant)
     s = sub.add_parser("answer", help="list answers, show one, change it or delete it"); s.add_argument("pipeline"); s.add_argument("answer", nargs="?"); s.add_argument("--set", nargs="*", metavar="KEY=VALUE", help="change a chip, for example stat=mean every=1d"); s.add_argument("--choose", type=int, nargs="+", metavar="N", help="take alternative M (default 0) of assumption N"); s.add_argument("--remove", action="store_true"); s.add_argument("--steps", action="store_true", help="with --remove, also delete the steps that only this answer uses"); s.set_defaults(fn=cmd_answer)
     s = sub.add_parser("run", help="run the project, or only some steps and what they need"); s.add_argument("pipeline"); s.add_argument("nodes", nargs="*"); s.add_argument("--force", action="store_true", help="ignore the cache"); s.set_defaults(fn=cmd_run)
+    s = sub.add_parser("batch", help="run one step over many files, writing an output each and a combined table")
+    s.add_argument("pipeline"); s.add_argument("--files", action="append", required=True, metavar="PATH", help="a file, folder or glob, relative to the project file's folder (repeatable)")
+    s.add_argument("--out-dir", required=True, dest="out_dir", help="where results go (inside the project folder)"); s.add_argument("--node", help="the step to write out (default: the last step)")
+    s.add_argument("--loader", help="the step whose file setting to swap (default: the only source step)"); s.add_argument("--format", default="csv", choices=list(hl.BATCH_EXT))
+    s.add_argument("--jobs", type=int, default=1, help="files to run at once (default 1)"); s.add_argument("--force", action="store_true", help="ignore the cache")
+    s.add_argument("--no-combined", action="store_true", dest="no_combined", help="skip the combined table"); s.add_argument("--manifest", help="write a JSON manifest here")
+    s.set_defaults(fn=cmd_batch)
     s = sub.add_parser("status", help="step status, messages and reports"); s.add_argument("pipeline"); s.add_argument("node", nargs="?"); s.set_defaults(fn=cmd_status)
     s = sub.add_parser("schema", help="columns of a step's output"); s.add_argument("pipeline"); s.add_argument("node"); s.set_defaults(fn=cmd_schema)
     s = sub.add_parser("sample", help="print rows of a step's output"); s.add_argument("pipeline"); s.add_argument("node"); s.add_argument("--rows", type=int, default=20); s.add_argument("--offset", type=int, default=0); s.add_argument("--csv", action="store_true"); s.add_argument("--run", action="store_true", help="run first if needed"); s.set_defaults(fn=cmd_sample)
@@ -629,7 +879,12 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("chart", help="draw a chart of a step's output to a PNG file"); s.add_argument("pipeline"); s.add_argument("node"); s.add_argument("--out", required=True)
     s.add_argument("--kind", choices=["line", "scatter", "histogram", "bar"]); s.add_argument("--x"); s.add_argument("--y", help="comma-separated columns"); s.add_argument("--column"); s.add_argument("--title")
     s.add_argument("--width", type=int, default=1400); s.add_argument("--height", type=int, default=700); s.add_argument("--run", action="store_true"); s.set_defaults(fn=cmd_chart)
-    s = sub.add_parser("export", help="write a step's output to csv/parquet/xlsx"); s.add_argument("pipeline"); s.add_argument("node"); s.add_argument("out"); s.add_argument("--run", action="store_true"); s.set_defaults(fn=cmd_export)
+    s = sub.add_parser("map", help="draw a map of a step's output to a PNG file"); s.add_argument("pipeline"); s.add_argument("node"); s.add_argument("--out", required=True)
+    s.add_argument("--lat"); s.add_argument("--lon"); s.add_argument("--color"); s.add_argument("--size", dest="size_by"); s.add_argument("--label")
+    s.add_argument("--cell", dest="cell_size", help="draw grid squares of this size (e.g. 0.1 or 5km)")
+    s.add_argument("--title"); s.add_argument("--no-basemap", action="store_true", dest="no_basemap")
+    s.add_argument("--width", type=int, default=1200); s.add_argument("--height", type=int, default=800); s.add_argument("--run", action="store_true"); s.set_defaults(fn=cmd_map)
+    s = sub.add_parser("export", help="write a step's output to csv/parquet/xlsx/geojson"); s.add_argument("pipeline"); s.add_argument("node"); s.add_argument("out"); s.add_argument("--run", action="store_true"); s.set_defaults(fn=cmd_export)
     s = sub.add_parser("clear-cache", help="delete cached outputs"); s.add_argument("pipeline"); s.set_defaults(fn=cmd_clear_cache)
     s = sub.add_parser("gui", help="run the window in this process"); s.add_argument("pipeline", nargs="?"); s.set_defaults(fn=cmd_gui)
     s = sub.add_parser("open", help="open the window, optionally on a project"); s.add_argument("pipeline", nargs="?"); s.add_argument("--wait", action="store_true"); s.set_defaults(fn=cmd_open)

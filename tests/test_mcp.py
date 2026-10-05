@@ -34,6 +34,25 @@ def project(tmp_path, mcp_root) -> Path:
 ROOT = Path(__file__).resolve().parent.parent
 
 
+def test_mcp_connections_reports_and_saves(tmp_path, mcp_root):
+    (tmp_path / "data").mkdir()
+    pl.DataFrame({"id": [1, 2, 3], "name": ["A", "B", "C"]}).write_csv(tmp_path / "data" / "customers.csv")
+    pl.DataFrame({"customer_id": [1, 1, 2, 3, 2], "amount": [10.0, 20.0, 30.0, 40.0, 50.0]}).write_csv(tmp_path / "data" / "orders.csv")
+    pj = tmp_path / "p.json"
+    srv.create_pipeline(str(pj))
+    srv.add_node(str(pj), "load_file", {"path": "data/customers.csv"}, title="Customers", node_id="customers")
+    srv.add_node(str(pj), "load_file", {"path": "data/orders.csv"}, title="Orders", node_id="orders")
+    out = json.loads(srv.connections(str(pj)))
+    assert out["source"] == "computed" and out["count"] >= 1
+    assert json.loads(srv.connections(str(pj)))["source"] == "saved"
+
+
+def test_mcp_assistant_runs_with_a_scripted_fake(project, monkeypatch, mcp_root):
+    monkeypatch.setenv("DANCR_ASSISTANT_FAKE", "1")
+    out = json.loads(srv.assistant(str(project), "hello"))
+    assert out["kind"] == "text" and "text" in out
+
+
 def test_mcp_writes_stay_inside_the_project_folder(probe_dir, tmp_path, mcp_root):
     from mcp.server.mcpserver.exceptions import ToolError
     from dancr.mcp_server import create_pipeline, add_node, run_pipeline, export_node, render_chart, _inside_project
@@ -138,6 +157,22 @@ def test_mcp_render_chart_overrides_and_validates(probe_dir, tmp_path, mcp_root)
         render_chart(pj, "a", x="time", y=["nosuch"])
     with pytest.raises(ToolError, match="No step called"):
         get_schema(pj, "zzz")
+
+
+def test_mcp_render_map(tmp_path, mcp_root):
+    from mcp.server.mcpserver.exceptions import ToolError
+    from dancr.mcp_server import create_pipeline, add_node, render_map, run_pipeline
+    (tmp_path / "data").mkdir()
+    pl.DataFrame({"lat": [-1.29, -6.79], "lon": [36.82, 39.21], "n": [4.4, 6.7]}).write_csv(tmp_path / "data" / "cities.csv")
+    pj = str(tmp_path / "p.json")
+    create_pipeline(pj)
+    add_node(pj, "load_file", {"path": "data/cities.csv"}, node_id="a")
+    add_node(pj, "map", {"lat": "lat", "lon": "lon", "color_by": "n"}, node_id="m", after="a")
+    run_pipeline(pj)
+    render_map(pj, "m", out_png="cities.png")
+    assert (tmp_path / "cities.png").stat().st_size > 3000
+    with pytest.raises(ToolError, match="latitude"):
+        render_map(pj, "a", lat="nope", lon="lon")
 
 
 def test_export_node_refuses_to_overwrite_the_data_the_project_reads(project, tmp_path):

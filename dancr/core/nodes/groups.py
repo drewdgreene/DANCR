@@ -1,7 +1,7 @@
 """Compare groups: are the numbers different from one group to another, by how much, and how sure is that?
 
-The question behind most small studies — sun leaves against shade leaves, treated plots against control plots,
-this machine against that one — and a question big tables ask too (do orders from the web differ from orders in
+The question behind most small studies — treated plots against control plots, before against after, this
+machine against that one — and a question big tables ask too (do orders from the web differ from orders in
 store?). For each number the step gives each group's count, average, standard deviation, standard error and
 median, the difference, a test of whether it is more than chance, and how big it is, then says the clearest
 result in a sentence.
@@ -11,7 +11,7 @@ It also notices what a person in a hurry would miss, and says it:
 - which test fits and why (groups that vary differently: Welch's t-test, not Student's);
 - values that are not bell-shaped in a small sample, and whether a rank test agrees;
 - values unusually far from the rest of their group, named by the row they are in;
-- a number that grows with the size of what is measured (a gap in a leaf's outline grows with the leaf) in groups
+- a number that grows with the size of what is measured (a gap grows with the area it is measured on) in groups
   of different sizes: compared relative to size as well, and said when that turns the result round.
 
 Counts, averages and spreads are computed over every row (streaming); the rank test, the checks of shape and the
@@ -42,7 +42,7 @@ TESTS = [("auto", "choose for me"), ("welch", "Welch's t-test / ANOVA (groups ma
 
 def _label(ctx: Ctx, name: str) -> str:
     """A column as a sentence names it: its label if it has one; else its header without the unit and short name,
-    with what it measures in front of a cryptic one ('m (g)' is 'mass (m)', 'Leaf area (LA) cm2' is 'Leaf area')."""
+    with what it measures in front of a cryptic one (a column named 'mass (m)' is 'mass', not 'm')."""
     from ..units import header_parts, quantity_of
     meta = (ctx.columns or {}).get(name) or {}
     if meta.get("label") and meta["label"] != name:
@@ -214,7 +214,7 @@ def _compare(lf: pl.LazyFrame, by: str, cols: list[str], names: dict[str, str], 
 
 
 def _paired(res: dict, test: str, sample: pl.DataFrame, by: str, pair_by: str) -> None:
-    """Two groups measured on the same things (each leaf before and after, each patient on two drugs): the test is
+    """Two groups measured on the same things (each subject before and after, each patient on two drugs): the test is
     on the differences within each pair."""
     from scipy import stats
     g, c = res["groups"], res["column"]
@@ -299,7 +299,7 @@ def _test_one(res: dict, test: str, sample: pl.DataFrame, by: str, pair_by: str 
 
 
 def _verdict(res: dict, ctx_unit: str) -> str:
-    """The result for one number in words: 'Shade higher (p < 0.001)', 'no clear difference (p = 0.4)'."""
+    """The result for one number in words: 'Control higher (p < 0.001)', 'no clear difference (p = 0.4)'."""
     g, p = res["groups"], res.get("p")
     hi = max(g, key=lambda x: x["mean"])
     lo = min(g, key=lambda x: x["mean"])
@@ -312,7 +312,7 @@ def _verdict(res: dict, ctx_unit: str) -> str:
 
 
 def sentence(res: dict, unit: str) -> str:
-    """The clearest way to say one result: 'Shade has 2.6 times the leaf area of Sun (126.6 vs 48.5 cm²; p < 0.001)'."""
+    """The clearest way to say one result: 'Control has 2.6 times the area of Treated (126.6 vs 48.5 cm²; p < 0.001)'."""
     g, p = res["groups"], res.get("p")
     hi = max(g, key=lambda x: x["mean"])
     lo = min(g, key=lambda x: x["mean"])
@@ -552,7 +552,7 @@ registry.register(NodeType(
               help="When the same things are measured in both groups (each plant before and after), the column that "
                    "says which is which: the test is then on the difference within each pair"),
         Param("label", "Rows are named by", "column", default="", advanced=True,
-              help="A column that names each row (leaf number, sample id), used to point at unusual values"),
+              help="A column that names each row (sample number, id), used to point at unusual values"),
         Param("size_check", "Check for size effects", "bool", default=True, advanced=True,
               help="When a number grows with the size of what is measured and the groups differ in size, compare it "
                    "relative to size as well and say when that changes the result"),

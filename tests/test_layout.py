@@ -26,25 +26,25 @@ def load(tmp_path: Path, name: str, **params):
 def test_a_lab_sheet_of_two_tables_side_by_side_is_one_table_in_two_groups(tmp_path):
     data = lab_sheet(tmp_path / "lab.xlsx")
     df, st = load(tmp_path, "lab.xlsx")
-    assert df.columns == ["N - Leaf", "group", "Leaf area (LA) cm2", "polygon area (PA) cm2", "D", "m (g)", "m/LA x 10000 (g/m2)"]
+    assert df.columns == ["N - Sample", "group", "inner area (IA) cm2", "outer area (OA) cm2", "gap", "mass (m) g", "mass/area x 10000 (g/m2)"]
     assert df.height == 30                                           # not the template row 16, not the summary rows
-    assert df["group"].to_list() == ["Sun"] * 15 + ["Shade"] * 15
-    assert df["N - Leaf"].to_list() == list(range(1, 16)) * 2 and df["N - Leaf"].dtype == pl.Int64
-    assert df.filter(pl.col("group") == "Shade")["Leaf area (LA) cm2"].to_list() == [r[0] for r in data["shade"]]
+    assert df["group"].to_list() == ["Treated"] * 15 + ["Control"] * 15
+    assert df["N - Sample"].to_list() == list(range(1, 16)) * 2 and df["N - Sample"].dtype == pl.Int64
+    assert df.filter(pl.col("group") == "Control")["inner area (IA) cm2"].to_list() == [r[0] for r in data["control"]]
     lay = st.report["layout"]
-    assert lay["kind"] == "groups" and lay["groups"] == ["Sun", "Shade"]
+    assert lay["kind"] == "groups" and lay["groups"] == ["Treated", "Control"]
     assert [s["label"] for s in lay["summary_rows"]] == ["AVERAGE", "STANDARD DEV", "MEDIAN"]
     assert lay["checks"] and all(c["ok"] for c in lay["checks"])
     text = " ".join(st.messages)
-    assert "SUN LEAVES" in text and "They agree with the data" in text and "sheet row 18" in text
+    assert "TREATED" in text and "They agree with the data" in text and "sheet row 18" in text
 
 
 def test_a_stale_summary_value_is_named(tmp_path):
     lab_sheet(tmp_path / "lab.xlsx", stale_average=True)
     _, st = load(tmp_path, "lab.xlsx")
     bad = [c for c in st.report["layout"]["checks"] if not c["ok"]]
-    assert len(bad) == 1 and bad[0]["column"] == "Leaf area (LA) cm2" and bad[0]["group"] == "Sun"
-    assert any("AVERAGE of Leaf area (LA) cm2 for Sun is" in m and "but the data gives" in m for m in st.messages)
+    assert len(bad) == 1 and bad[0]["column"] == "inner area (IA) cm2" and bad[0]["group"] == "Treated"
+    assert any("AVERAGE of inner area (IA) cm2 for Treated is" in m and "but the data gives" in m for m in st.messages)
 
 
 def test_read_as_it_is_keeps_every_row(tmp_path):
@@ -158,7 +158,7 @@ def test_summary_labels(text, stat):
 
 
 def test_group_labels_from_banners():
-    assert group_labels(["SUN LEAVES", "SHADE LEAVES"]) == ["Sun", "Shade"]
+    assert group_labels(["TREATED PLOTS", "CONTROL PLOTS"]) == ["Treated", "Control"]
     assert group_labels(["Site A", "Site B"]) == ["Site A", "Site B"]
     assert group_labels(["Control", "Treated"]) == ["Control", "Treated"]
     assert group_labels(["UK sales", "US sales"]) == ["UK", "US"]

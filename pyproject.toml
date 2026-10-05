@@ -23,6 +23,17 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=8,<10", "pytest-qt>=4.4,<5"]
 build = ["pyinstaller>=6.10,<7", "pillow>=10,<13"]
+# Geographic work beyond points: polygons, spatial joins and reprojection. The point, grid, distance,
+# nearest-place and map steps need none of these — they stay pure Polars and numpy.
+geo = ["shapely>=2,<3", "pyproj>=3.6,<4", "pyogrio>=0.9,<1"]
+# The Assistant: the chat front door to the deterministic engine. It talks to any OpenAI-style
+# /v1/chat/completions endpoint (Fireworks, OpenAI, a local server). The engine, and everything else
+# in DANCR, works without it.
+assistant = ["httpx>=0.27,<1"]
+# Reading a database server (Load from a database). SQLite is built in; this adds PostgreSQL and others.
+db = ["sqlalchemy>=2,<3", "psycopg[binary]>=3.1,<4"]
+# Reading scientific array formats (Load NetCDF, Load HDF5).
+science = ["xarray>=2024.1,<2026", "netCDF4>=1.6,<2", "h5py>=3.10,<4"]
 
 [project.scripts]
 dancr = "dancr.cli:main"
@@ -38,7 +49,7 @@ version = { attr = "dancr.__version__" }
 include = ["dancr*"]
 
 [tool.setuptools.package-data]
-dancr = ["assets/*", "help/*.md"]
+dancr = ["assets/*", "assets/icons/*", "assets/geo/*", "help/*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

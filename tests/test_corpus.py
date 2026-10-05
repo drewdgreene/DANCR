@@ -100,16 +100,16 @@ def plain(d: Path) -> list[str]:
 
 
 def study(d: Path) -> list[str]:
-    """A lab data sheet: sun and shade leaves side by side under banners, summary rows, a template row, one slip."""
-    lab_sheet(d / "Leaves & Light Data Sheet.xlsx")
-    return ["Leaves & Light Data Sheet.xlsx"]
+    """A lab data sheet: two groups side by side under banners, summary rows, a template row, one slip."""
+    lab_sheet(d / "lab data.xlsx")
+    return ["lab data.xlsx"]
 
 
 CASES = {
-    "study": (study, ["compare sun and shade leaves", "is there a difference between sun and shade",
-                      "is leaf mass per area higher in sun leaves", "t test leaf area", "average leaf area",
-                      "standard deviation of mass", "average D", "which leaf is biggest", "check the data",
-                      "relationship between mass and leaf area", "unusual leaves"]),
+    "study": (study, ["compare treated and control", "is there a difference between treated and control",
+                      "is mass per area higher in treated samples", "t test inner area", "average inner area",
+                      "standard deviation of mass", "average gap", "which sample is biggest", "check the data",
+                      "relationship between mass and inner area", "unusual samples"]),
     "shop": (shop, ["total quantity by region", "top 5 customers by quantity", "average price per month",
                     "quantity by category for North", "orders where price above 30", "how many orders by segment",
                     "orders before March", "orders since March", "average price from 2024-02-01 to 2024-03-01",
