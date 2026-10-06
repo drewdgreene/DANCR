@@ -21,7 +21,8 @@ import os
 import sqlite3
 import uuid
 from pathlib import Path
-from typing import Any, Callable, Iterator
+from typing import Any
+from collections.abc import Callable, Iterator
 
 STORE_DIR = ".dancr"
 GRAPH_DIR = "graph"
@@ -78,7 +79,7 @@ class Repo:
     def lock_file(self, name: str) -> Path:
         return self.path(LOCKS_DIR, f"{_safe_name(name)}.lock")
 
-    def ensure(self) -> "Repo":
+    def ensure(self) -> Repo:
         for d in (self.home, self.dir(GRAPH_DIR), self.dir(EVENTS_DIR), self.dir(AUDIT_DIR), self.dir(LOCKS_DIR)):
             d.mkdir(parents=True, exist_ok=True)
         return self
@@ -127,7 +128,7 @@ def read_jsonl(path: Path | str) -> Iterator[dict[str, Any]]:
     target = Path(path).expanduser()
     if not target.is_file():
         return
-    with open(target, "r", encoding="utf-8") as f:
+    with open(target, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:

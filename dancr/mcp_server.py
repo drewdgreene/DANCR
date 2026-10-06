@@ -990,7 +990,7 @@ def run_scenarios(path: str, spec: dict[str, Any] | None = None, spec_path: str 
         sp = _from_root(spec_path)
         src: Any = json.loads(sp.read_text(encoding="utf-8")) if sp.is_file() else json.loads(spec_path)
     elif spec is not None:
-        src = spec if isinstance(spec, dict) else json.loads(spec)
+        src = spec if isinstance(spec, (dict, list)) else json.loads(spec)
     else:
         raise ToolError("Give spec (a scenario spec) or spec_path")
     return _dump(hl.run_scenarios(p, src, target=target, out_dir=out_dir, ext=ext, jobs=int(jobs),

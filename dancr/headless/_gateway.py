@@ -43,7 +43,7 @@ def audit(root: Path | str, record: dict[str, Any]) -> None:
 def audit_records(root: Path | str, *, limit: int | None = None) -> dict[str, Any]:
     records = list(read_jsonl(Repo(root).audit_log()))
     if limit is not None and limit >= 0:
-        records = records[-limit:]
+        records = records[-limit:] if limit > 0 else []
     return {"kind": "dancr.audit", "root": str(Path(root).expanduser().resolve()),
             "count": len(records), "records": records}
 
@@ -178,26 +178,28 @@ def principal_for_request(root: Path | str, token: str) -> tuple[str | None, Pol
     return principal_for_token(policy, token), policy
 
 
-def consume_approval(root: Path | str, principal: str, tool: str) -> bool:
-    """Take a matching approved-but-unused approval for (principal, tool), marking it consumed. True if one was
-    found. This is how an ``approve`` verdict is satisfied by a person's earlier decision."""
+def consume_approval(root: Path | str, principal: str, tool: str, *, project: str | None = None) -> bool:
+    """Take a matching approved-but-unused approval for (principal, tool, project), marking it consumed. True if
+    one was found. Matching the project too means an approval for one project never authorises another; the read
+    and the consume happen under the repository lock, so two callers cannot spend the same approval."""
     from . import repo_lock
-    records = list(read_jsonl(_approvals_file(root)))
-    consumed = {r.get("id") for r in records if r.get("event") == "consumed"}
-    items: dict[str, dict[str, Any]] = {}
-    order: list[str] = []
-    for r in records:
-        aid = str(r.get("id"))
-        if aid not in items:
-            items[aid] = dict(r)
-            order.append(aid)
-        if r.get("event") == "decided":
-            items[aid]["status"] = r.get("status", "pending")
-    match = next((items[a] for a in order if items[a].get("status") == "approved" and a not in consumed
-                  and items[a].get("principal") == principal and items[a].get("tool") == tool), None)
-    if match is None:
-        return False
     with repo_lock(root):
+        records = list(read_jsonl(_approvals_file(root)))
+        consumed = {r.get("id") for r in records if r.get("event") == "consumed"}
+        items: dict[str, dict[str, Any]] = {}
+        order: list[str] = []
+        for r in records:
+            aid = str(r.get("id"))
+            if aid not in items:
+                items[aid] = dict(r)
+                order.append(aid)
+            if r.get("event") == "decided":
+                items[aid]["status"] = r.get("status", "pending")
+        match = next((items[a] for a in order if items[a].get("status") == "approved" and a not in consumed
+                      and items[a].get("principal") == principal and items[a].get("tool") == tool
+                      and items[a].get("project") == project), None)
+        if match is None:
+            return False
         append_jsonl(_approvals_file(root), {"id": match["id"], "event": "consumed"})
     return True
 
@@ -213,7 +215,7 @@ def authorize(root: Path | str, principal: str, tool: str, *, category: str | No
     dec = enforce(root, principal, tool, category=category, project=project, args=args)
     if dec["verdict"] != "approve":
         return dec
-    if consume_approval(root, principal, tool):
+    if consume_approval(root, principal, tool, project=project):
         audit(root, {"principal": principal, "tool": tool, "category": dec["category"],
                      "verdict": "allowed-after-approval", "project": project})
         return {**dec, "verdict": "allow", "reason": "approved"}

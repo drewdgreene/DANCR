@@ -59,6 +59,14 @@ def test_restricted_datasets_are_withheld_unless_allowed():
     assert len(g.neighbors("p/a.json#one", allow_restricted=True)["neighbors"]) == 1
 
 
+def test_neighbors_refuses_a_restricted_dataset():
+    g = _pure_graph()
+    g.datasets["p/a.json#two"].sensitivity = "restricted"
+    with pytest.raises(ValueError, match="restricted"):
+        g.neighbors("p/a.json#two")
+    assert g.neighbors("p/a.json#two", allow_restricted=True)["count"] == 2
+
+
 def make_repo(root: Path) -> None:
     (root / "a").mkdir()
     (root / "b").mkdir()

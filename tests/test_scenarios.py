@@ -47,6 +47,12 @@ def test_from_spec_dispatch():
         from_spec({})
 
 
+def test_sweep_refuses_an_unbounded_grid_but_a_limit_bounds_it():
+    with pytest.raises(ValueError, match="limit"):
+        sweep({}, {"a": list(range(400)), "b": list(range(400))})       # 160,000 scenarios
+    assert len(sweep({}, {"a": list(range(400)), "b": list(range(400))}, limit=5)) == 5
+
+
 def test_run_scenarios_writes_outputs_and_hashes(tmp_path):
     p = make(tmp_path)
     rec = run_scenarios(p, {"sweep": {"factor": [1, 2, 3]}}, out_dir="out")

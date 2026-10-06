@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .graph import Graph, is_restricted
+from .graph import Graph
 
 INTENTS = ("path", "shared_keys", "upstream", "downstream", "neighbors", "find")
 
@@ -163,9 +163,7 @@ def _directed(graph: Graph, dataset_id: str, *, up: bool, allow_restricted: bool
             continue
         if e.kind == "link" and dataset_id in e.endpoints:
             out.append(e)                         # a shared key relates both ways
-        elif up and e.right == dataset_id:
-            out.append(e)
-        elif not up and e.left == dataset_id:
+        elif up and e.right == dataset_id or not up and e.left == dataset_id:
             out.append(e)
     return out
 
@@ -188,8 +186,8 @@ def suggest(graph: Graph, *, allow_restricted: bool = False) -> list[dict[str, A
         e = links[0]
         out.append({"intent": "neighbors", "question": f"what relates to {e.left}?"})
         out.append({"intent": "path", "question": f"what joins {e.left} and {e.right}?"})
-    if graph.datasets:
-        first = graph.all_datasets(allow_restricted=allow_restricted)[0]
-        out.append({"intent": "upstream", "question": f"where does {first.id} come from?"})
+    visible = graph.all_datasets(allow_restricted=allow_restricted)
+    if visible:
+        out.append({"intent": "upstream", "question": f"where does {visible[0].id} come from?"})
         out.append({"intent": "find", "question": "find orders"})
     return out

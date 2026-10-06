@@ -15,9 +15,11 @@ are folded into an attestation evidence block (``docs/adr/0007``).
 from __future__ import annotations
 
 import random
+from itertools import product
 from typing import Any
 
 SCENARIO_VERSION = 1
+MAX_SWEEP = 100_000          # a sweep larger than this needs an explicit limit (it is generated lazily anyway)
 
 
 def _scenario(sid: str, inputs: dict[str, Any]) -> dict[str, Any]:
@@ -42,17 +44,21 @@ def _axis_values(values: Any) -> list[Any]:
 
 
 def sweep(base: dict[str, Any], axes: dict[str, Any], *, limit: int | None = None) -> list[dict[str, Any]]:
-    """The cartesian product of the axes, deterministic (axes by name, values in order)."""
+    """The cartesian product of the axes, deterministic (axes by name, values in order). Generated lazily, so a
+    ``limit`` bounds the work; without one, a sweep past ``MAX_SWEEP`` scenarios is refused rather than built."""
     names = sorted(axes)
-    combos: list[dict[str, Any]] = [{}]
-    for name in names:
-        values = _axis_values(axes[name])
-        combos = [{**c, name: v} for c in combos for v in values]
-    out = []
-    for i, combo in enumerate(combos):
+    value_lists = [_axis_values(axes[name]) for name in names]
+    total = 1
+    for values in value_lists:
+        total *= len(values)
+    if limit is None and total > MAX_SWEEP:
+        raise ValueError(f"That sweep would make {total:,} scenarios. Pass a 'limit', or use fewer values")
+    out: list[dict[str, Any]] = []
+    for i, combo_values in enumerate(product(*value_lists)):
         if limit is not None and i >= limit:
             break
-        out.append(_scenario(f"{name_value(combo)}", {**base, **combo}))
+        combo = dict(zip(names, combo_values, strict=True))
+        out.append(_scenario(name_value(combo), {**base, **combo}))
     return out
 
 

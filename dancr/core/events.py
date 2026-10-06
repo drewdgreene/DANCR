@@ -12,7 +12,7 @@ invalidation and the repository watcher live in :mod:`dancr.headless._events`.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 from .repo import append_jsonl, read_jsonl
 
@@ -54,5 +54,5 @@ class EventLog:
         """Events with ``seq > since``, optionally of one type, in order. ``limit`` keeps the most recent ones."""
         out = [r for r in read_jsonl(self.path) if int(r.get("seq", 0)) > since and (type is None or r.get("type") == type)]
         if limit is not None and limit >= 0 and len(out) > limit:
-            out = out[-limit:]
+            out = out[-limit:] if limit > 0 else []
         return out

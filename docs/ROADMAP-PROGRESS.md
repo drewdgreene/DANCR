@@ -164,3 +164,26 @@ dancr scenarios shop.json --set cases.json --out-dir results
 dancr verify shop.json --record att.json --scenarios cases.json
 dancr verify shop.json --manifest att.json --scenarios cases.json
 ```
+
+## Cleanup pass (after all phases)
+
+A review pass fixed several real bugs and rough edges, each locked with a test:
+
+- **Sensitivity leak:** `Graph.neighbors` returned a restricted dataset's full profile (and its edges) even
+  without `allow_restricted`; it now refuses, like `path` does.
+- **Crash:** `crossask.suggest` indexed an empty visible-dataset list when every dataset was restricted; guarded.
+- **Unbounded work:** `scenarios.sweep` materialised the whole grid; it is now generated lazily and refuses a
+  sweep past `MAX_SWEEP` unless a `limit` is given.
+- **Bind hole:** `is_loopback("")`/`None` returned True (an empty bind could reach every interface); it is now
+  not loopback.
+- **Approval scoping:** `consume_approval` matched only principal+tool, so an approval for one project could
+  authorise another; it now matches the project too, and reads/consumes under the repository lock (no
+  double-spend).
+- **Edge case:** `limit=0` in `events.read`/`audit_records` returned everything (`[-0:]`); now empty.
+- **Robustness:** `load_graph` rebuilds on a damaged or differently-shaped database (catches `KeyError` etc.);
+  `Policy.from_dict` raises a clear `ValueError` for a non-object `quotas`; the MCP `run_scenarios` accepts an
+  explicit list spec; the gateway runs its policy/audit file I/O off the event loop.
+- Mechanical cleanups (unused imports/locals, `collections.abc`, `zip(strict=)`), verified with a broader
+  advisory ruff selection; the repo's configured `ruff check dancr tests` stays clean.
+
+Final suite: **1497 passed, 2 warnings in 274.87 s**.

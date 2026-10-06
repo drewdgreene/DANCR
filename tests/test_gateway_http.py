@@ -64,6 +64,7 @@ def call(base: str, token: str | None = None, tool: str = "inspect_file", args: 
 def test_is_loopback():
     assert is_loopback("127.0.0.1") and is_loopback("localhost") and is_loopback("::1")
     assert not is_loopback("0.0.0.0") and not is_loopback("10.0.0.1")
+    assert not is_loopback("") and not is_loopback("::")     # unspecified/empty is not loopback
 
 
 def test_gateway_fails_closed_without_a_policy(tmp_path):

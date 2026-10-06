@@ -81,6 +81,18 @@ def test_approval_queue_request_and_decide(tmp_path):
 def test_save_policy_validates(tmp_path):
     with pytest.raises(ValueError):
         save_policy(tmp_path, {"principals": "not a mapping"})
+    with pytest.raises(ValueError, match="quotas"):
+        save_policy(tmp_path, {"principals": {"a": {}}, "quotas": {"a": "not a mapping"}})
+
+
+def test_an_approval_is_scoped_to_its_project(tmp_path):
+    save_policy(tmp_path, POLICY)
+    rec = request_approval(tmp_path, "alice", "export_node", project="a.json")
+    decide_approval(tmp_path, rec["id"], True, by="drew")
+    from dancr.headless import consume_approval
+    assert consume_approval(tmp_path, "alice", "export_node", project="b.json") is False   # wrong project
+    assert consume_approval(tmp_path, "alice", "export_node", project="a.json") is True
+    assert consume_approval(tmp_path, "alice", "export_node", project="a.json") is False  # used once
 
 
 def test_cli_policy_approvals_audit(tmp_path):

@@ -27,7 +27,7 @@ _READ = {"inspect_file", "get_schema", "get_sample", "get_stats", "describe_pipe
          "list_node_types", "formula_reference", "search_knowledge", "get_events", "graph_query",
          "graph_neighbors", "graph_path", "graph_shared_keys", "get_trace", "catalog", "understand_data",
          "profile", "suggest_answers", "connections", "policy_check", "list_approvals", "get_audit",
-         "read_document", "lineage", "get_proof", "formula_reference"}
+         "read_document", "lineage", "get_proof"}
 _RUN = {"run_pipeline", "run_batch", "ask", "assistant", "run_eval", "verify_pipeline", "record_attestation"}
 _WRITE_INSIDE = {"create_pipeline", "add_node", "set_params", "connect_nodes", "disconnect_nodes",
                  "remove_node", "rename_node", "set_input", "remove_input", "set_column_label",
@@ -99,7 +99,7 @@ class Policy:
     source: str = ""
 
     @classmethod
-    def from_dict(cls, data: Any, source: str = "") -> "Policy":
+    def from_dict(cls, data: Any, source: str = "") -> Policy:
         if not isinstance(data, dict):
             raise ValueError("A policy is a JSON object")
         raw_principals = data.get("principals") or {}
@@ -124,7 +124,11 @@ class Policy:
         for k, v in raw_default.items():
             if k in CATEGORIES and v in ACTIONS:
                 default[k] = v
-        quotas = {str(k): {str(a): int(n) for a, n in (v or {}).items()} for k, v in raw_quotas.items()}
+        quotas: dict[str, dict[str, int]] = {}
+        for k, v in raw_quotas.items():
+            if not isinstance(v, dict):
+                raise ValueError("each principal's 'quotas' must be an object of category -> limit")
+            quotas[str(k)] = {str(a): int(n) for a, n in v.items()}
         rules = [r for r in raw_rules if isinstance(r, dict)]
         return cls(principals=principals, rules=rules, default=default, quotas=quotas, source=source)
 
@@ -161,9 +165,8 @@ def _rule_matches(rule: dict[str, Any], principal: str, roles: tuple[str, ...], 
         return False
     if (cat := rule.get("category")) is not None and cat != category:
         return False
-    if (t := rule.get("tool")) is not None and t != tool:
-        return False
-    return True
+    t = rule.get("tool")
+    return t is None or t == tool
 
 
 def evaluate(policy: Policy, principal: str, tool: str, *, category: str | None = None,

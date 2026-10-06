@@ -28,6 +28,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from starlette.concurrency import run_in_threadpool
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -43,9 +44,10 @@ DEFAULT_PATH = "/mcp"
 
 
 def is_loopback(host: str) -> bool:
-    """Whether a bind address is loopback (so it never leaves the machine)."""
+    """Whether a bind address is loopback (so it never leaves the machine). An empty or unspecified address is
+    *not* loopback — treating it as safe could bind every interface."""
     h = str(host or "").strip()
-    if h in ("localhost", ""):
+    if h == "localhost":
         return True
     try:
         return ipaddress.ip_address(h).is_loopback
@@ -74,7 +76,7 @@ class GatewayMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
         auth = request.headers.get("authorization", "")
         token = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
-        principal = hl.principal_for_request(self.root, token)[0]
+        principal = (await run_in_threadpool(hl.principal_for_request, self.root, token))[0]
         if not principal:
             return _jsonrpc_error(401, None, "unauthorized", "A valid bearer token is required.")
         request.state.gateway_principal = principal
@@ -91,8 +93,10 @@ class GatewayMiddleware(BaseHTTPMiddleware):
             name = str(params.get("name") or "")
             args = params.get("arguments") if isinstance(params.get("arguments"), dict) else {}
             project = args.get("path") if isinstance(args, dict) else None
-            decision = hl.authorize(self.root, principal, name, category=category_for(name),
-                                    project=str(project) if project else None, args=args)
+            # policy + audit touch the filesystem: keep them off the event loop
+            decision = await run_in_threadpool(
+                hl.authorize, self.root, principal, name,
+                category=category_for(name), project=str(project) if project else None, args=args)
             if decision["verdict"] == "deny":
                 return _jsonrpc_error(403, message.get("id"), "denied", decision.get("reason", ""))
             if decision["verdict"] == "approve":

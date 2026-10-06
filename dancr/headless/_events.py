@@ -35,9 +35,10 @@ def read_events(root: Path | str, *, since: int = 0, type: str | None = None,
     """The repository's events with ``seq > since``, in order. ``type`` filters to one kind; ``limit`` keeps the
     most recent. Read-only."""
     root = Path(root).expanduser().resolve()
-    events = _event_log(root).read(since=since, type=type, limit=limit)
+    log = _event_log(root)
+    events = log.read(since=since, type=type, limit=limit)
     return {"kind": "dancr.events", "root": str(root), "count": len(events),
-            "last_seq": (events[-1]["seq"] if events else _event_log(root).last_seq()), "events": events}
+            "last_seq": (events[-1]["seq"] if events else log.last_seq()), "events": events}
 
 
 def append_event(root: Path | str, kind: str, **fields: Any) -> dict[str, Any]:
@@ -91,7 +92,7 @@ def _index_nodes(pipe: Pipeline) -> list[str]:
 
 
 def watch_repo(root: Path | str, *, interval: float = 2.0, once: bool = False, rerun: bool = False,
-               on_event: Any = None, stop: "threading.Event | None" = None) -> dict[str, Any]:
+               on_event: Any = None, stop: threading.Event | None = None) -> dict[str, Any]:
     """Watch every project in a repository and its data, and record what changed.
 
     On a quiet poll after a change: append ``source_changed`` / ``dataset_invalidated`` events (with ripple
@@ -100,7 +101,7 @@ def watch_repo(root: Path | str, *, interval: float = 2.0, once: bool = False, r
     Returns a small record. Long-running, so it has no MCP tool; the CLI is `dancr watch --repo`."""
     from . import repo_lock
     root = Path(root).expanduser().resolve()
-    repo = Repo(root).ensure()
+    Repo(root).ensure()
     emit = on_event or (lambda e: None)
     stop = stop or threading.Event()
     record: dict[str, Any] = {"kind": "dancr.watch.repo", "root": str(root), "interval": float(interval),

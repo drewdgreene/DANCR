@@ -69,6 +69,13 @@ def test_suggest_grounded_in_the_graph():
     assert "shared_keys" in intents and "path" in intents and "neighbors" in intents
 
 
+def test_suggest_is_empty_when_everything_is_restricted():
+    g = _graph()
+    for d in g.datasets.values():
+        d.sensitivity = "restricted"
+    assert suggest(g) == []                            # must not index an empty visible list
+
+
 def make_repo(root):
     (root / "a").mkdir()
     (root / "b").mkdir()

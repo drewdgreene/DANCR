@@ -19,7 +19,7 @@ from typing import Any
 from ..core import Pipeline, registry
 from ..core.executor import CODE_FINGERPRINT, Executor
 from ..core.graph import (GRAPH_VERSION, SENSITIVITY_LEVELS, Column, Dataset, Edge, Graph, Project,
-                          Source, is_restricted, load_graph)
+                          Source, load_graph)
 from ..core.events import EventLog
 from ..core.identity import (IDENTITY_VERSION, dataset_column_id, dataset_id, digest, file_digest, project_id,
                              source_id)
@@ -154,19 +154,18 @@ def add_cross_project_keys(graph: Graph) -> int:
         for (da, na, pa, va), (db, nb, pb, vb) in combinations(sorted(items, key=lambda t: (t[2], t[0], t[1])), 2):
             if pa == pb:
                 continue
-            pair = (da, db) if da <= db else (db, da)
+            if da <= db:
+                left, lon, lv, right, ron, rv = da, na, va, db, nb, vb
+            else:
+                left, lon, lv, right, ron, rv = db, nb, vb, da, na, va
+            pair = (left, right)
             if pair in seen:
                 continue
             seen.add(pair)
-            left = da if da <= db else db
-            right = db if da <= db else da
-            lon = next(n for i, n, *_ in items if i == left)
-            ron = next(n for i, n, *_ in items if i == right)
             eid = f"xlink:{left}>{right}:{norm}"
             graph.add_edge(Edge(eid, "link", left, right, lon, ron, "", 0.0, 0.8,
                                 f"{lon} and {ron} name the same key (across projects); the match has not been measured",
-                                next(v for i, *_, v in items if i == left),
-                                next(v for i, *_, v in items if i == right)))
+                                lv, rv))
             added += 1
     return added
 

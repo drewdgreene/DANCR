@@ -15,10 +15,10 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 from .dtypes import json_safe
-from .identity import IDENTITY_VERSION, edge_id, key_norm, split_dataset_id
+from .identity import IDENTITY_VERSION, key_norm, split_dataset_id
 from .repo import Repo, write_sqlite_atomic
 
 GRAPH_VERSION = 2
@@ -207,9 +207,11 @@ class Graph:
 
     def neighbors(self, dataset_id: str, *, allow_restricted: bool = False) -> dict[str, Any]:
         """A dataset's immediate neighbours, with the edge that connects each: its links, stacks, alignments,
-        nearest-place and containment relations."""
+        nearest-place and containment relations. A restricted dataset is withheld unless allowed."""
         if dataset_id not in self.datasets:
             raise ValueError(f"No dataset {dataset_id!r} in the graph. Use graph_query to find one.")
+        if is_restricted(self.datasets[dataset_id].sensitivity) and not allow_restricted:
+            raise ValueError(f"{dataset_id} is restricted; pass allow_restricted to use it")
         edges = self.edges_of(dataset_id, allow_restricted=allow_restricted)
         out = []
         for e in edges:
@@ -263,7 +265,6 @@ class Graph:
     def shared_keys(self, *, allow_restricted: bool = False) -> list[dict[str, Any]]:
         """Every link between datasets of *different projects*: the same key reaching across a repository. Sorted
         by key name then dataset, deterministic."""
-        hidden = self._hidden(allow_restricted)
         out = []
         for e in self.all_edges(allow_restricted=allow_restricted, kind="link"):
             pl, _ = split_dataset_id(e.left)
@@ -334,7 +335,7 @@ class Graph:
         return write_sqlite_atomic(path, self.to_sqlite)
 
     @classmethod
-    def from_sqlite(cls, path: Path | str) -> "Graph":
+    def from_sqlite(cls, path: Path | str) -> Graph:
         """Load a graph written by :meth:`write`. Columns and sources are reattached to their dataset."""
         import json
         g = cls()
@@ -379,8 +380,8 @@ def load_graph(root: Path | str) -> Graph | None:
         return None
     try:
         return Graph.from_sqlite(db)
-    except (sqlite3.Error, OSError):
-        return None
+    except (sqlite3.Error, OSError, KeyError, IndexError, ValueError):
+        return None                       # a damaged or differently-shaped database is rebuilt, never fatal
 
 
 def graph_fingerprint(graph: Graph) -> str:
