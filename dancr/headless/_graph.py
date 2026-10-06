@@ -20,9 +20,10 @@ from ..core import Pipeline, registry
 from ..core.executor import CODE_FINGERPRINT, Executor
 from ..core.graph import (GRAPH_VERSION, SENSITIVITY_LEVELS, Column, Dataset, Edge, Graph, Project,
                           Source, is_restricted, load_graph)
+from ..core.events import EventLog
 from ..core.identity import (IDENTITY_VERSION, dataset_column_id, dataset_id, digest, file_digest, project_id,
                              source_id)
-from ..core.repo import Repo, append_jsonl, write_json_atomic
+from ..core.repo import Repo, write_json_atomic
 from ..core.understand import default_tables, understand
 
 log = logging.getLogger("dancr.graph")
@@ -242,9 +243,9 @@ def build_graph(root: Path | str, *, projects: list[str] | None = None, force: b
         graph.write(repo.graph_db())
         write_json_atomic(repo.graph_meta(), {**graph.meta, "rebuilt": sorted(rebuilt),
                                               "reused": sorted(reused), "skipped": dict(sorted(skipped.items()))})
-        append_jsonl(repo.events_log(), {"kind": "dancr.event", "type": "graph_updated", "at": generated,
-                                         "root": str(root), "rebuilt": sorted(rebuilt), "reused": sorted(reused),
-                                         "skipped": sorted(skipped), "counts": graph.meta["counts"]})
+        EventLog(repo.events_log()).append(
+            "graph_updated", root=str(root), rebuilt=sorted(rebuilt), reused=sorted(reused),
+            skipped=sorted(skipped), counts=graph.meta["counts"])
     return {"kind": "dancr.graph", "root": str(root), "path": str(repo.graph_db()),
             "rebuilt": sorted(rebuilt), "reused": sorted(reused), "skipped": dict(sorted(skipped.items())),
             "cross_project_edges": cross, **counts}

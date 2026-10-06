@@ -117,5 +117,17 @@
   and the persistent index records it in a `.meta.json` sidecar, so a neural one could be added and recorded
   later, pinned by id and version, without changing the retrieval contract.
 
+- The repository watcher (`dancr watch --repo`, `docs/GRAPH.md` and `docs/GATEWAY.md`) polls (every two seconds
+  by default), like the single-project watcher; it uses no operating-system file notifications. It records
+  `source_changed` / `dataset_invalidated` events and ripples invalidation across projects through the graph,
+  but it **does not re-run by default**: `--rerun` recomputes only the changed projects that are safe to
+  recompute (never one whose step would write outside its folder or over its data — those are reported instead).
+  The event log is append-only and never compacted, so a very long-running watch grows the file.
+- Governance (`dancr policy/approvals/audit`, `docs/GATEWAY.md`) is **opt-in and manual**: nothing is enforced
+  until `<root>/.dancr/gateway/policy.json` exists, and the existing tools are not wrapped by default — a caller
+  must use `enforce`/`policy_check` to be governed. The policy language is deliberately tiny. There is **no
+  network transport**: the multi-client HTTP gateway is a separate, deliberately deferred decision
+  (`docs/adr/0006-gateway-transport.md`), so the offline-first guarantee is preserved.
+
 Design and extension of the answer engine: `docs/ANSWERS.md`. Earlier plans and review worklists
 (all items done): `docs/history/`.

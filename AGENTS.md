@@ -28,7 +28,8 @@ Two interfaces, same engine:
   `get_trace` (the Assistant conversation as an audit log), `run_eval` (score questions against the project),
   `catalog` (every project under a folder),
   `graph_build` / `graph_query` / `graph_neighbors` / `graph_path` / `graph_shared_keys` (the cross-project
-  entity graph — see below), `open_in_gui`.
+  entity graph — see below), `get_events` (the repository event log), `policy_check` (whether a governance
+  policy would allow an action), `open_in_gui`.
 - **CLI**: `dancr --json <command> …` prints JSON. `dancr ask p.json "total sales by region" --file a.csv`,
   `dancr suggest p.json [--build N]` (`--file` on a workbook adds every sheet),   `dancr answer p.json [ID] [--set stat=mean] [--choose N M] [--remove --steps]`
   and `dancr understand p.json` are the answer commands. `dancr context p.json [--samples] [--jsonl] [--changed old.jsonl]` (alias
@@ -49,6 +50,12 @@ Two interfaces, same engine:
   under `<DIR>/.dancr/graph/graph.db`; `dancr graph summary|query|neighbors|path|shared-keys DIR …` reads it.
   A project whose file and source files have not changed is carried over from the stored graph without being
   read again (the build is incremental and deterministic). See `docs/GRAPH.md`.
+  `dancr events DIR [--follow] [--type T] [--since N]` prints the repository event log; `dancr watch DIR --repo
+  [--rerun]` watches every project and records `source_changed` / `dataset_invalidated` (rippling across
+  projects through the graph) and, with `--rerun`, recomputes the changed projects that are safe to recompute.
+  `dancr policy check DIR PRINCIPAL TOOL`, `dancr approvals DIR [--approve ID|--deny ID]` and `dancr audit DIR`
+  are the governance surface; without a `<DIR>/.dancr/gateway/policy.json` nothing is enforced. See
+  `docs/GATEWAY.md`.
   `dancr eval p.json --set cases.json [--model]` scores questions against the project (the engine, or the Assistant);
   `dancr trace p.json` prints the saved Assistant conversation as an audit log.
   `dancr assistant p.json "…" [--file …] [--build]`
@@ -365,7 +372,10 @@ The public names: `read_project`, `editing`, `project_lock`, `ProjectBusy`, `Pip
 `assistant_turn`, `connection_map`, `run_record`, `node_record`, `run_batch`, `build_context`, `context_jsonl`,
 `context_text`, `context_changes`, `export_fair`, `dataset_jsonld`, `datapackage`, `run_manifest`,
 `project_profile`, `table_card`, and the cross-project graph (`Graph`, `build_graph`, `load_graph`,
-`graph_summary`, `graph_query`, `graph_neighbors`, `graph_path`, `graph_shared_keys`, `graph_slice`).
+`graph_summary`, `graph_query`, `graph_neighbors`, `graph_path`, `graph_shared_keys`, `graph_slice`), the
+repository event log (`read_events`, `append_event`, `invalidate`, `watch_repo`) and governance (`Policy`,
+`Principal`, `evaluate_policy`, `policy_category`, `load_policy`, `save_policy`, `policy_check`, `enforce`,
+`request_approval`, `list_approvals`, `decide_approval`, `audit_records`).
 
 ## The cross-project entity graph (A1)
 

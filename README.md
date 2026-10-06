@@ -71,6 +71,13 @@ The app is self-contained. You don't need to install anything else first.
   containment), each with its evidence. Build it with `dancr graph build`, then ask what relates to what, the
   shortest chain joining two datasets, or which keys link projects (`dancr graph shared-keys`). It is rebuilt
   incrementally and deterministically, and confidential datasets stay withheld unless you ask.
+- Watches a whole repository and records what changed in an **append-only event log**: a source file changed,
+  a dataset was invalidated (rippling to the datasets that depend on it, across projects), a project was
+  recomputed, an index went stale. `dancr watch DIR --repo` records the events and, when asked, recomputes the
+  changed projects that are safe to recompute; `dancr events DIR` reads the log.
+- Can be governed: a repository may write a small **policy** (principals, rules, approvals, quotas), after which
+  every action gets an allow/approve/deny decision and an **audit** record. It is off by default — nothing is
+  enforced until a policy is configured — and there is no network service.
 - Stewards data: **Check data contract** (column kinds, blanks, uniqueness, range, allowed values, patterns,
   cross-column rules and keys that must exist elsewhere), **Compare two versions** (what changed), a
   data-dictionary step, **Label sensitivity**, and **Redact** columns for a shareable copy.

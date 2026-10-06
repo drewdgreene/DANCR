@@ -36,6 +36,13 @@ from ._graph import (  # noqa: E402 - the cross-project entity graph (A1)
     build_graph, graph_neighbors, graph_path, graph_query, graph_shared_keys, graph_slice, graph_summary,
     load_graph,
 )
+from ._events import (  # noqa: E402 - the repository event log and watcher (A2)
+    append_event, invalidate, read_events, watch_repo,
+)
+from ._gateway import (  # noqa: E402 - policy, approvals, audit and quotas (B1 core)
+    audit_records, decide_approval, enforce, list_approvals, load_policy, policy_check, request_approval,
+    save_policy,
+)
 
 
 class StepFailed(ValueError):

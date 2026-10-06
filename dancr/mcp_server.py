@@ -937,6 +937,26 @@ def graph_shared_keys(root: str | None = None, allow_restricted: bool = False) -
     return _dump(hl.graph_shared_keys(_repo_root(root), allow_restricted=bool(allow_restricted)))
 
 
+@mcp.tool()
+@friendly
+def get_events(root: str | None = None, since: int = 0, type: str | None = None, limit: int | None = None) -> str:
+    """The repository event log (roadmap A2): an append-only record of what changed and what it affected —
+    source_changed, dataset_invalidated (rippling across projects via the graph), project_recomputed,
+    index_stale, graph_updated. Read-only. `since` returns only events after a sequence number; `type` filters
+    to one kind; `limit` keeps the most recent."""
+    return _dump(hl.read_events(_repo_root(root), since=int(since), type=type, limit=limit))
+
+
+@mcp.tool()
+@friendly
+def policy_check(root: str | None = None, principal: str = "anonymous", tool: str = "", category: str | None = None,
+                 project: str | None = None) -> str:
+    """Whether a repository's governance policy (roadmap B1) would allow a principal to use a tool, without
+    doing it: verdict allow/approve/deny with the reason. When no policy is configured every action is allowed,
+    so this changes nothing until a repository opts in with <root>/.dancr/gateway/policy.json. Read-only."""
+    return _dump(hl.policy_check(_repo_root(root), principal, tool or "", category=category, project=project))
+
+
 def main(root: str | None = None) -> None:
     from .logsetup import configure
     global ROOT, ROOT_REFUSED

@@ -91,7 +91,41 @@ dancr search shop.json "drought tolerance" --retriever hybrid
 
 ## Phase 2 — B1 gateway + A2 events
 
-Status: not started
+Status: **A2 done; B1 core done, network transport deferred (see below)**
+
+A2 (events + repository watcher):
+
+- [x] `dancr/core/events.py` — typed, closed event vocabulary; append-only `EventLog` with monotonic `seq`.
+- [x] `dancr/headless/_events.py` — `read_events`, `append_event`, `invalidate` (ripple across projects via
+      the graph), `watch_repo` (polling; opt-in safe rerun).
+- [x] CLI `dancr events` and `dancr watch --repo [--rerun]`; MCP `get_events`; SDK `read_events`,
+      `append_event`, `invalidate`, `watch_repo`.
+- [x] tests: `tests/test_events.py` (7).
+
+B1 core (policy, approvals, audit, quotas — no socket):
+
+- [x] `dancr/core/gateway/__init__.py` — principals, categories, tiny policy, `evaluate` → allow/approve/deny.
+- [x] `dancr/headless/_gateway.py` — `load_policy`/`save_policy`, `policy_check`, `enforce` (audited),
+      approval queue, quota store, `audit_records`.
+- [x] CLI `dancr policy check|show`, `dancr approvals`, `dancr audit`; MCP `policy_check`; SDK names.
+- [x] Off by default: without `<root>/.dancr/gateway/policy.json` nothing is enforced.
+- [x] tests: `tests/test_gateway.py` (11).
+- [ ] **Network transport (streamable HTTP MCP) — deferred.** This needs a security decision with production
+      consequences; `docs/adr/0006-gateway-transport.md` lists the four questions (bind address, auth, TLS,
+      threat model). Per the STOP-AND-ASK rule, no listening socket was built.
+
+Verification (Phase 2): `ruff check dancr tests` → **All checks passed**;
+`pytest -q` → **1468 passed, 2 warnings in 311.47 s** (Phase 1's 1450 + 18 new).
+
+Demo:
+
+```bash
+dancr watch /path/to/repo --repo &            # records source_changed / dataset_invalidated events
+dancr events /path/to/repo
+dancr policy check /path/to/repo alice export_node
+dancr approvals /path/to/repo
+dancr audit /path/to/repo
+```
 
 ## Phase 3 — C2 cross-project QA + F2 scenarios
 

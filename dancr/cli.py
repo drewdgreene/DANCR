@@ -20,6 +20,8 @@ import polars as pl
 from . import __version__
 from . import headless as hl
 from .core import Pipeline, PipelineError, registry
+from .core.events import KINDS as _EVENT_KINDS
+from .core.gateway import CATEGORIES as _GATEWAY_CATEGORIES
 from .core.executor import Executor, NodeState
 
 
@@ -400,7 +402,8 @@ def cmd_watch(a: argparse.Namespace) -> None:
             return
         t = e.get("type")
         if t == "watch_started":
-            print(f"Watching {e['path']} every {a.interval:g}s (Ctrl+C to stop)")
+            where = e.get("root") or e.get("path")
+            print(f"Watching {where} every {a.interval:g}s (Ctrl+C to stop)")
         elif t == "watch_changed":
             print("changed: " + ", ".join(Path(x).name for x in e["files"]), flush=True)
         elif t == "watch_ran":
@@ -408,16 +411,96 @@ def cmd_watch(a: argparse.Namespace) -> None:
             print(f"ran: {'ok' if rec.get('ok') else 'failed'}", flush=True)
         elif t == "watch_error":
             print(f"error: {e['error']}", file=sys.stderr)
+        elif t in ("source_changed", "dataset_invalidated", "project_recomputed", "index_stale"):
+            print(f"{t}: " + json.dumps({k: v for k, v in e.items() if k not in ('kind', 'version', 'type')},
+                                        default=str), flush=True)
 
     try:
-        rec = hl.watch(a.pipeline, node=a.node, batch=a.batch, files=a.files, out_dir=a.out_dir,
-                       loader=a.loader, interval=a.interval, once=a.once, on_event=on_event)
+        if getattr(a, "repo", False):
+            rec = hl.watch_repo(a.pipeline, interval=a.interval, once=a.once, rerun=a.rerun, on_event=on_event)
+        else:
+            rec = hl.watch(a.pipeline, node=a.node, batch=a.batch, files=a.files, out_dir=a.out_dir,
+                           loader=a.loader, interval=a.interval, once=a.once, on_event=on_event)
     except KeyboardInterrupt:
         rec = {"ok": True, "stopped": True}
     if a.json:
         _print(a, rec)
     else:
         print("Stopped." if rec.get("stopped") else "Done.")
+
+
+def _print_event(a: argparse.Namespace, e: dict[str, Any]) -> None:
+    fields = {k: v for k, v in e.items() if k not in ("kind", "version", "type", "seq")}
+    print(f"[{e.get('seq')}] {e.get('type')}  " + json.dumps(fields, default=str))
+
+
+def cmd_events(a: argparse.Namespace) -> None:
+    """Print the repository event log: what changed and what it affected."""
+    if a.follow:
+        since = a.since
+        try:
+            while True:
+                out = hl.read_events(a.root, since=since, type=a.type)
+                for e in out["events"]:
+                    _print_event(a, e)
+                    since = e["seq"]
+                time.sleep(a.interval)
+        except KeyboardInterrupt:
+            return
+    out = hl.read_events(a.root, since=a.since, type=a.type, limit=a.limit)
+    if a.json:
+        _print(a, out)
+        return
+    for e in out["events"]:
+        _print_event(a, e)
+    if not out["events"]:
+        print("No events.")
+
+
+def cmd_policy(a: argparse.Namespace) -> None:
+    """Show a repository's governance policy, or check whether one action would be allowed."""
+    if a.policy_cmd == "show":
+        pol = hl.load_policy(a.root)
+        if pol is None:
+            _print(a, {"configured": False}, "No policy configured (nothing is enforced).")
+            return
+        _print(a, {"configured": True, "principals": sorted(pol.principals), "rules": len(pol.rules),
+                   "default": pol.default},
+               f"Policy at {pol.source}: {len(pol.principals)} principal(s), {len(pol.rules)} rule(s)")
+        return
+    out = hl.policy_check(a.root, a.principal, a.tool, category=a.category, project=a.project)
+    note = "" if out.get("configured") else " (no policy configured)"
+    _print(a, out, f"{out['verdict'].upper()}: {out['reason']}{note}")
+
+
+def cmd_approvals(a: argparse.Namespace) -> None:
+    """List queued approvals, or approve/deny one."""
+    if a.approve or a.deny:
+        out = hl.decide_approval(a.root, a.approve or a.deny, bool(a.approve), by=a.by)
+        _print(a, out, f"{out['status']}: {out['id']}")
+        return
+    out = hl.list_approvals(a.root, pending_only=a.pending)
+    if a.json:
+        _print(a, out)
+        return
+    lines = [f"{out['count']} approval(s)"]
+    for x in out["approvals"]:
+        lines.append(f"  {x['id']}  {x['status']:9}  {x['principal']}  {x['tool']}  {x.get('project') or ''}")
+    _print(a, out, "\n".join(lines))
+
+
+def cmd_audit(a: argparse.Namespace) -> None:
+    """Print the repository audit log (every enforced action, with its verdict)."""
+    out = hl.audit_records(a.root, limit=a.limit)
+    if a.json:
+        _print(a, out)
+        return
+    lines = [f"{out['count']} audit record(s)"]
+    for r in out["records"]:
+        lines.append(f"  {str(r.get('verdict')):16}  {r.get('principal')}  {r.get('tool')}  {r.get('project') or ''}")
+    _print(a, out, "\n".join(lines))
+
+
 
 
 def cmd_catalog(a: argparse.Namespace) -> None:
@@ -1175,7 +1258,30 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--once", action="store_true", help="run once and exit instead of watching")
     s.add_argument("--batch", action="store_true", help="run a batch over --files instead of the whole project")
     s.add_argument("--files", action="append", help="with --batch, a file/folder/glob (repeatable)"); s.add_argument("--out-dir", dest="out_dir", help="with --batch, where results go"); s.add_argument("--loader", help="with --batch, the source step to swap")
+    s.add_argument("--repo", action="store_true", help="watch every project in this folder (a repository), recording events instead of rerunning by default")
+    s.add_argument("--rerun", action="store_true", help="with --repo, recompute each changed project that is safe to recompute")
     s.set_defaults(fn=cmd_watch)
+    s = sub.add_parser("events", help="print the repository event log (what changed, and what it affected)")
+    s.add_argument("root"); s.add_argument("--since", type=int, default=0, help="only events after this sequence number")
+    s.add_argument("--type", choices=list(_EVENT_KINDS), help="only events of this kind"); s.add_argument("--limit", type=int)
+    s.add_argument("--follow", action="store_true", help="keep printing new events (Ctrl+C to stop)")
+    s.add_argument("--interval", type=float, default=2.0, help="with --follow, seconds between checks")
+    s.set_defaults(fn=cmd_events)
+    s = sub.add_parser("policy", help="show a repository's governance policy, or check one action")
+    ps = s.add_subparsers(dest="policy_cmd", required=True, parser_class=_Parser)
+    p = ps.add_parser("check", help="would this principal be allowed to use this tool?")
+    p.add_argument("root"); p.add_argument("principal"); p.add_argument("tool")
+    p.add_argument("--category", choices=list(_GATEWAY_CATEGORIES)); p.add_argument("--project")
+    p.set_defaults(fn=cmd_policy)
+    p = ps.add_parser("show", help="print the policy, or say none is configured")
+    p.add_argument("root"); p.set_defaults(fn=cmd_policy)
+    s = sub.add_parser("approvals", help="list queued approvals, or approve/deny one")
+    s.add_argument("root"); s.add_argument("--pending", action="store_true", help="only pending ones")
+    g = s.add_mutually_exclusive_group()
+    g.add_argument("--approve", metavar="ID"); g.add_argument("--deny", metavar="ID")
+    s.add_argument("--by", default="", help="who is deciding"); s.set_defaults(fn=cmd_approvals)
+    s = sub.add_parser("audit", help="print the repository audit log")
+    s.add_argument("root"); s.add_argument("--limit", type=int); s.set_defaults(fn=cmd_audit)
     s = sub.add_parser("catalog", help="a catalog of every DANCR project in a folder, for an index or an overview")
     s.add_argument("root", help="the folder to search"); s.add_argument("--pattern", default="*.json"); s.add_argument("--no-recursive", action="store_true", dest="no_recursive")
     s.add_argument("--samples", action="store_true"); s.add_argument("--no-stats", action="store_true", dest="no_stats"); s.add_argument("--fair", help="include a FAIR descriptor per project (schema.org, frictionless, manifest, rocrate)")
