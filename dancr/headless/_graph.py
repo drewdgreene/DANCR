@@ -40,7 +40,7 @@ def _sensitivity(pipe: Pipeline, node_id: str, project_level: str) -> str:
     return project_level if project_level in SENSITIVITY_LEVELS else "public"
 
 
-def _source_stamp(root: Path, pipe: Pipeline) -> list[Any]:
+def _source_stamp(pipe: Pipeline) -> list[Any]:
     """A cheap stamp of every file the project reads (size, modification time, a content sample), the same idea
     as the executor's cache fingerprint, so a source that changed without the project file changing is noticed."""
     from ..core.executor import _content_sample
@@ -58,7 +58,7 @@ def _source_stamp(root: Path, pipe: Pipeline) -> list[Any]:
 def change_key(project_path: Path, pipe: Pipeline) -> str:
     """What says a project has not moved since a stored graph: the project file's bytes and every source file's
     stamp. Deterministic, so an unchanged project is always reused."""
-    return digest({"project": file_digest(project_path), "sources": _source_stamp(project_path.parent, pipe)})
+    return digest({"project": file_digest(project_path), "sources": _source_stamp(pipe)})
 
 
 def _project_graph(root: Path, path: Path, pipe: Pipeline) -> tuple[Project, list[Dataset], list[Edge]]:

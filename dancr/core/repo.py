@@ -20,9 +20,9 @@ import json
 import os
 import sqlite3
 import uuid
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
-from collections.abc import Callable, Iterator
 
 STORE_DIR = ".dancr"
 GRAPH_DIR = "graph"
