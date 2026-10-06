@@ -210,6 +210,28 @@ def test_nearest_feature_respects_a_tight_distance(tmp_path):
     assert got["a"] == "A" and got["b"] is None and got["c"] is None
 
 
+def test_nearest_feature_keeps_the_first_table_columns_once(tmp_path):
+    """The pairing carries the first table back; joining it again must not duplicate its columns."""
+    out = _nearest(_two_tables(tmp_path))
+    assert "vlat_right" not in out.columns and "village_right" not in out.columns
+    assert out.columns.count("vlat") == 1 and out.columns.count("village") == 1
+
+
+def test_nearest_feature_when_only_the_latitude_name_clashes(tmp_path):
+    """A clash on one coordinate name says nothing about the other: the longitude keeps its own name."""
+    pl.DataFrame({"lat": [-1.29], "lon": [36.82], "village": ["a"]}).write_parquet(tmp_path / "v.parquet")
+    pl.DataFrame({"lat": [-1.29], "clon": [36.82], "clinic": ["A"]}).write_parquet(tmp_path / "c.parquet")
+    p = Pipeline("t"); p.path = tmp_path / "p.json"
+    p.add_node("load_file", "V", {"path": "v.parquet"}, id="v")
+    p.add_node("load_file", "C", {"path": "c.parquet"}, id="c")
+    nid = p.add_node("combine", params={"method": "nearest_feature", "left_lat": "lat", "left_lon": "lon",
+                                        "right_lat": "lat", "right_lon": "clon", "max_distance": "50km",
+                                        "units": "km"}).id
+    p.connect("v", nid, "left"); p.connect("c", nid, "right")
+    out = run_one(p, nid)
+    assert out["clinic"].to_list() == ["A"] and out["lat_2"].to_list() == [-1.29]
+
+
 def test_export_geojson(tmp_path):
     src = _cities(tmp_path)
     p = Pipeline("t")
@@ -387,7 +409,7 @@ def test_vector_load_without_pyogrio_explains(tmp_path, monkeypatch):
     from dancr.core.executor import Executor
     st = Executor(p).run(targets=["src"])["src"]
     assert st.status == "failed"
-    assert "dancr[geo]" in (st.error or "")
+    assert "pyogrio" in (st.error or "")
 
 
 def test_tables_in_lists_every_gpkg_layer(tmp_path):

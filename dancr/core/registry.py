@@ -146,7 +146,8 @@ class NodeType:
         if self.summary:
             try:
                 return self.summary(params)
-            except Exception:
+            except Exception as e:  # noqa: BLE001 - a subtitle is a bonus; log the bug instead of hiding it silently
+                log.debug("could not summarise %s settings: %s", self.key, e)
                 return ""
         return ""
 

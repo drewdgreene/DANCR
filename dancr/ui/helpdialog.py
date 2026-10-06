@@ -19,7 +19,8 @@ class HelpDialog(QDialog):
         lay = QVBoxLayout(self)
         tb = QTextBrowser(); tb.setOpenExternalLinks(True)
         lay.addWidget(tb)
-        path = AGENTS if section == "agents" else HELP / ("formulas.md" if section == "formulas" else "help.md")
+        path = AGENTS if section == "agents" else HELP / (
+            "formulas.md" if section == "formulas" else "formats.md" if section == "formats" else "help.md")
         try:
             tb.setMarkdown(path.read_text(encoding="utf-8"))
         except OSError:

@@ -5,6 +5,7 @@ if not defined PY set PY=.venv\Scripts\python.exe
 %PY% -c "import PyInstaller, PIL" 2>nul || (echo PyInstaller and Pillow are missing. Install the build tools first: uv sync --extra build & exit /b 1)
 if not exist packaging\icon.ico %PY% packaging\make_icons.py || exit /b 1
 %PY% -m PyInstaller --noconfirm --clean packaging\dancr.spec || exit /b 1
+if "%WITH_MINERU%"=="1" call packaging\build-mineru.bat dist\DANCR || exit /b 1
 powershell -Command "Compress-Archive -Force -Path dist\DANCR -DestinationPath dist\DANCR-windows.zip"
 
 for /f %%v in ('%PY% -c "import dancr;print(dancr.__version__)"') do set VERSION=%%v

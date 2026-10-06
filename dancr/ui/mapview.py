@@ -54,7 +54,7 @@ class MapView(QWidget):
         self._serial = Serial(self)
         self._src_hash: str | None = None
         self._items: list[Any] = []
-        self._basemap = None                     # a PolyLineROI-free combined outline item, built once
+        self._basemap: dict[str, tuple[Any, Any]] = {}   # projection -> projected outline, so redraws reuse it
 
         lay = QVBoxLayout(self); lay.setContentsMargins(0, 0, 0, 0); lay.setSpacing(0)
         head, h = page_header(spacing=6)
@@ -314,14 +314,18 @@ class MapView(QWidget):
         self.plot.setTitle(spec.get("title") or (self.doc.pipeline.nodes[self.nid].title if self.nid else ""))
 
     def _draw_basemap(self, projection: str) -> None:
-        lons: list[float] = []; lats: list[float] = []
-        for ring in world_outlines():
-            arr = np.asarray(ring, dtype=float)
-            lons.extend(arr[:, 0].tolist()); lats.extend(arr[:, 1].tolist())
-            lons.append(float("nan")); lats.append(float("nan"))
-        if not lons:
+        xy = self._basemap.get(projection)
+        if xy is None:                           # project the outline once per view, not on every refresh
+            lons: list[float] = []; lats: list[float] = []
+            for ring in world_outlines():
+                arr = np.asarray(ring, dtype=float)
+                lons.extend(arr[:, 0].tolist()); lats.extend(arr[:, 1].tolist())
+                lons.append(float("nan")); lats.append(float("nan"))
+            xy = project(np.array(lons), np.array(lats), projection) if lons else (None, None)
+            self._basemap[projection] = xy
+        x, y = xy
+        if x is None:
             return
-        x, y = project(np.array(lons), np.array(lats), projection)
         self._add(pg.PlotDataItem(x, y, connect="finite", pen=pg.mkPen("#cbd5e1", width=1)))
 
     def _brushes(self, md: MapData) -> list:

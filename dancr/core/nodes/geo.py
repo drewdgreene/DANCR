@@ -367,22 +367,24 @@ def _project(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, 
         try:
             from pyproj import Transformer
         except ImportError:
-            raise ValueError("Reading a coordinate reference system other than UTM needs the optional 'pyproj' "
-                             "package. Install 'dancr[geo]', or set the CRS to a UTM zone (e.g. EPSG:32737)") from None
+            raise ValueError("Reading a coordinate reference system other than UTM needs the 'pyproj' package, "
+                             "which is missing from this build. Reinstall DANCR, or set the CRS to a UTM zone "
+                             "(e.g. EPSG:32737)") from None
+        import numpy as np
         tr = Transformer.from_crs(crs, "EPSG:4326", always_xy=True)
         e = pl.col(ec).cast(pl.Float64)
         n = pl.col(nc).cast(pl.Float64)
         out = lf.with_columns(e.alias("__e"), n.alias("__n"))
         df = out.select(["__e", "__n"]).collect(engine="streaming")
-        ev, nv = df["__e"].to_list(), df["__n"].to_list()
-        have = [i for i, (a, b) in enumerate(zip(ev, nv)) if a is not None and b is not None]
-        lo: list[float | None] = [None] * len(ev)                 # a blank coordinate stays blank
-        la: list[float | None] = [None] * len(nv)
-        if have:
-            xs, ys = tr.transform([ev[i] for i in have], [nv[i] for i in have])
-            for j, i in enumerate(have):
-                lo[i], la[i] = float(xs[j]), float(ys[j])
-        out = out.with_columns(pl.Series(lon_out, lo), pl.Series(lat_out, la)).drop("__e", "__n")
+        # transform the valid coordinates as arrays in one call (pyproj is vectorized); a blank stays blank
+        ev, nv = df["__e"].to_numpy(), df["__n"].to_numpy()
+        valid = np.isfinite(ev) & np.isfinite(nv)
+        lo = np.full(ev.shape, np.nan)
+        la = np.full(nv.shape, np.nan)
+        if bool(valid.any()):
+            xs, ys = tr.transform(ev[valid], nv[valid])
+            lo[valid], la[valid] = xs, ys
+        out = out.with_columns(pl.Series(lon_out, lo).fill_nan(None), pl.Series(lat_out, la).fill_nan(None)).drop("__e", "__n")
         msgs = [f"Reprojected {ec}, {nc} from {crs} to longitude/latitude (pyproj)"]
         return NodeResult(out, messages=msgs)
 

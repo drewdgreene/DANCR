@@ -32,7 +32,7 @@ def test_import_dancr_does_not_pull_in_the_window_or_the_engine():
     """A light import: nothing heavy is imported until a name is used (so a script pays only for what it uses)."""
     code = ("import sys, dancr; "
             "assert 'dancr.ui.mainwindow' not in sys.modules; "
-            "assert dancr.__version__ == '2.1.0'; "
+            "assert dancr.__version__.startswith('2.'); "
             "print('ok')")
     r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
     assert r.returncode == 0 and "ok" in r.stdout, r.stderr

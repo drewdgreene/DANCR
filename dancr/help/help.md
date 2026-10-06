@@ -60,6 +60,11 @@ large.
 You can open several files at once, such as orders and customers or a month of
 logs. DANCR works out how they fit together.
 
+If a file will not open, the step says why: DANCR reads tables, and refuses the
+rest with a plain reason rather than misreading them. **Help → What DANCR can
+read** (or `dancr formats`) lists every format it reads and what to do with the
+ones it doesn't.
+
 To look around first, open one of the **Examples** on the start screen (or
 **File → Examples**): shop sales, two sensor logs, a department budget, or batch
 test results. Each is a finished project with its questions already answered
@@ -291,11 +296,17 @@ the **+** on a step in the map. New steps attach to the table you're looking at.
 | Category | Step | What it does |
 |---|---|---|
 | Get data | Load file | CSV, TSV, text, Excel, Parquet, GeoJSON, GeoPackage or shapefile. Separators and dates are detected, and a map layer's geometry is reprojected to longitude/latitude. |
-| Get data | Load folder | Every file matching a folder and a pattern (say `exports/*.csv`) as one table, with a column naming the file each row came from. Files with different columns are joined into the union; the cache notices when any file changes. Can read every sheet, table or layer each file holds. |
+| Get data | Load folder | Every file matching a folder and a pattern (say `exports/*.csv`) as one table, with a column naming the file each row came from. Files with different columns are joined into the union; the cache notices when any file changes. Can read every sheet, table or layer each file holds, and a folder of scientific files (VCF, FASTA, GFF, GenBank, PLINK). |
 | Get data | Load from a URL | A CSV, text, Parquet or JSON table on the web (http/https). CSV and text are read like a local file. Needs the network. |
 | Get data | Load from a database | A query or a whole table from SQLite (built in) or a database server (PostgreSQL and others, with an extra). Put the password in an environment variable and write `${VAR}`. |
-| Get data | Load NetCDF | One variable of a NetCDF file (`.nc`) as a table. Needs an extra package. |
-| Get data | Load HDF5 | One dataset of an HDF5 file as a table. Needs an extra package. |
+| Get data | Load NetCDF | One variable of a NetCDF file (`.nc`) as a table. |
+| Get data | Load HDF5 | One dataset of an HDF5 file as a table. |
+| Get data | Load sequences | A FASTA or FASTQ file as one row per sequence: id, length, GC%, and the sequence. |
+| Get data | Load variants | A VCF as one row per variant (INFO split into columns), or one row per variant and sample with genotypes. |
+| Get data | Load features | A GFF3, GTF or BED file as one row per feature, with named attributes lifted into columns. |
+| Get data | Load GenBank features | A GenBank file as one row per feature: locus, type, position, strand, gene/product/note. |
+| Get data | Load markers | A PLINK `.map` (and its `.ped`) as one row per marker, with a genotype column per sample. |
+| Get data | Load document | A PDF, Word, PowerPoint, EPUB or HTML file as one row per content block (text, heading, table…), each with a page and block, or as a catalog of the tables found (each written to a CSV). Uses MinerU; documents stay on your machine unless you allow upload. |
 | Get data | Type in a table | A small table you fill in yourself, like a short list of items or a lookup table. You can paste from Excel, and a pasted header row becomes the column names. |
 | Filter & sort | Filter rows | Keep or remove rows that match plain-English conditions or a formula. |
 | Filter & sort | Pick columns | Keep, remove, reorder or rename columns. |
@@ -382,7 +393,8 @@ place.
 
 Coordinates in a projected system (a UTM easting/northing, or another EPSG
 code) come onto the map through **Projected to lat/long**; UTM zones need
-nothing extra, and other systems use the optional `dancr[geo]` packages.
+nothing extra, and other systems are handled too (DANCR includes the projection
+and geometry libraries in the install).
 
 ## Reports
 
@@ -525,4 +537,5 @@ If a script or agent edits the project file, the open window reloads it.
 
 DANCR was designed and developed by Drew Greene (drewdgreene@gmail.com) and
 commissioned by Jens Dancer. Engine: Polars. UI: Qt / PySide6 / pyqtgraph.
-Icons: Phosphor (MIT).
+Icons: Phosphor (MIT). Document reading: MinerU (Apache-2.0),
+https://github.com/opendatalab/MinerU.

@@ -38,10 +38,10 @@
   1:110m Natural Earth outlines, so small islands and borders are simplified. The map draws an equirectangular
   or Mercator view, not a tiled web map; a point with a coordinate outside its range is drawn only if the
   coordinate columns were not cleaned with 'Make a point' first.
-- GeoPackage and shapefile loading, and reprojection of a non-UTM EPSG code, use the optional `dancr[geo]`
-  packages (pyogrio, shapely, pyproj). A source install adds them with `uv sync --extra geo`; the packaged
-  installers do not bundle them yet, so on a packaged install those two things show a message asking for the
-  extra (everything else about places works without them).
+- GeoPackage and shapefile loading, reprojection of a non-UTM EPSG code, database servers, and the
+  NetCDF/HDF5 readers all ship in the one install now (pyogrio, shapely, pyproj, SQLAlchemy, xarray, h5py).
+  The `[project.optional-dependencies]` groups (`geo`, `db`, `science`, `assistant`) remain only as aliases
+  for source installs; nothing asks the person to add an extra.
 
 - Load folder reads each file with the same reader as Load file; `diagonal` takes the union of the columns and
   relaxes types (a column that is a number in one file and text in another becomes text; missing values are blank),
@@ -79,9 +79,27 @@
 - A packaged RO-Crate is metadata-only by default; including the data (`--copy data`) or the result files
   (`--copy results`) copies them into the crate, which can be large. Units are recorded as UCUM codes only for the
   units `core/units.py` knows; an unknown unit keeps the form it was written in.
-- Load from a database (a server) and Load NetCDF / Load HDF5 use the optional `dancr[db]` / `dancr[science]`
-  packages; like `dancr[geo]`, the packaged installers do not bundle them yet, so a packaged install asks for the
-  extra. SQLite and URL reading need nothing beyond the standard library.
+- Load from a database (a server) and Load NetCDF / Load HDF5 are included in the install (SQLAlchemy, xarray,
+  h5py). SQLite and URL reading need nothing beyond the standard library.
+
+- Bio/lab ingestion (`load_sequences`, `load_variants`, `load_features`, `load_genbank`, `load_markers`)
+  turns FASTA/FASTQ, VCF, GFF/GTF/BED, GenBank and PLINK `.map`/`.ped` files into ordinary tables (plain or
+  gzip `.gz`/`.bgz` text). Each step reads the file into memory, so a very large one (millions of variants)
+  should be limited with `limit` or split first — unlike the streaming table readers. It reads text VCF only
+  (not binary `.bcf`), the non-binary PLINK forms (`.map`/`.ped`, not `.bed`/`.bim`/`.fam`), and each GenBank
+  record's features (the sequence itself is not read). A PLINK `.bed` is treated as a BED interval file, not a
+  PLINK binary genotype file. Variant genotypes are kept as written (`0/1`, `1|1`) with a computed `dosage`
+  column (0/1/2, null when missing). Load folder reads a directory of these as one table, like it does for
+  tables; `bio_params` passes reader settings (e.g. VCF `samples`) through.
+
+- Documents (`load_document`) are read through MinerU (Apache-2.0). The packaged DANCR bundles a relocatable
+  MinerU env (`.dancr-mineru`, with `basic` models) beside the app via `packaging/build-mineru.sh`, so documents
+  work with no separate install; a source checkout detects a repo `/.dancr-mineru`, `$DANCR_MINERU_HOME`,
+  `$DANCR_MINERU_CMD`, or `mineru-kit`/`mineru` on PATH, or a MinerU V1 endpoint (`$DANCR_MINERU_ENDPOINT`). It
+  can also read a folder MinerU already produced with no install (`engine=output`). Reading is local unless `allow_remote` is on. Block/table output shape depends on the
+  MinerU version; the parser is tolerant (middle_json, structured_content, content_list v1/v2, markdown, and the
+  `mineru parse --json` response). `what=tables` writes one CSV per table under `out_dir`. `dancr doctor` reports
+  whether MinerU is present; `dancr inspect` and the MCP `read_document` tool preview/read documents.
 
 Design and extension of the answer engine: `docs/ANSWERS.md`. Earlier plans and review worklists
 (all items done): `docs/history/`.

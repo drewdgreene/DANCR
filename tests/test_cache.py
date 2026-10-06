@@ -38,12 +38,15 @@ def saved_table(tmp_path: Path, name: str = "p.json") -> Pipeline:
 
 
 def test_the_fingerprint_follows_what_steps_import():
-    names = {f.relative_to(f.parents[1]).as_posix() if f.parent.name == "nodes" else f.name for f in engine_files()}
-    for must in ("executor.py", "expr.py", "fits.py", "render.py", "stats.py", "nodes/combine.py", "lod.py"):
-        assert must in names
+    paths = [f.as_posix() for f in engine_files()]
+    # must follow the modules a run executes, into packages (expr, geo) and the node packages (inquiry)
+    for must in ("core/executor.py", "core/expr/__init__.py", "core/expr/_parse.py", "core/fits.py",
+                 "core/geo/__init__.py", "core/geo/_world.py", "views/render.py", "views/stats.py",
+                 "nodes/combine.py", "nodes/inquiry/quality.py", "views/lod.py"):
+        assert any(p.endswith(must) for p in paths), must
     for never in ("understand.py", "recipes.py", "ask.py", "answers.py", "planner.py", "samples.py", "examples.py",
                   "mainwindow.py", "cli.py", "mcp_server.py", "headless.py"):
-        assert never not in names
+        assert not any(p.endswith("/" + never) for p in paths), never
     assert not any("/ui/" in f.as_posix() for f in engine_files())
 
 

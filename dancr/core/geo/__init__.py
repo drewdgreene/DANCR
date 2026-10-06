@@ -262,38 +262,6 @@ def lat_lon_pair(columns: list[tuple[str, Any, Any]]) -> tuple[str, str] | None:
     return None
 
 
-# =================================================================== the bundled basemap
-_WORLD_ASSET = Path(__file__).resolve().parent.parent / "assets" / "geo" / "world.geojson"
-
-
-@lru_cache(maxsize=1)
-def world_outlines() -> tuple[tuple[tuple[float, float], ...], ...]:
-    """The bundled world country outlines as (lon, lat) rings, read once and kept.
-
-    Public-domain Natural Earth 1:110m countries, simplified and rounded to two decimals. The app ships it,
-    so a map draws with no network and no tile server ever learns where the data is. Returns an empty tuple
-    if the asset is missing (a map then draws only the data).
-    """
-    try:
-        data = json.loads(_WORLD_ASSET.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return ()
-    rings: list[tuple[tuple[float, float], ...]] = []
-    for feat in data.get("features", []):
-        geom = feat.get("geometry") or {}
-        coords = geom.get("coordinates")
-        if not coords:
-            continue
-        polys = [coords] if geom.get("type") == "Polygon" else coords
-        for poly in polys:
-            for ring in poly:
-                rings.append(tuple((float(x), float(y)) for x, y in ring))
-    return tuple(rings)
-
-
-def world_bounds() -> tuple[float, float, float, float]:
-    """(lon_min, lon_max, lat_min, lat_max) of the whole world."""
-    return (-180.0, 180.0, -90.0, 90.0)
 
 
 def _same_stem(a: str, b: str) -> bool:
@@ -487,14 +455,14 @@ def vector_table(path: Path, layer: str | None = None) -> tuple["pl.DataFrame", 
     try:
         from pyogrio import raw as ogr
     except ImportError:
-        raise ValueError("Reading a GeoPackage or shapefile needs the optional 'pyogrio' package. "
-                         "Install 'dancr[geo]' (it brings shapely and pyproj as well)") from None
+        raise ValueError("Reading a GeoPackage or shapefile needs the 'pyogrio' package, which is missing from "
+                         "this build. Reinstall DANCR (or, in a source checkout, run 'uv sync')") from None
     try:
         import shapely
         from shapely.ops import transform as _shp_transform
     except ImportError:
-        raise ValueError("Reading the geometry of a GeoPackage or shapefile needs the optional 'shapely' package. "
-                         "Install 'dancr[geo]' for it") from None
+        raise ValueError("Reading the geometry of a GeoPackage or shapefile needs the 'shapely' package, which "
+                         "is missing from this build. Reinstall DANCR (or, in a source checkout, run 'uv sync')") from None
 
     layers = vector_layers(path)
     ref = str(layer).strip() if layer else None
@@ -515,8 +483,9 @@ def vector_table(path: Path, layer: str | None = None) -> tuple["pl.DataFrame", 
         try:
             from pyproj import Transformer
         except ImportError:
-            raise ValueError(f"{path.name} is in {crs}, which needs the optional 'pyproj' package to read as "
-                             "longitude/latitude. Install 'dancr[geo]', or reproject the file before loading it") from None
+            raise ValueError(f"{path.name} is in {crs}, which needs the 'pyproj' package to read as "
+                             "longitude/latitude. It is missing from this build — reinstall DANCR, or reproject "
+                             "the file before loading it") from None
         tr = Transformer.from_crs(crs, "EPSG:4326", always_xy=True)
         notes.append(f"Reprojected from {crs} to longitude/latitude (WGS84)")
     elif not crs:
@@ -549,119 +518,7 @@ def vector_table(path: Path, layer: str | None = None) -> tuple["pl.DataFrame", 
     return pl.DataFrame(rows, infer_schema_length=None), notes
 
 
-# =================================================================== polygons
-def parse_wkt_rings(wkt: Any) -> list[list[tuple[float, float]]]:
-    """A WKT Polygon/MultiPolygon as a list of rings, each a list of (lon, lat). Outer and inner rings are all
-    returned; ``point_in_polygon`` treats a point inside an even number of rings as outside. Empty for other
-    geometry (points, lines) or unreadable text."""
-    s = str(wkt or "").strip()
-    if "(" not in s:
-        return []
-    kind = s.split("(", 1)[0].strip().upper()
-    if kind not in ("POLYGON", "MULTIPOLYGON"):
-        return []
-    import re as _re
-    rings: list[list[tuple[float, float]]] = []
-    for body in _re.findall(r"\(([^()]*)\)", s):
-        pts = []
-        for pair in body.split(","):
-            parts = pair.split()
-            if len(parts) >= 2:
-                try:
-                    pts.append((float(parts[0]), float(parts[1])))
-                except ValueError:
-                    pass
-        if len(pts) >= 3:
-            rings.append(pts)
-    return rings
-
-
-def point_in_polygon(lon: float, lat: float, rings: list[list[tuple[float, float]]]) -> bool:
-    """Whether (lon, lat) is inside the polygon whose WKT parsed to ``rings`` (ray casting, holes handled by
-    the even-odd rule). Deterministic and dependency-free; good for admin boundaries and catchments."""
-    inside = False
-    for ring in rings:
-        n = len(ring)
-        j = n - 1
-        for i in range(n):
-            xi, yi = ring[i]
-            xj, yj = ring[j]
-            if (yi > lat) != (yj > lat) and lon < (xj - xi) * (lat - yi) / (yj - yi) + xi:
-                inside = not inside
-            j = i
-    return inside
-
-
-def ring_bounds(rings: list[list[tuple[float, float]]]) -> tuple[float, float, float, float] | None:
-    """(lon_min, lon_max, lat_min, lat_max) of a ring set, or None."""
-    pts = [p for ring in rings for p in ring]
-    if not pts:
-        return None
-    xs = [p[0] for p in pts]
-    ys = [p[1] for p in pts]
-    return min(xs), max(xs), min(ys), max(ys)
-
-
-# =================================================================== projected coordinates (UTM)
-# A dependency-free UTM inverse and forward (WGS84), good to about a metre — enough to bring projected
-# eastings/northings onto the map. For other projections, pyproj is used when it is installed.
-_A, _F = 6378137.0, 1 / 298.257223563
-_E2 = _F * (2 - _F)
-_K0 = 0.9996
-_EP2 = _E2 / (1 - _E2)
-_E1 = (1 - math.sqrt(1 - _E2)) / (1 + math.sqrt(1 - _E2))
-
-
-def utm_to_latlon(easting: float, northing: float, zone: int, south: bool) -> tuple[float, float]:
-    """(lat, lon) of a UTM easting/northing in a zone (WGS84)."""
-    x = float(easting) - 500000.0
-    y = float(northing) - (10_000_000.0 if south else 0.0)
-    m = y / _K0
-    mu = m / (_A * (1 - _E2 / 4 - 3 * _E2 ** 2 / 64 - 5 * _E2 ** 3 / 256))
-    phi1 = (mu + (3 * _E1 / 2 - 27 * _E1 ** 3 / 32) * math.sin(2 * mu)
-            + (21 * _E1 ** 2 / 16) * math.sin(4 * mu) + (151 * _E1 ** 3 / 96) * math.sin(6 * mu))
-    c1 = _EP2 * math.cos(phi1) ** 2
-    t1 = math.tan(phi1) ** 2
-    n1 = _A / math.sqrt(1 - _E2 * math.sin(phi1) ** 2)
-    r1 = n1 * (1 - _E2) / (1 - _E2 * math.sin(phi1) ** 2)
-    d = x / (n1 * _K0)
-    lat = phi1 - (n1 * math.tan(phi1) / r1) * (
-        d ** 2 / 2 - (5 + 3 * t1 + 10 * c1 - 4 * c1 ** 2 - 9 * _EP2) * d ** 4 / 24
-        + (61 + 90 * t1 + 298 * c1 + 45 * t1 ** 2 - 252 * _EP2 - 3 * c1 ** 2) * d ** 6 / 720)
-    lon = (d - (1 + 2 * t1 + c1) * d ** 3 / 6
-           + (5 - 2 * c1 + 28 * t1 - 3 * c1 ** 2 + 8 * _EP2 + 24 * t1 ** 2) * d ** 5 / 120) / math.cos(phi1)
-    lon0 = math.radians((zone - 1) * 6 - 180 + 3)
-    return math.degrees(lat), math.degrees(lon0 + lon)
-
-
-def latlon_to_utm(lat: float, lon: float, zone: int, south: bool) -> tuple[float, float]:
-    """(easting, northing) of a lat/lon in a UTM zone (WGS84)."""
-    lat_r = math.radians(lat)
-    lon0 = math.radians((zone - 1) * 6 - 180 + 3)
-    n = _A / math.sqrt(1 - _E2 * math.sin(lat_r) ** 2)
-    t = math.tan(lat_r) ** 2
-    c = _EP2 * math.cos(lat_r) ** 2
-    a = math.cos(lat_r) * (math.radians(lon) - lon0)
-    m = _A * ((1 - _E2 / 4 - 3 * _E2 ** 2 / 64 - 5 * _E2 ** 3 / 256) * lat_r
-              - (3 * _E2 / 8 + 3 * _E2 ** 2 / 32 + 45 * _E2 ** 3 / 1024) * math.sin(2 * lat_r)
-              + (15 * _E2 ** 2 / 256 + 45 * _E2 ** 3 / 1024) * math.sin(4 * lat_r)
-              - (35 * _E2 ** 3 / 3072) * math.sin(6 * lat_r))
-    easting = _K0 * n * (a + (1 - t + c) * a ** 3 / 6 + (5 - 18 * t + t ** 2 + 72 * c - 58 * _EP2) * a ** 5 / 120) + 500000.0
-    northing = _K0 * (m + n * math.tan(lat_r) * (a ** 2 / 2 + (5 - t + 9 * c + 4 * c ** 2) * a ** 4 / 24
-                       + (61 - 58 * t + t ** 2 + 600 * c - 330 * _EP2) * a ** 6 / 720))
-    if south:
-        northing += 10_000_000.0
-    return easting, northing
-
-
-def utm_zone(lon: float, lat: float) -> tuple[int, bool]:
-    """The UTM zone number (1–60) and whether it is the southern hemisphere for a lon/lat."""
-    zone = int((lon + 180) / 6) + 1
-    zone = min(60, max(1, zone))
-    return zone, lat < 0
-
-
-def looks_projected(emin: float, emax: float, nmin: float, nmax: float) -> bool:
-    """Easting/northing ranges too large to be degrees: a projected coordinate system (UTM values are in the
-    hundreds of thousands)."""
-    return abs(emax) > 180 or abs(nmin) > 90 or (abs(emax) > 1e5 and abs(nmax) > 1e5)
+# extracted leaf modules, re-exported so `geo.world_outlines` etc. stay valid
+from ._geometry import parse_wkt_rings, point_in_polygon, ring_bounds  # noqa: E402
+from ._projection import latlon_to_utm, looks_projected, utm_to_latlon, utm_zone  # noqa: E402
+from ._world import world_bounds, world_outlines  # noqa: E402

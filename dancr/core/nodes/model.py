@@ -24,7 +24,7 @@ def _fit(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, Any]
     group = params.get("group") or None
     if group:
         group = require_column(schema, group, "group column")
-    fits = fit_frame(lf, x, y, kind, int(number_param(params, "degree", 2, "The degree", whole=True, at_least=1)), group)
+    fits = fit_frame(lf, x, y, kind, int(number_param(params, "degree", 2, "The degree", whole=True, at_least=1, at_most=6)), group)
     pred_name = params.get("predicted_column") or f"{y}_fitted"
     resid_name = f"{y}_residual"
     for name in (pred_name, resid_name):

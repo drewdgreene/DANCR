@@ -21,210 +21,20 @@ from typing import Any, Callable
 
 import polars as pl
 
-from .params import find_input
+from ..params import find_input
 
 
-class FormulaError(ValueError):
-    def __init__(self, message: str, pos: int | None = None) -> None:
-        super().__init__(message)
-        self.pos = pos
-
-
-# ----------------------------------------------------------------- tokenizer
-_TOKEN_RE = re.compile(r"""
-    (?P<ws>\s+)
-  | (?P<number>(?:\d+\.\d*|\.\d+|\d+)(?:[eE][+-]?\d+)?)
-  | (?P<string>"(?:[^"]|"")*"|'(?:[^']|'')*')
-  | (?P<bracket>\[[^\]]+\])
-  | (?P<backtick>`[^`]+`)
-  | (?P<ident>[^\W\d][\w.]*)
-  | (?P<op><=|>=|<>|!=|==|[-+*/^%&<>=(),])
-""", re.VERBOSE)
-
-
-@dataclass
-class Tok:
-    kind: str
-    text: str
-    pos: int
-
-
-def tokenize(src: str) -> list[Tok]:
-    out: list[Tok] = []
-    i = 0
-    while i < len(src):
-        m = _TOKEN_RE.match(src, i)
-        if not m:
-            raise FormulaError(f"Unexpected character {src[i]!r}", i)
-        kind = m.lastgroup or ""
-        if kind != "ws":
-            out.append(Tok(kind, m.group(0), i))
-        i = m.end()
-    out.append(Tok("eof", "", len(src)))
-    return out
-
-
-# ----------------------------------------------------------------- AST
-@dataclass
-class Num:
-    value: float
-@dataclass
-class Str:
-    value: str
-@dataclass
-class Col:
-    name: str
-    pos: int
-@dataclass
-class Const:
-    name: str          # TRUE FALSE NULL
-@dataclass
-class Unary:
-    op: str
-    operand: Any
-@dataclass
-class Binary:
-    op: str
-    left: Any
-    right: Any
-@dataclass
-class Call:
-    name: str
-    args: list[Any]
-    pos: int
-
-
-class Parser:
-    def __init__(self, src: str) -> None:
-        self.src = src
-        self.toks = tokenize(src)
-        self.i = 0
-
-    def peek(self) -> Tok:
-        return self.toks[self.i]
-
-    def take(self) -> Tok:
-        t = self.toks[self.i]
-        self.i += 1
-        return t
-
-    def expect(self, text: str) -> Tok:
-        t = self.take()
-        if t.text != text:
-            raise FormulaError(f"Expected {text!r} but found {t.text!r}" if t.text else f"Expected {text!r} before the end", t.pos)
-        return t
-
-    def parse(self) -> Any:
-        node = self.parse_or()
-        t = self.peek()
-        if t.kind != "eof":
-            raise FormulaError(f"Unexpected {t.text!r}", t.pos)
-        return node
-
-    def parse_or(self) -> Any:
-        left = self.parse_and()
-        while self.peek().text.lower() == "or":
-            self.take()
-            left = Binary("or", left, self.parse_and())
-        return left
-
-    def parse_and(self) -> Any:
-        left = self.parse_not()
-        while self.peek().text.lower() == "and":
-            self.take()
-            left = Binary("and", left, self.parse_not())
-        return left
-
-    def parse_not(self) -> Any:
-        if self.peek().text.lower() == "not":
-            self.take()
-            return Unary("not", self.parse_not())
-        return self.parse_cmp()
-
-    def parse_cmp(self) -> Any:
-        left = self.parse_concat()
-        t = self.peek()
-        if t.text in ("=", "==", "!=", "<>", "<", ">", "<=", ">="):
-            self.take()
-            right = self.parse_concat()
-            op = {"==": "=", "<>": "!="}.get(t.text, t.text)
-            return Binary(op, left, right)
-        return left
-
-    def parse_concat(self) -> Any:
-        left = self.parse_add()
-        while self.peek().text == "&":
-            self.take()
-            left = Binary("&", left, self.parse_add())
-        return left
-
-    def parse_add(self) -> Any:
-        left = self.parse_mul()
-        while self.peek().text in ("+", "-"):
-            op = self.take().text
-            left = Binary(op, left, self.parse_mul())
-        return left
-
-    def parse_mul(self) -> Any:
-        left = self.parse_pow()
-        while self.peek().text in ("*", "/", "%"):
-            op = self.take().text
-            left = Binary(op, left, self.parse_pow())
-        return left
-
-    def parse_pow(self) -> Any:
-        """Excel precedence: a sign binds tighter than ^ (-2^2 = 4), and ^ works left to right (2^3^2 = 64)."""
-        left = self.parse_signed()
-        while self.peek().text == "^":
-            self.take()
-            left = Binary("^", left, self.parse_signed())
-        return left
-
-    def parse_signed(self) -> Any:
-        if self.peek().text == "-":
-            self.take()
-            return Unary("-", self.parse_signed())
-        if self.peek().text == "+":
-            self.take()
-            return self.parse_signed()
-        return self.parse_atom()
-
-    def parse_atom(self) -> Any:
-        t = self.take()
-        if t.kind == "number":
-            text = t.text
-            # a whole number stays whole, however long: 1234567890123456789 as a float is its neighbour too
-            return Num(int(text) if text.isdigit() else float(text))
-        if t.kind == "string":
-            # as in Excel: a backslash is just a character ("C:\\new"), a quote inside text is doubled ("say ""hi""")
-            q = t.text[0]
-            return Str(t.text[1:-1].replace(q + q, q))
-        if t.kind == "bracket":
-            return Col(t.text[1:-1].strip(), t.pos)
-        if t.kind == "backtick":
-            return Col(t.text[1:-1].strip(), t.pos)
-        if t.text == "(":
-            node = self.parse_or()
-            self.expect(")")
-            return node
-        if t.kind == "ident":
-            low = t.text.lower()
-            if low in ("true", "false", "null"):
-                return Const(low)
-            if self.peek().text == "(":
-                self.take()
-                args: list[Any] = []
-                if self.peek().text != ")":
-                    args.append(self.parse_or())
-                    while self.peek().text == ",":
-                        self.take()
-                        args.append(self.parse_or())
-                self.expect(")")
-                return Call(t.text.upper(), args, t.pos)
-            return Col(t.text, t.pos)
-        if t.kind == "eof":
-            raise FormulaError("The formula ends too early", t.pos)
-        raise FormulaError(f"Unexpected {t.text!r}", t.pos)
+from ._parse import (  # noqa: E402 - the compiler dispatches on these node types
+    Binary,
+    Call,
+    Col,
+    Const,
+    FormulaError,
+    Num,
+    Parser,
+    Str,
+    Unary,
+)
 
 
 # ----------------------------------------------------------------- compiler
@@ -254,12 +64,15 @@ class Typed:
 
 
 class Compiler:
-    def __init__(self, schema: dict[str, pl.DataType], inputs: dict[str, Any] | None = None) -> None:
+    def __init__(self, schema: dict[str, pl.DataType], inputs: dict[str, Any] | None = None,
+                 *, strict_columns: bool = False, notes: list[str] | None = None) -> None:
         self.schema = schema
         self.lower = {k.lower(): k for k in schema}
         self.columns_used: set[str] = set()
         self.inputs = inputs or {}
         self.inputs_used: set[str] = set()
+        self.strict_columns = strict_columns
+        self.notes = notes if notes is not None else []     # things worth telling the person (a forgiving match)
 
     # -- columns ----------------------------------------------------------
     def resolve_column(self, name: str, pos: int) -> str:
@@ -267,11 +80,17 @@ class Compiler:
             return name
         if name.lower() in self.lower:
             return self.lower[name.lower()]
-        # forgiving: strip spaces/underscores
+        # forgiving: strip spaces/underscores. Announced in `notes`, or refused outright in strict mode, so a typo
+        # never silently binds to the wrong (but plausible) column.
         squash = lambda s: re.sub(r"[\s_]+", "", s.lower())
         squashed = [c for c in self.schema if squash(c) == squash(name)]
         if len(squashed) == 1:
-            return squashed[0]
+            real = squashed[0]
+            if self.strict_columns:
+                raise FormulaError(f"{name!r} is not the exact column name {real!r}. Write it exactly, or turn off "
+                                   "'Column names must match exactly'", pos)
+            self.notes.append(f"matched “{name}” to column “{real}” (spaces and underscores are ignored)")
+            return real
         if len(squashed) > 1:
             raise FormulaError(f"{name!r} could mean {squashed[0]!r} or {squashed[1]!r}. Write the exact name in [brackets]", pos)
         close = [c for c in self.schema if name.lower()[:3] and name.lower()[:3] in c.lower()]
@@ -335,7 +154,7 @@ class Compiler:
 
     def coerce_time_literal(self, a: Typed, b: Typed) -> tuple[Typed, Typed]:
         """If one side is date/time and the other a text literal, parse the literal to match the column."""
-        from .dtypes import datetime_literal, align_time_column
+        from ..dtypes import datetime_literal, align_time_column
         if a.kind == TIME and b.kind == STR and isinstance(b.literal, str):
             b = Typed(datetime_literal(b.literal, a.dtype or pl.Datetime("us"), "date"), TIME, dtype=a.dtype)
             if a.dtype is not None and isinstance(a.dtype, pl.Date):
@@ -348,6 +167,34 @@ class Compiler:
             b = Typed(align_time_column(b.expr, b.dtype, a.dtype), TIME, dtype=a.dtype)
         if (a.kind == TIME and b.kind == NUM) or (a.kind == NUM and b.kind == TIME):
             raise FormulaError("Cannot compare a date/time with a plain number. Write the date as text, e.g. \"2024-06-01\"")
+        if (a.kind == TIME and b.kind == BOOL) or (a.kind == BOOL and b.kind == TIME):
+            raise FormulaError("Cannot compare a date/time with a true/false value")
+        return a, b
+
+    def coerce_duration_compare(self, a: Typed, b: Typed) -> tuple[Typed, Typed]:
+        """A duration compares with another duration, with a text span ("1d"), or with a blank; anything else
+        (a plain number, a date, true/false) is refused rather than failing later inside Polars. Both sides
+        are taken to microseconds, so a span read here and a duration a column holds keep the same unit."""
+        from ..timeutil import parse_duration
+        other = b if a.kind == DUR else a
+        if other.kind == ANY:
+            return a, b                                 # a blank compares blank: leave the duration alone
+        if other.kind == STR and isinstance(other.literal, str):
+            try:
+                _text, secs = parse_duration(other.literal)
+            except ValueError as e:
+                raise FormulaError(f"Cannot read {other.literal!r} as a time span: {e}") from None
+            span = Typed(pl.lit(round(secs * 1e6), pl.Int64), NUM)
+            if a.kind == DUR:
+                b = span
+            else:
+                a = span
+        elif other.kind != DUR:
+            raise FormulaError("Cannot compare a duration with a plain number. Write the span as text, e.g. \"1d\"")
+        if a.kind == DUR:
+            a = Typed(a.expr.dt.total_microseconds().cast(pl.Float64), NUM)
+        if b.kind == DUR:
+            b = Typed(b.expr.dt.total_microseconds().cast(pl.Float64), NUM)
         return a, b
 
     def c_Binary(self, n: Binary) -> Typed:
@@ -359,10 +206,12 @@ class Compiler:
         a, b = self.compile(n.left), self.compile(n.right)
         if op in ("=", "!=", "<", ">", "<=", ">="):
             a, b = self.coerce_time_literal(a, b)
+            if DUR in (a.kind, b.kind):
+                a, b = self.coerce_duration_compare(a, b)
             if a.kind == STR and b.kind == NUM or a.kind == NUM and b.kind == STR:
                 # numbers kept as text (a column never converted): compare them as numbers, so "10" > 5 and
                 # "1" = 1.0; text that is not a number gives a blank answer, which filters treat as false
-                from .dtypes import text_to_number_expr
+                from ..dtypes import text_to_number_expr
                 if a.kind == STR:
                     a = Typed(text_to_number_expr(a.expr), NUM)
                 else:
@@ -391,6 +240,14 @@ class Compiler:
         if op == "*":
             return Typed(_wide(a) * _wide(b), self._numkind(a, b))
         if op == "/":
+            if a.kind == DUR and b.kind == DUR:          # a duration divided by a duration is a plain ratio
+                den = b.expr.cast(pl.Float64)
+                return Typed(pl.when(den == 0).then(None).otherwise(a.expr.cast(pl.Float64) / den), NUM)
+            if a.kind == DUR and b.kind in (NUM, ANY):   # a duration scaled by a number stays a duration
+                den = b.expr.cast(pl.Float64)
+                return Typed(pl.when(den == 0).then(None).otherwise(a.expr / b.expr), DUR)
+            if b.kind == DUR:
+                raise FormulaError("Cannot divide a number by a duration")
             self._numkind(a, b)
             den = b.expr.cast(pl.Float64)
             # dividing by zero has no answer (Excel shows #DIV/0!): a blank, not an infinity that breaks charts and totals
@@ -559,10 +416,19 @@ def excel_round(e: pl.Expr, digits: int = 0) -> pl.Expr:
     """Round as Excel does: halves away from zero (2.5 -> 3, -2.5 -> -3), and a value that is a half in
     decimal but not quite in binary counts as a half (1.005 -> 1.01). ``digits`` may be negative (-2 rounds
     to hundreds)."""
-    scale = 10.0 ** digits
-    # 15 significant digits first, as Excel keeps: 1.005 * 100 is 100.49999999999999 in binary, which is the
-    # 100.5 the person typed, while 2.4999999999 stays below the half
+    try:
+        scale = 10.0 ** digits
+    except OverflowError:
+        scale = float("inf")
     x = e.cast(pl.Float64)
+    # digits so large that no fractional place is left: the value is unchanged, as Excel leaves it. digits so
+    # negative that the scale underflows to zero: every value rounds to zero (never a NaN from 0 * inf).
+    if scale == float("inf"):
+        return x
+    if scale == 0.0:
+        return pl.lit(0.0)
+    # 15 significant digits first, as Excel keeps: 1.005 * 100 is 100.49999999999 in binary, which is the
+    # 100.5 the person typed, while 2.4999999999 stays below the half
     scaled = x * scale
     # at 1e15 and beyond a double has no fractional digits left to round: the value stays as it is
     small = scaled.abs() < 1e15
@@ -585,13 +451,18 @@ def _f_coalesce(c: Compiler, args: list[Typed]) -> Typed:
     return Typed(pl.coalesce([a.expr for a in args]), _same_kind(args, "COALESCE / IFNULL"))
 
 
+def _empty(e: pl.Expr, kind: str) -> pl.Expr:
+    """A true/false expression that is true where the value counts as empty: a blank, a NaN number, or text
+    that is only spaces. One rule, shared by ISBLANK/ISNULL and COUNT so they never disagree."""
+    if kind == STR:
+        return e.is_null() | (e.cast(pl.Utf8).str.strip_chars() == "")
+    if kind == NUM:
+        return e.is_null() | e.cast(pl.Float64).is_nan()
+    return e.is_null()
+
+
 def _f_isnull(c: Compiler, args: list[Typed]) -> Typed:
-    e = args[0].expr
-    if args[0].kind == STR:
-        return Typed(e.is_null() | (e.cast(pl.Utf8).str.strip_chars() == ""), BOOL)
-    if args[0].kind == NUM:
-        return Typed(e.is_null() | e.cast(pl.Float64).is_nan(), BOOL)
-    return Typed(e.is_null(), BOOL)
+    return Typed(_empty(args[0].expr, args[0].kind), BOOL)
 
 
 def _f_concat(c: Compiler, args: list[Typed]) -> Typed:
@@ -680,7 +551,7 @@ def _f_text(c: Compiler, args: list[Typed]) -> Typed:
 
 
 def _f_value(c: Compiler, args: list[Typed]) -> Typed:
-    from .dtypes import text_to_number_expr
+    from ..dtypes import text_to_number_expr
     e = text_to_number_expr(args[0].expr) if args[0].kind == STR else args[0].expr.cast(pl.Float64, strict=False)
     return Typed(e, NUM)
 
@@ -699,7 +570,7 @@ def _f_date(c: Compiler, args: list[Typed]) -> Typed:
         raise FormulaError("DATE of a number needs a unit. Use DATE(TEXT(x)) or convert the column type first")
     # the formats DANCR reads everywhere, month first when a date reads both ways (01/02/2024 is 2 January),
     # tried in order for each value; times with a UTC offset need their format given
-    from .timeutil import DATE_FORMATS, DAY_FIRST, has_offset
+    from ..timeutil import DATE_FORMATS, DAY_FIRST, has_offset
     text = e.cast(pl.Utf8).str.strip_chars()
     fmts = []
     for f in DATE_FORMATS:
@@ -850,7 +721,15 @@ def _f_rank(c: Compiler, args: list[Typed]) -> Typed:
 
 
 def _f_count(c: Compiler, args: list[Typed]) -> Typed:
-    return Typed(args[0].expr.count(), NUM)
+    """Number of non-empty values: a blank, a NaN or whitespace-only text does not count, matching ISBLANK."""
+    return Typed((~_empty(args[0].expr, args[0].kind)).sum(), NUM)
+
+
+def _f_pow(c: Compiler, args: list[Typed]) -> Typed:
+    """POW(x, y): exactly what x^y does, so an answer with no value (a negative base to a fractional power)
+    is a blank, never a NaN."""
+    c._numkind(args[0], args[1])
+    return Typed(_finite(_num(args[0]).cast(pl.Float64).pow(_num(args[1]).cast(pl.Float64))), NUM)
 
 
 def _f_pi(c: Compiler, args: list[Typed]) -> Typed:
@@ -866,7 +745,7 @@ FUNCTIONS: dict[str, tuple[int, int | None, Callable[[Compiler, list[Typed]], Ty
     "LN": (1, 1, _simple(lambda e: _finite(e.log())), "Natural log"),
     "LOG": (1, 2, _f_log, "LOG(x) base 10, or LOG(x, base)"),
     "LOG2": (1, 1, _simple(lambda e: e.log(2)), "Log base 2"),
-    "POW": (2, 2, lambda c, a: Typed(_num(a[0]).pow(_num(a[1])), NUM), "POW(x, y) = x^y"),
+    "POW": (2, 2, _f_pow, "POW(x, y) = x^y"),
     "ROUND": (1, 2, _f_round, "ROUND(x, digits)"),
     "FLOOR": (1, 1, _simple(lambda e: e.floor()), "Round down"),
     "CEIL": (1, 1, _simple(lambda e: e.ceil()), "Round up"),
@@ -959,13 +838,17 @@ def function_docs() -> list[tuple[str, str]]:
 
 
 # ----------------------------------------------------------------- public API
-def compile_formula(src: str, schema: dict[str, pl.DataType], inputs: dict[str, Any] | None = None) -> tuple[pl.Expr, str, set[str]]:
-    """Parse and compile. Returns (expr, result_kind, columns_used). `inputs` are named project values."""
+def compile_formula(src: str, schema: dict[str, pl.DataType], inputs: dict[str, Any] | None = None,
+                    *, strict_columns: bool = False, notes: list[str] | None = None) -> tuple[pl.Expr, str, set[str]]:
+    """Parse and compile. Returns (expr, result_kind, columns_used). `inputs` are named project values.
+
+    A forgiving column match (spaces/underscores ignored) is written into ``notes`` so a caller can tell the
+    person; with ``strict_columns`` it is refused instead."""
     if not src or not src.strip():
         raise FormulaError("The formula is empty")
     try:
         tree = Parser(src).parse()
-        c = Compiler(dict(schema), inputs)
+        c = Compiler(dict(schema), inputs, strict_columns=strict_columns, notes=notes)
         t = c.compile(tree)
     except RecursionError:
         raise FormulaError("The formula is too long or too deeply nested") from None

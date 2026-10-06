@@ -105,6 +105,23 @@ def study(d: Path) -> list[str]:
     return ["lab data.xlsx"]
 
 
+def trial(d: Path) -> list[str]:
+    """A plant-breeding trial: headers that spell the quantity out (grain yield q ha, plant height cm), so a
+    question can say the everyday word (yield, height) and still land on the right column."""
+    rng = np.random.default_rng(7)
+    n = 120
+    lines = [f"VYL-{i:03d}" for i in range(1, 21)]
+    mult = {"irrigated": 1.12, "rainfed": 1.0, "drought_stress": 0.74}
+    treat = [["drought_stress", "irrigated", "rainfed"][i % 3] for i in range(n)]
+    pl.DataFrame({
+        "line": [lines[i % len(lines)] for i in range(n)],
+        "treatment": treat,
+        "grain_yield_q_ha": np.round([88 * mult[t] for t in treat] + rng.normal(0, 5, n), 2),
+        "plant_height_cm": np.round(rng.normal(245, 15, n), 1),
+    }).write_csv(d / "trial.csv")
+    return ["trial.csv"]
+
+
 CASES = {
     "study": (study, ["compare treated and control", "is there a difference between treated and control",
                       "is mass per area higher in treated samples", "t test inner area", "average inner area",
@@ -125,8 +142,10 @@ CASES = {
     "trap": (trap, ["total visit_cost by drug", "visit_cost by patient"]),
     "plain": (plain, ["weight against length", "average weight", "spread of width"]),
     "stock": (stock, ["total units by city", "average units"]),
+    "trial": (trial, ["average grain yield by treatment", "average plant height by treatment",
+                      "yields by treatment", "top 5 lines by grain yield",
+                      "compare drought_stress and irrigated"]),
 }
-
 
 # ------------------------------------------------------------------- the check
 def describe(p: Pipeline, questions: list[str]) -> dict:

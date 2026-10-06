@@ -4,7 +4,7 @@
   same reader as Load file (layout, dates, numbers), so a remote export is read like a local one. Only the
   standard library is needed; the bytes are cached under the project's results folder.
 - ``load_sql`` runs a query (or reads a whole table) from SQLite (built in) or a database server (PostgreSQL and
-  others, through the optional ``dancr[db]`` — SQLAlchemy and a driver).
+  others, through SQLAlchemy and a driver, which ship with DANCR).
 
 Connection strings and passwords should be written as ``${ENV_VAR}`` and kept in the environment; a connector's
 settings are redacted wherever they are shown (see :mod:`dancr.core.secrets`). Reading here reaches the network,
@@ -13,8 +13,10 @@ so DANCR is no longer strictly offline once you add one of these steps.
 from __future__ import annotations
 
 import hashlib
+import os
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -52,17 +54,57 @@ def _short(url: str) -> str:
 
 
 # =================================================================== load_url
-def _fetch(url: str, headers: dict[str, str], timeout: int) -> bytes:
+MAX_DOWNLOAD_BYTES = 2 * 1024 ** 3      # 2 GiB: a limit, so an endless or huge URL cannot exhaust memory
+
+
+def _download(ctx: Ctx, url: str, headers: dict[str, str], timeout: int, ext: str) -> tuple[Path, int]:
+    """Stream a URL to a cached local file, hashing as it goes (no whole-body buffer), with a size cap.
+    Returns (local path, byte count)."""
+    import atexit
+    import shutil
+    import tempfile
     import urllib.error
     import urllib.request
+    if ctx.cache_dir is not None:
+        root = Path(ctx.cache_dir)
+    else:                                        # no project cache: a private temp folder, removed at exit
+        root = Path(tempfile.mkdtemp(prefix="dancr-url-"))
+        atexit.register(shutil.rmtree, root, ignore_errors=True)
+    folder = root / ctx.node_id / ".downloads"
+    folder.mkdir(parents=True, exist_ok=True)
     req = urllib.request.Request(url, headers=headers or {})
+    h = hashlib.sha1()
+    size = 0
+    tmp = folder / f".{os.getpid()}.{uuid.uuid4().hex[:8]}.download.tmp"
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:  # noqa: S310 - the user named this URL
-            return r.read()
+            with open(tmp, "wb") as f:
+                while True:
+                    chunk = r.read(1 << 20)
+                    if not chunk:
+                        break
+                    size += len(chunk)
+                    if size > MAX_DOWNLOAD_BYTES:
+                        raise ValueError(f"{_short(url)} is larger than {MAX_DOWNLOAD_BYTES // 2**30} GiB. "
+                                         "Download it to a file and load that instead")
+                    h.update(chunk)
+                    f.write(chunk)
     except urllib.error.HTTPError as e:
+        tmp.unlink(missing_ok=True)
         raise ValueError(f"{_short(url)} answered {e.code}: {e.reason}") from e
     except urllib.error.URLError as e:
+        tmp.unlink(missing_ok=True)
         raise ValueError(f"Could not reach {_short(url)}: {e.reason}") from e
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        raise
+    name = hashlib.sha1(url.encode()).hexdigest()[:16] + h.hexdigest()[:8] + ext
+    target = folder / name
+    if target.exists():
+        tmp.unlink(missing_ok=True)
+    else:
+        os.replace(tmp, target)
+    return target, size
 
 
 def _head(url: str, headers: dict[str, str], timeout: int) -> dict[str, Any]:
@@ -85,22 +127,6 @@ def _url_ext(url: str, fmt: str) -> str:
     return suffix if suffix in (".csv", ".tsv", ".txt", ".parquet", ".pq", ".json", ".ndjson", ".dat") else ".csv"
 
 
-def _download_path(ctx: Ctx, url: str, data: bytes, ext: str) -> Path:
-    root = Path(ctx.cache_dir) if ctx.cache_dir is not None else Path(__import__("tempfile").mkdtemp(prefix="dancr-url-"))
-    folder = root / ctx.node_id / ".downloads"
-    folder.mkdir(parents=True, exist_ok=True)
-    name = hashlib.sha1(url.encode()).hexdigest()[:16] + hashlib.sha1(data).hexdigest()[:8] + ext
-    target = folder / name
-    if not target.exists():
-        tmp = target.with_name("." + target.name + ".tmp")
-        try:
-            tmp.write_bytes(data)
-            tmp.replace(target)
-        finally:
-            tmp.unlink(missing_ok=True)
-    return target
-
-
 def _url_digest(directory: Path, params: dict[str, Any]) -> Any:
     """What changes when the remote data does: the URL (redacted) plus, when it can be reached, the server's
     ETag/Last-Modified, remembered for a short time so a cache check does not hammer the server."""
@@ -111,7 +137,9 @@ def _url_digest(directory: Path, params: dict[str, Any]) -> Any:
     base: dict[str, Any] = {"url": redact(url)}
     if params.get("check_remote", True):
         try:
-            base.update(_memo(f"head:{url}:{sorted(headers.items())}", 30.0, lambda: _head(url, headers, 15)))
+            # hash the cache key: an Authorization header expanded from ${TOKEN} must not sit in a module global
+            memo_key = "head:" + hashlib.sha1((url + repr(sorted(headers.items()))).encode()).hexdigest()
+            base.update(_memo(memo_key, 30.0, lambda: _head(url, headers, 15)))
         except Exception:  # noqa: BLE001 - an unreachable URL simply contributes less to the hash
             pass
     return base
@@ -123,21 +151,22 @@ def _load_url(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str,
         raise ValueError("Give a URL to read")
     headers = _url_headers(params)
     fmt = str(params.get("format") or "auto").lower()
-    data = _fetch(url, headers, int(params.get("timeout") or 60))
     ext = _url_ext(url, fmt)
-    local = _download_path(ctx, url, data, ext)
-    note = f"Read {len(data):,} bytes from {_short(url)}"
+    local, size = _download(ctx, url, headers, int(params.get("timeout") or 60), ext)
+    note = f"Read {size:,} bytes from {_short(url)}"
+    # the URL is redacted in the report too: it may carry a token or a password in its query string
+    report_url = redact(url)
     if ext in (".parquet", ".pq"):
-        return NodeResult(pl.read_parquet(local).lazy(), messages=[note], report={"url": url, "bytes": len(data)})
+        return NodeResult(pl.read_parquet(local).lazy(), messages=[note], report={"url": report_url, "bytes": size})
     if ext in (".json", ".ndjson"):
         try:
             df = pl.read_json(local)
         except Exception:  # noqa: BLE001 - an ndjson file
             df = pl.read_ndjson(local)
-        return NodeResult(df.lazy(), messages=[note], report={"url": url, "bytes": len(data)})
+        return NodeResult(df.lazy(), messages=[note], report={"url": report_url, "bytes": size})
     opts = {k: params.get(k) for k in SHARED if params.get(k) is not None}
     lf, msgs, rep = scan_file(ctx, {**opts, "path": str(local)})
-    return NodeResult(lf, report={**rep, "url": url, "bytes": len(data)}, messages=[note] + msgs)
+    return NodeResult(lf, report={**rep, "url": report_url, "bytes": size}, messages=[note] + msgs)
 
 
 registry.register(NodeType(
@@ -211,8 +240,8 @@ def _connect_read(conn: str, sql: str) -> pl.DataFrame:
     try:
         import sqlalchemy  # noqa: F401  (SQLAlchemy is what turns a URI into a connection)
     except ImportError:
-        raise ValueError("Reading a database server (PostgreSQL and others) needs the optional SQLAlchemy "
-                         "package. Install 'dancr[db]'") from None
+        raise ValueError("Reading a database server (PostgreSQL and others) needs SQLAlchemy, which is missing "
+                         "from this build. Reinstall DANCR (or, in a source checkout, run 'uv sync')") from None
     return pl.read_database_uri(sql, conn)
 
 
@@ -270,7 +299,7 @@ def _load_sql(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str,
 registry.register(NodeType(
     key="load_sql", label="Load from a database", category="Get data", icon="table", kind="source", inputs=[],
     description="Read a query or a whole table from SQLite (built in) or a database server (PostgreSQL and "
-                "others, through the optional dancr[db]). Put credentials in ${ENV_VAR}.",
+                "others, through SQLAlchemy, included). Put credentials in ${ENV_VAR}.",
     apply=_load_sql, source_digest=_sql_digest,
     summary=lambda p: (str(p.get("table") or "query") + " from " + (str(p.get("connection") or "").split("://", 1)[0] or "?")),
     params=[

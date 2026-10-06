@@ -89,11 +89,21 @@ def check_window(exe: str, work: Path) -> None:
     print("window ok")
 
 
+def check_doctor(exe: str, work: Path) -> None:
+    """Every capability ships in the one install: the frozen app must already carry geo, database and
+    NetCDF/HDF5 support, with nothing to add."""
+    out = json.loads(cli(exe, "--json", "doctor"))
+    if not out.get("ok"):
+        sys.exit(f"the frozen build is missing capabilities: {out.get('missing')}")
+    print(f"doctor ok: {len(out.get('present', {}))} packages present")
+
+
 def main() -> None:
     exe = sys.argv[1]
     work = Path(sys.argv[2] if len(sys.argv) > 2 else "smoke").resolve()
     work.mkdir(parents=True, exist_ok=True)
     print(cli(exe, "--version").strip())
+    check_doctor(exe, work)
     cli(exe, "template", "compare", str(work / "t.json"), "--force")
     if not json.loads(cli(exe, "--json", "run", str(work / "t.json")))["ok"]:
         sys.exit("the compare template failed to run")

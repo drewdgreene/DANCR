@@ -173,7 +173,7 @@ class FakeProvider(Provider):
 
 
 class OpenAIProvider(Provider):
-    """Any OpenAI-style ``/v1/chat/completions`` endpoint, over httpx (the optional ``dancr[assistant]``)."""
+    """Any OpenAI-style ``/v1/chat/completions`` endpoint, over httpx (included)."""
     name = "openai-compatible"
 
     def __init__(self, settings: ModelSettings) -> None:
@@ -184,7 +184,8 @@ class OpenAIProvider(Provider):
         try:
             import httpx
         except ImportError:
-            raise ProviderError("Talking to a model needs the optional 'httpx' package. Install 'dancr[assistant]'") from None
+            raise ProviderError("Talking to a model needs the 'httpx' package, which is missing from this build. "
+                                "Reinstall DANCR (or, in a source checkout, run 'uv sync').") from None
         return httpx.Client(timeout=self.settings.timeout)
 
     def chat(self, messages: Sequence[Message], tools: Sequence[ToolSpec], settings: ModelSettings) -> ChatResult:

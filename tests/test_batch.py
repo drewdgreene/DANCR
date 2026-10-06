@@ -3,6 +3,7 @@
 import json
 import subprocess
 import sys
+from pathlib import Path
 
 import polars as pl
 import pytest
@@ -40,6 +41,17 @@ def test_batch_writes_outputs_and_combined(project, tmp_path):
     assert set(combined["source_file"]) == {"run1.csv", "run2.csv", "run3.csv"}
     assert combined["z"].to_list() == [2.0, 4.0, 6.0, 8.0, 10.0, 12.0]
     assert rec["combined"] == str(results / "combined.csv")
+
+
+def test_batch_gives_same_stem_files_distinct_outputs(project, tmp_path):
+    """run1.csv in two folders must not overwrite one another, even when files run in parallel."""
+    (project.directory / "files" / "sub").mkdir()
+    pl.DataFrame({"x": [7], "y": [7.0]}).write_csv(project.directory / "files" / "sub" / "run1.csv")
+    rec = hl.run_batch(project, ["files/**/*.csv"], target="calc", out_dir="res", jobs=2)
+    assert rec["ok"] and rec["count"] == 4
+    outputs = [r["output"] for r in rec["files"]]
+    assert len(set(outputs)) == 4
+    assert all(Path(o).exists() for o in outputs)
 
 
 def test_batch_rerun_is_served_from_cache(project):

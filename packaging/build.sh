@@ -11,6 +11,14 @@ if [ ! -f packaging/icon.icns ] && [ "$(uname)" = "Darwin" ]; then
   "$PY" packaging/make_icons.py
 fi
 "$PY" -m PyInstaller --noconfirm --clean packaging/dancr.spec
+if [ "${WITH_MINERU:-0}" = "1" ]; then
+  # bundle MinerU beside the app so documents work with no separate install (adds ~1 GB)
+  if [ "$(uname)" = "Darwin" ]; then
+    packaging/build-mineru.sh dist/DANCR.app/Contents/MacOS
+  else
+    packaging/build-mineru.sh dist/DANCR
+  fi
+fi
 if [ "$(uname)" = "Darwin" ]; then
   # ditto keeps the symlinks inside the bundle (zip -r follows them, which breaks the app's signature)
   (cd dist && rm -f DANCR-macos.zip && ditto -c -k --keepParent DANCR.app DANCR-macos.zip)

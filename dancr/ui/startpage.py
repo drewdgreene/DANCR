@@ -117,6 +117,7 @@ class StartPage(QWidget):
     blank = Signal()
     openFiles = Signal()
     example = Signal(str)
+    formatsHelp = Signal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -144,6 +145,13 @@ class StartPage(QWidget):
             buttons.addWidget(b)
         buttons.addStretch()
         lay.addLayout(buttons)
+
+        b_formats = QPushButton("What can DANCR read?")
+        b_formats.setObjectName("quiet")
+        b_formats.setToolTip("The file formats DANCR opens, and what to do with the ones it can't")
+        b_formats.clicked.connect(self.formatsHelp.emit)
+        formats_row = QHBoxLayout(); formats_row.addWidget(b_formats); formats_row.addStretch()
+        lay.addLayout(formats_row)
 
         lay.addSpacing(18)
         self.recent_lab = QLabel("Recent projects"); self.recent_lab.setObjectName("section")

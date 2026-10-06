@@ -186,7 +186,9 @@ def _fit_line(lf: pl.LazyFrame, xe: pl.Expr, ye: pl.Expr) -> tuple[float, float]
 
 def _fit_polynomial(lf: pl.LazyFrame, degree: int) -> list[float]:
     """[centre, scale, c0..cn] with the curve expressed in z = (x - centre) / scale."""
-    deg = max(1, min(int(degree), 6))
+    deg = int(degree)
+    if deg < 1 or deg > 6:              # refuse rather than silently fit a different degree than asked
+        raise ValueError(f"The polynomial degree must be between 1 and 6, not {degree}")
     m = _row(lf, [pl.len().alias("n"), pl.col(X).n_unique().alias("distinct"), pl.col(X).mean().alias("mx"), pl.col(X).std(ddof=0).alias("sx")])
     n, distinct, mx, sx = int(m["n"]), int(m["distinct"]), m["mx"], m["sx"]
     if n < 2:

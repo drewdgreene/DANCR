@@ -4,7 +4,7 @@
 import re
 import sys
 from pathlib import Path
-from PyInstaller.utils.hooks import collect_data_files, collect_submodules
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules, collect_all
 
 root = Path(SPECPATH).parent
 version = re.search(r'__version__ = "([^"]+)"', (root / "dancr" / "__init__.py").read_text()).group(1)
@@ -21,10 +21,25 @@ datas += collect_data_files("pyqtgraph", includes=["**/*.ui", "**/*.png", "**/*.
 hidden = collect_submodules("dancr") + [
     "scipy.optimize", "scipy.special", "fastexcel", "xlsxwriter", "matplotlib.backends.backend_agg",
     "mcp.server.mcpserver", "mcp.server.stdio", "mcp_types"]
+# Bundle every capability in the one install (no separate downloads): the geographic, database and
+# scientific-array packages ship with the app, so a frozen DANCR never asks the person to add an extra.
+extra_datas, extra_binaries, extra_hidden = [], [], []
+for pkg in ("shapely", "pyproj", "pyogrio", "sqlalchemy", "psycopg", "psycopg_binary",
+            "xarray", "netCDF4", "h5py", "pandas", "cftime", "httpx", "httpcore", "certifi"):
+    try:
+        d, b, h = collect_all(pkg)
+        extra_datas += d
+        extra_binaries += b
+        extra_hidden += h
+    except Exception as exc:                      # a package not installed in this build: skip it
+        print(f"dancr.spec: could not collect {pkg}: {exc}")
+datas += extra_datas
+hidden += extra_hidden
 
 a = Analysis(
     [str(root / "dancr" / "__main__.py")],
     pathex=[str(root)],
+    binaries=extra_binaries,
     datas=datas,
     hiddenimports=hidden,
     excludes=["tkinter", "pyarrow", "PySide6.QtWebEngineCore", "PySide6.QtWebEngineWidgets", "PySide6.Qt3DCore", "PySide6.QtMultimedia", "PySide6.QtQuick", "PySide6.QtQml", "IPython", "notebook"],

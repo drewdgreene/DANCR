@@ -322,6 +322,13 @@ def test_polynomial_fit_is_stable_on_epoch_seconds_and_predicts_consistently():
     assert "z = (x" in f.equation
 
 
+def test_polynomial_refuses_a_degree_above_the_declared_maximum():
+    """A leniently loaded project asking for degree 10 must fail loudly, never silently fit degree 6."""
+    lf = pl.DataFrame({"x": [float(i) for i in range(20)], "y": [float(i * i) for i in range(20)]}).lazy()
+    with pytest.raises(ValueError, match="degree"):
+        fits.fit_frame(lf, "x", "y", "polynomial", degree=10)
+
+
 def test_polynomial_needs_enough_distinct_x():
     lf = pl.DataFrame({"x": [1.0, 1.0, 2.0, 2.0, 3.0], "y": [1.0, 2.0, 3.0, 4.0, 5.0]}).lazy()
     with pytest.raises(ValueError, match="distinct x"):

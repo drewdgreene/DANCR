@@ -166,6 +166,32 @@ def _t(m: int) -> datetime:
     return datetime(2024, m, 5)
 
 
+def test_compare_periods_ignores_nan_in_the_measure(tmp_path):
+    """A float NaN is a blank, not a value: it must not turn a period's total (and the verdict) into NaN."""
+    df = pl.DataFrame([
+        {"time": datetime(2024, 1, 5), "region": "N", "sales": 100.0},
+        {"time": datetime(2024, 2, 5), "region": "N", "sales": float("nan")},
+        {"time": datetime(2024, 2, 6), "region": "N", "sales": 50.0},
+    ]).with_columns(pl.col("time").cast(pl.Datetime("us")))
+    _st, out = _run(_pipe(df, tmp_path, "nan.parquet"), "compare_periods",
+                    {"time_column": "time", "every": "1mo", "measure": "sales", "stat": "sum", "by": ["region"]})
+    r = out.row(0, named=True)
+    assert r["previous"] == 100.0 and r["current"] == 50.0 and r["change"] == -50.0
+
+
+def test_check_data_does_not_count_blanks_as_repeated_keys(tmp_path):
+    df = pl.DataFrame({"registry_id": [1, 2, 3, None, None], "v": [1, 2, 3, 4, 5]})
+    st, _out = _run(_pipe(df, tmp_path, "k.parquet"), "check_data", {})
+    assert st.report.get("duplicate_keys") == []
+
+
+def test_check_data_ignores_a_low_cardinality_code_column(tmp_path):
+    """Values repeated across most rows are a category, not a key with a slip: do not cry 'repeated key'."""
+    df = pl.DataFrame({"code": ["001", "002"] * 20, "v": list(range(40))})
+    st, _out = _run(_pipe(df, tmp_path, "code.parquet"), "check_data", {})
+    assert st.report.get("duplicate_keys") == []
+
+
 def test_compare_periods_averages_the_whole_period_not_the_groups(tmp_path):
     """With groups, the headline figure is the whole period's average (15 → 40), not a sum of group averages."""
     df = pl.DataFrame({"time": [_t(1)] * 2 + [_t(2)] * 3, "g": ["a", "b", "a", "b", "c"], "v": [10.0, 20, 30, 40, 50]})

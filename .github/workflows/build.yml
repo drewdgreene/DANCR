@@ -43,6 +43,9 @@ jobs:
         run: |
           v=$(uv run --no-sync python -c "import dancr; print(dancr.__version__)")
           test "v$v" = "$GITHUB_REF_NAME" || { echo "tag $GITHUB_REF_NAME does not match dancr.__version__ $v"; exit 1; }
+      - name: Lint
+        if: matrix.python == '3.11'
+        run: uvx ruff check dancr tests
       - name: Tests
         shell: bash
         env:

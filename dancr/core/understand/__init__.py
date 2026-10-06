@@ -27,9 +27,16 @@ from typing import Any, Iterable
 
 import polars as pl
 
-from .expr import kind_of_dtype, NUM, TIME, STR, BOOL
-from .registry import registry
-from .units import header_parts, quantity_of, unit_from_name
+from ..expr import kind_of_dtype, NUM, TIME, STR, BOOL
+from ..names import KEY_SUFFIXES, looks_like_key, name_words, norm   # re-exported: callers import them from here
+from ..registry import registry
+from ..units import header_parts, quantity_of, unit_from_name
+
+from ._model import (  # noqa: E402 - the data model, re-exported so `understand.Column` etc. stay valid
+    BLANK, CATEGORY, CONSTANT, EVENTS, FLAG, ID, LOOKUP, MEASURE, SERIES, TABLE, TEXT, TIME_ROLE,
+    Column, DataModel, Relation, Table, _clean,
+)
+from ._time import NICE_STEPS, _settle_time, _span, bucket_for, duration_text  # noqa: E402
 
 SAMPLE_ROWS = 100_000          # rows read per table for column facts
 CADENCE_ROWS = 20_000          # consecutive rows read to measure how often rows arrive
@@ -40,7 +47,6 @@ LINKS_PER_PAIR = 3             # alternatives kept per pair of tables (the first
 STACK_MIN_SIMILARITY = 0.70
 EXACT_KEY_ROWS = 5_000_000     # up to this many rows, key uniqueness is counted exactly; above, estimated
 EXACT_MATCH_ROWS = 20_000_000  # up to this many rows, link matches are counted exactly
-KEY_SUFFIXES = ("id", "key", "code", "no", "number", "ref", "sku", "uuid", "guid")
 # numbers that name something rather than count it: nobody adds up zip codes or phone numbers. The name must be
 # about the code itself (zip, zip_code, phone_number, customer_phone, account_no), not merely hold the word:
 # account_balance and phone_calls are amounts
@@ -48,141 +54,6 @@ CODE_WORDS = {"zip", "zipcode", "postcode", "postal", "phone", "tel", "telephone
               "iban", "ssn", "isbn", "ean", "upc", "barcode", "pin"}
 CODE_ENDINGS = {"code", "no", "nr", "num", "number"}
 CALENDAR_WORDS = ("year", "month", "quarter", "week", "weekday", "day", "hour")
-
-# column roles
-TIME_ROLE, ID, CATEGORY, MEASURE, FLAG, TEXT, CONSTANT, BLANK = (
-    "time", "id", "category", "measure", "flag", "text", "constant", "blank")
-# table shapes
-SERIES, LOOKUP, EVENTS, TABLE = "series", "lookup", "events", "table"
-
-
-@dataclass
-class Column:
-    name: str
-    dtype: str
-    kind: str                       # number | text | true/false | date/time
-    role: str
-    label: str = ""                 # what the person sees (column registry label, else the name)
-    unit: str = ""                  # from the column registry, else from the header ("Pressure (bar)")
-    null_pct: float = 0.0
-    distinct: int = 0               # in the sample (or exactly / estimated over every row after deepen)
-    unique: bool = False            # every filled value is different
-    unique_exact: bool = False      # ... counted over every row, not just the sample
-    values: list[Any] = field(default_factory=list)   # a category's values, most frequent first
-    minimum: Any = None
-    maximum: Any = None
-    cadence: float | None = None    # time: the typical seconds between one row and the next
-    regular: bool = False           # time: most steps are that typical step
-    spellings: dict[str, str] = field(default_factory=dict)   # category: a variant -> the spelling most rows use
-    abbrev: str = ""                # the short name its header gives it: 'IA' in 'inner area (IA) cm2'
-    quantity: str = ""              # what its unit measures: mass, area, mass per area …
-    derived: dict[str, Any] | None = None   # worked out from other columns: {formula, words, operands, holds, rows, breaks}
-    geo: str = ""                   # "lat" / "lon" when the column is a coordinate of a detected pair
-    _keys: set[str] = field(default_factory=set, repr=False)       # capped distinct values, for link overlap
-    _key_cut: int | None = field(default=None, repr=False)
-
-    @property
-    def link_candidate(self) -> bool:
-        return self.distinct >= 2 and self.role in (ID, CATEGORY, TEXT) and self.kind in (STR, NUM)
-
-    def to_dict(self) -> dict[str, Any]:
-        d = {k: v for k, v in asdict(self).items() if not k.startswith("_")}
-        return _json(d)
-
-
-@dataclass
-class Table:
-    node: str                       # the step whose output this is
-    title: str
-    source: str | None = None       # the file, for a loader
-    rows: int | None = None
-    rows_exact: bool = False
-    sampled: int = 0
-    complete: bool = False          # the sample holds every row
-    shape: str = TABLE
-    time: str | None = None         # the main time column
-    start: Any = None               # first and last time
-    end: Any = None
-    span_seconds: float | None = None
-    columns: list[Column] = field(default_factory=list)
-    pairs: list[dict[str, Any]] = field(default_factory=list)   # measure pairs that move together (sample): {x, y, r}
-    total_row: dict[str, Any] | None = None   # a last row that adds up the others: {"column", "value"} naming it
-    wide: dict[str, Any] | None = None        # months as columns: {"columns": [Jan, Feb …], "year": 2024 or None}
-    blank_rows: int = 0             # rows with nothing in them (a blank line in a CSV)
-    deep: bool = False              # deepen() has read every row
-    geo: dict[str, str] | None = None   # {"lat": name, "lon": name} when the table holds points
-
-    def column(self, name: str) -> Column | None:
-        return next((c for c in self.columns if c.name == name), None)
-
-    def by_role(self, *roles: str) -> list[Column]:
-        return [c for c in self.columns if c.role in roles]
-
-    @property
-    def measures(self) -> list[Column]:
-        return self.by_role(MEASURE)
-
-    @property
-    def categories(self) -> list[Column]:
-        return self.by_role(CATEGORY)
-
-    def to_dict(self) -> dict[str, Any]:
-        d = {k: v for k, v in asdict(self).items() if k != "columns"}
-        d["columns"] = [c.to_dict() for c in self.columns]
-        return _json(d)
-
-
-@dataclass
-class Relation:
-    """How two or more tables belong together.
-
-    - ``link``: rows of ``tables[0]`` find their row in ``tables[1]`` by a key (``left_on`` → ``right_on``).
-      ``cardinality`` says whether the second table has one row per key (``many-to-one`` / ``one-to-one``)
-      or several (``many-to-many``: linking would multiply rows, so it is never used without asking).
-    - ``stack``: the tables have the same columns and can be appended; ``labels`` name each one.
-    - ``align``: two time series of the same quantities that can be lined up by time (``tolerance``).
-    """
-    id: str
-    kind: str
-    tables: list[str]
-    left_on: str = ""
-    right_on: str = ""
-    cardinality: str = ""
-    match_pct: float = 0.0
-    exact: bool = False
-    score: float = 0.0
-    labels: list[str] = field(default_factory=list)
-    shared: list[str] = field(default_factory=list)     # align/stack: the columns both have (align: the first table's names)
-    pairs: dict[str, str] = field(default_factory=dict)  # align: first table's column -> the second table's
-    tolerance: str = ""
-    why: str = ""
-    geo: dict[str, str] = field(default_factory=dict)   # near: left_lat/left_lon/right_lat/right_lon
-
-    def to_dict(self) -> dict[str, Any]:
-        return _json(asdict(self))
-
-
-@dataclass
-class DataModel:
-    tables: dict[str, Table] = field(default_factory=dict)          # node id -> table, in project order
-    relations: list[Relation] = field(default_factory=list)
-    skipped: dict[str, str] = field(default_factory=dict)           # node id -> why it could not be read
-    deep: bool = False
-
-    def table(self, node: str) -> Table | None:
-        return self.tables.get(node)
-
-    def relation(self, rid: str) -> Relation | None:
-        return next((r for r in self.relations if r.id == rid), None)
-
-    def stack_of(self, node: str) -> Relation | None:
-        return next((r for r in self.relations if r.kind == "stack" and node in r.tables), None)
-
-    def to_dict(self) -> dict[str, Any]:
-        return {"tables": [t.to_dict() for t in self.tables.values()],
-                "relations": [r.to_dict() for r in self.relations],
-                "skipped": dict(self.skipped), "deep": self.deep}
-
 
 # =================================================================== reading tables
 def default_tables(pipe) -> list[str]:
@@ -193,7 +64,7 @@ def default_tables(pipe) -> list[str]:
 def understand(pipe, executor, nodes: Iterable[str] | None = None) -> DataModel:
     """Describe the output of each of ``nodes`` (default: every source step) from a sample, and find how
     they relate. A step that cannot be read is listed under ``skipped`` with a plain reason."""
-    from .executor import friendly_error
+    from ..executor import friendly_error
     model = DataModel()
     for nid in (list(nodes) if nodes is not None else default_tables(pipe)):
         if nid not in pipe.nodes:
@@ -251,7 +122,7 @@ def _settle_geo(t: Table) -> None:
     A pair needs a name that says latitude (lat, latitude, y) and one that says longitude, and both ranges must
     fit their coordinate; a plain x/y is only accepted when the values leave no doubt. This never changes a
     column's role: a coordinate stays a number, it just also carries where it is."""
-    from .geo import lat_lon_pair
+    from ..geo import lat_lon_pair
     nums = [(c.name, c.minimum, c.maximum) for c in t.columns if c.kind == NUM]
     pair = lat_lon_pair(nums)
     if not pair:
@@ -297,7 +168,7 @@ def _derived(t: Table, sample: pl.DataFrame, rows: list[int] | None) -> None:
     """Columns worked out from other columns (core.derived), noted on the column. Each row that breaks the rule
     is noted with its row number in the step's output (when the sample holds the rows in order) and the values
     that name it (its group, its number)."""
-    from .derived import find
+    from ..derived import find
     names = [c.name for c in t.columns if c.role == MEASURE]
     if len(names) < 2:
         return
@@ -394,7 +265,7 @@ def _as_long(t: Table, node) -> None:
     """A wide table (a column per month: Jan, Feb … Dec) is described as the long table it stands for — one row per
     item and month, with 'month', 'value' and, when the file names its year, 'date' — so it can be totalled and
     charted by month. Answers put the reshaping step in front of it."""
-    from .nodes.basic import month_of
+    from ..nodes.basic import month_of
     months = [c for c in t.columns if c.kind == NUM and month_of(c.name)]
     if len(months) < 3 or len({month_of(c.name) for c in months}) < len(months):
         return
@@ -551,41 +422,6 @@ def _spellings(s: pl.Series) -> dict[str, str]:
             if v != target:
                 out[v] = target
     return out
-
-
-def _settle_time(t: Table, sample: pl.DataFrame, consecutive: pl.DataFrame) -> None:
-    """The main time column (the first date/time column that varies) and how regularly rows arrive, measured on
-    ``consecutive`` rows."""
-    times = t.by_role(TIME_ROLE)
-    if not times:
-        return
-    main = max(times, key=lambda c: (c.distinct, -t.columns.index(c)))     # the finest: Date Time rather than Date
-    t.time = main.name
-    s = consecutive[main.name].drop_nulls() if main.name in consecutive.columns else sample[main.name].drop_nulls()
-    if s.len() >= 3:
-        try:
-            srt = s.sort()
-            if isinstance(s.dtype, pl.Datetime):
-                us = srt.dt.epoch("us").cast(pl.Float64)
-            else:
-                us = srt.cast(pl.Datetime("us")).dt.epoch("us").cast(pl.Float64)
-            steps = us.diff().drop_nulls()
-            steps = steps.filter(steps > 0)
-            if steps.len():
-                med = float(steps.median())
-                main.cadence = med / 1e6
-                main.regular = float(((steps - med).abs() <= 0.1 * med).mean()) >= 0.8
-        except Exception:  # noqa: BLE001 - odd time types simply get no cadence
-            pass
-    t.start, t.end = main.minimum, main.maximum
-    t.span_seconds = _span(t.start, t.end)
-
-
-def _span(a: Any, b: Any) -> float | None:
-    try:
-        return float((b - a).total_seconds())
-    except Exception:  # noqa: BLE001
-        return None
 
 
 def _shape_of(t: Table) -> str:
@@ -901,7 +737,7 @@ def full_frame(pipe, executor, nid: str) -> pl.LazyFrame | None:
     nt = registry.get(node.type)
     if nt.kind != "source":
         return None
-    from .registry import NodeResult
+    from ..registry import NodeResult
     ctx = executor._ctx(nid, preview=False)
     res = nt.apply(ctx, {}, node.params)
     return res.frame if isinstance(res, NodeResult) else res
@@ -999,24 +835,6 @@ def _reorient_links(model: DataModel) -> None:
 
 
 # =================================================================== names and values
-def name_words(name: str) -> list[str]:
-    """'CustomerID' -> customer, id; 'order_no' -> order, no; 'Amount paid' -> amount, paid."""
-    return [w.lower() for w in re.findall(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+|\d+", str(name))]
-
-
-def norm(name: str) -> str:
-    return re.sub(r"[^a-z0-9]", "", str(name).lower())
-
-
-def looks_like_key(name: str) -> bool:
-    """A name whose last word is a key word (customer_id, OrderNo, sku), not one that merely ends in those
-    letters (Amount paid, valid, Humid). A bare 'id' or 'sku' counts; a bare 'number' or 'no' does not."""
-    w = name_words(name)
-    if not w or w[-1] not in KEY_SUFFIXES:
-        return False
-    return len(w) > 1 or w[-1] in ("id", "key", "sku", "uuid", "guid", "code", "ref")
-
-
 def _stem(name: str) -> str:
     w = name_words(name)
     return "".join(w[:-1]) if len(w) > 1 and w[-1] in KEY_SUFFIXES else norm(name)
@@ -1105,59 +923,3 @@ def _extreme(s: pl.Series, how: str) -> Any:
         return None
 
 
-def _clean(v: Any) -> Any:
-    if isinstance(v, float) and (v != v or math.isinf(v)):
-        return None
-    return v
-
-
-def _json(d: Any) -> Any:
-    """JSON-ready: dates as ISO text, no NaN."""
-    import datetime as _dt
-    from .dtypes import json_safe
-
-    def walk(v: Any) -> Any:
-        if isinstance(v, dict):
-            return {k: walk(x) for k, x in v.items()}
-        if isinstance(v, (list, tuple, set)):
-            return [walk(x) for x in v]
-        if isinstance(v, (_dt.datetime, _dt.date, _dt.time, _dt.timedelta)):
-            return str(v) if isinstance(v, _dt.timedelta) else v.isoformat()
-        return v
-    return json_safe(walk(d))
-
-
-# =================================================================== durations for people
-NICE_STEPS = [(1e-3, "1ms"), (1e-2, "10ms"), (0.05, "50ms"), (0.1, "100ms"), (0.5, "500ms"), (1, "1s"), (5, "5s"),
-              (10, "10s"), (30, "30s"), (60, "1m"), (300, "5m"), (900, "15m"), (1800, "30m"), (3600, "1h"),
-              (6 * 3600, "6h"), (86400, "1d"), (7 * 86400, "1w"), (30.44 * 86400, "1mo"), (91.31 * 86400, "1q"),
-              (365.25 * 86400, "1y")]
-
-
-def duration_text(secs: float) -> str:
-    """A tolerance for pairing readings taken ``secs`` apart: that spacing, written the short way."""
-    if secs <= 0:
-        return ""
-    for unit, scale in (("d", 86400), ("h", 3600), ("m", 60), ("s", 1), ("ms", 1e-3)):
-        v = secs / scale
-        if v >= 1 and abs(v - round(v)) < 1e-9:
-            return f"{int(round(v))}{unit}"
-    ms = secs * 1000
-    if ms >= 1:
-        return f"{int(math.ceil(ms))}ms"
-    return f"{int(math.ceil(secs * 1e6))}us"
-
-
-def bucket_for(span_seconds: float | None, cadence: float | None = None, target: int = 400) -> str:
-    """The time bucket that turns a span into roughly ``target`` points (minutes for a day, days for months),
-    never finer than the rows arrive (``cadence``): hourly rows are not bucketed per minute."""
-    if not span_seconds or span_seconds <= 0:
-        return "1d"
-    ideal = span_seconds / target
-    fits = [text for secs, text in NICE_STEPS if secs <= ideal * 2]
-    best = fits[-1] if fits else NICE_STEPS[0][1]
-    if cadence:
-        floor = next((text for secs, text in NICE_STEPS if secs >= cadence * 0.999), NICE_STEPS[-1][1])
-        if dict((t, s) for s, t in NICE_STEPS)[best] < dict((t, s) for s, t in NICE_STEPS)[floor]:
-            best = floor
-    return best

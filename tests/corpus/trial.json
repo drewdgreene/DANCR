@@ -1,0 +1,33 @@
+{
+ "tables": {
+  "trial": {
+   "shape": "table",
+   "rows": 120,
+   "time": null,
+   "columns": {
+    "line": "category",
+    "treatment": "category",
+    "grain_yield_q_ha": "measure",
+    "plant_height_cm": "measure"
+   }
+  }
+ },
+ "relations": [],
+ "suggestions": [
+  "groups: drought_stress, irrigated and rainfed compared",
+  "top: Top 10 lines by total grain_yield_q_ha",
+  "drivers: How the columns of trial move together",
+  "breakdown: Total grain_yield_q_ha by treatment",
+  "explain: What drives grain_yield_q_ha: treatment",
+  "distribution: Spread of grain_yield_q_ha",
+  "describe: What is in trial",
+  "quality: Check trial"
+ ],
+ "questions": {
+  "average grain yield by treatment": "Average grain_yield_q_ha by treatment",
+  "average plant height by treatment": "Average plant_height_cm by treatment",
+  "yields by treatment": "Total grain_yield_q_ha by treatment",
+  "top 5 lines by grain yield": "Top 5 lines by total grain_yield_q_ha",
+  "compare drought_stress and irrigated": "drought_stress and irrigated compared"
+ }
+}

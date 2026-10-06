@@ -963,6 +963,8 @@ class AssistantPanel(QFrame):
             self._working = None
 
     def _failed(self, msg: str) -> None:
+        if not alive(self):                  # the window was disposed (a theme switch) while the turn ran
+            return
         self._finish_working()
         self._add_widget(_action_card("The Assistant could not finish", str(msg),
                                       [("Try again", lambda: self._ask_again(self._last_text))], tone="danger"))
@@ -1058,6 +1060,8 @@ class AssistantPanel(QFrame):
         self._set_busy(False, "")
 
     def _set_busy(self, busy: bool, status: str) -> None:
+        if not alive(self):                  # a queued result must not touch a widget Qt has deleted
+            return
         self._busy = busy
         self.send_btn.setEnabled(True)
         self.send_btn.setText("Stop" if busy else "Send")

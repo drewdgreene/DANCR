@@ -582,9 +582,11 @@ class Pipeline:
         from .dtypes import json_safe                 # a NaN or infinity typed into a setting is not JSON: blank it
         return json.dumps(json_safe(self.to_dict()), indent=2, ensure_ascii=False, allow_nan=False) + "\n"
 
-    def save(self, path: Path | str | None = None, auto: bool = False) -> Path:
+    def save(self, path: Path | str | None = None, auto: bool = False, expected_text: str | None = None) -> Path:
         """Write the project atomically, keeping the file it replaces as an earlier version. ``auto`` marks
-        an autosave, whose versions are kept apart so minute-by-minute copies never push out real saves."""
+        an autosave, whose versions are kept apart so minute-by-minute copies never push out real saves.
+        ``expected_text`` (used under the project lock) is the content this change was based on: if the file
+        on disk no longer matches it, the write is refused rather than overwriting a newer change."""
         target = Path(path).expanduser().resolve() if path is not None else self.path
         if target is None:
             raise PipelineError("No file path to save to")
@@ -612,6 +614,14 @@ class Pipeline:
             tmp = target.with_name(f".{target.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp")   # unique per writer
             try:
                 tmp.write_text(text, encoding="utf-8")
+                if expected_text is not None and target.exists():
+                    try:
+                        current = target.read_text(encoding="utf-8")
+                    except OSError:
+                        current = expected_text
+                    if current != expected_text:            # a program that ignores the lock changed it meanwhile
+                        raise PipelineError(f"{target.name} was changed by another program while this was running, "
+                                            "so nothing was saved. Try again.")
                 os.replace(tmp, target)
             finally:
                 tmp.unlink(missing_ok=True)
@@ -649,7 +659,13 @@ class Pipeline:
         if kept and kept[-1].read_bytes() == target.read_bytes():
             return                                   # this very copy is already the latest version
         seq = _version_number(kept[-1]) + 1 if kept else 1
-        shutil.copy2(target, vdir / f"{seq:06d}_{stamp}{'.auto' if auto else ''}.json")
+        dest = vdir / f"{seq:06d}_{stamp}{'.auto' if auto else ''}.json"
+        tmp = dest.with_name(f"{dest.name}.{os.getpid()}.{uuid.uuid4().hex[:6]}.tmp")
+        try:
+            shutil.copy2(target, tmp)
+            os.replace(tmp, dest)               # a half-written copy never appears as a restorable version
+        finally:
+            tmp.unlink(missing_ok=True)
         kept = cls._numbered(vdir)
         autos = [f for f in kept if f.name.endswith(".auto.json")]
         saved = [f for f in kept if not f.name.endswith(".auto.json")]

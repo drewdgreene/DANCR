@@ -88,6 +88,47 @@ def test_an_edit_that_changes_nothing_does_not_write(tmp_path):
     assert pj.stat().st_mtime_ns == before
 
 
+def test_a_deferred_edit_holds_no_lock_while_it_computes(tmp_path):
+    """A long agent call (a model turn, a build) must not block the window: the lock is only held to save."""
+    pj = tmp_path / "p.json"
+    Pipeline("p").save(pj)
+    inside = threading.Event()
+    release = threading.Event()
+    got = []
+
+    def compute(p):
+        inside.set()
+        assert release.wait(5)                   # while this blocks, another writer must be able to take the lock
+        p.rename_node(next(iter(p.nodes)), "later") if p.nodes else None
+        return "done"
+
+    t = threading.Thread(target=lambda: got.append(hl.editing_deferred(pj, compute)))
+    t.start()
+    assert inside.wait(5)
+    with hl.project_lock(pj, wait=1.0):          # succeeds only because editing_deferred released the lock
+        pass
+    release.set()
+    t.join(5)
+    assert got == ["done"]
+
+
+def test_a_deferred_edit_aborts_when_the_file_changed_meanwhile(tmp_path):
+    pj = tmp_path / "p.json"
+    p = Pipeline("p")
+    p.add_node("load_file", params={"path": "data.csv"}, id="src")
+    p.save(pj)
+
+    def compute(pp):
+        other = Pipeline.load(pj)                # another writer lands while we compute
+        other.rename_node("src", "renamed elsewhere")
+        other.save()
+        return "result"
+
+    with pytest.raises(hl.ProjectBusy):
+        hl.editing_deferred(pj, compute)
+    assert Pipeline.load(pj).nodes["src"].title == "renamed elsewhere"   # the other change is not clobbered
+
+
 def test_the_lock_nests_on_one_thread_and_excludes_others(tmp_path):
     pj = tmp_path / "p.json"
     Pipeline().save(pj)

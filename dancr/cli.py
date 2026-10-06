@@ -183,7 +183,7 @@ def cmd_new(a: argparse.Namespace) -> None:
 def cmd_add(a: argparse.Namespace) -> None:
     with _editing(a.pipeline) as p:
         node = hl.add_step(p, a.type, _params_from_args(a), a.title, a.id, a.after, a.port, a.also_after)
-    _print(a, node.to_dict(), f"Added {node.title} as {node.id}" + (f", connected from {a.after}" if a.after else ""))
+    _print(a, hl.node_public(p, node.id), f"Added {node.title} as {node.id}" + (f", connected from {a.after}" if a.after else ""))
 
 
 def cmd_set(a: argparse.Namespace) -> None:
@@ -193,14 +193,14 @@ def cmd_set(a: argparse.Namespace) -> None:
         if not params:
             raise CliError("Nothing to set. Use key=value or --params '{...}'")
         p.set_params(a.node, **params)
-    _print(a, p.nodes[a.node].to_dict(), f"Updated {a.node}: {', '.join(params)}")
+    _print(a, hl.node_public(p, a.node), f"Updated {a.node}: {', '.join(params)}")
 
 
 def cmd_rename(a: argparse.Namespace) -> None:
     with _editing(a.pipeline) as p:
         _check_node(p, a.node)
         p.rename_node(a.node, a.title)
-    _print(a, p.nodes[a.node].to_dict(), f"Renamed {a.node} to {a.title!r}")
+    _print(a, hl.node_public(p, a.node), f"Renamed {a.node} to {a.title!r}")
 
 
 def cmd_connect(a: argparse.Namespace) -> None:
@@ -399,8 +399,7 @@ def cmd_suggest(a: argparse.Namespace) -> None:
     if a.build is not None:
         if not 0 <= a.build < len(sugs):
             raise CliError(f"There are {len(sugs)} suggestions (numbered from 0)")
-        with _editing(a.pipeline) as p:
-            out = hl.build_answer(p, sugs[a.build]["spec"])
+        out = hl.editing_deferred(a.pipeline, lambda pp: hl.build_answer(pp, sugs[a.build]["spec"]))
     if a.build is not None:
         _print(a, out, f"Built “{out['title']}” as {out['id']}, with its result in step {out['terminal']}. Use dancr run to compute it.")
         return
@@ -408,9 +407,11 @@ def cmd_suggest(a: argparse.Namespace) -> None:
 
 
 def cmd_ask(a: argparse.Namespace) -> None:
-    with _editing(a.pipeline) as p:                # the files are added even when the question is not understood
-        hl.add_files(p, _abs(a.file))
-        out = hl.ask_question(p, a.question, build=not a.dry_run)
+    def work(pp):                                   # the files are added even when the question is not understood
+        hl.add_files(pp, _abs(a.file))
+        return hl.ask_question(pp, a.question, build=not a.dry_run)
+
+    out = hl.editing_deferred(a.pipeline, work)     # reading the data runs with the lock released
     q = out["question"]
     if not q["ok"]:
         if a.json:
@@ -428,8 +429,7 @@ def cmd_ask(a: argparse.Namespace) -> None:
 
 
 def cmd_connections(a: argparse.Namespace) -> None:
-    with _editing(a.pipeline) as p:
-        out = hl.connection_map(p, recompute=a.recompute)
+    out = hl.editing_deferred(a.pipeline, lambda pp: hl.connection_map(pp, recompute=a.recompute))
     lines = []
     for c in out.get("connections", []):
         bits = [c.get("kind", "")]
@@ -444,9 +444,11 @@ def cmd_connections(a: argparse.Namespace) -> None:
 
 
 def cmd_assistant(a: argparse.Namespace) -> None:
-    with _editing(a.pipeline) as p:
-        hl.add_files(p, _abs(a.file))
-        out = hl.assistant_turn(p, a.question, allow_samples=a.samples, focus=a.focus, build=a.build)
+    def work(pp):
+        hl.add_files(pp, _abs(a.file))
+        return hl.assistant_turn(pp, a.question, allow_samples=a.samples, focus=a.focus, build=a.build)
+
+    out = hl.editing_deferred(a.pipeline, work)     # a model turn holds no project lock while it thinks
     if out.get("error"):
         if a.json:
             print(json.dumps(out))
@@ -740,6 +742,86 @@ def cmd_log(a: argparse.Namespace) -> None:
         print("".join(lp.read_text(errors="replace").splitlines(True)[-a.lines:]), end="")
 
 
+# every capability ships in the one install; doctor says which libraries this build actually carries
+_DOCTOR_PACKAGES = ("shapely", "pyproj", "pyogrio", "sqlalchemy", "psycopg", "xarray", "netCDF4", "h5py", "httpx")
+
+
+def cmd_doctor(a: argparse.Namespace) -> None:
+    import importlib
+    import importlib.metadata as md
+    found: dict[str, str] = {}
+    missing: list[str] = []
+    for name in _DOCTOR_PACKAGES:
+        try:
+            importlib.import_module(name)
+            try:
+                found[name] = md.version(name if name != "netCDF4" else "netCDF4")
+            except Exception:  # noqa: BLE001
+                found[name] = "?"
+        except Exception:  # noqa: BLE001
+            missing.append(name)
+    out = {"ok": not missing, "present": found, "missing": missing}
+    try:
+        from .core.nodes.document import mineru_tool, mineru_version, mineru_home
+        tool = mineru_tool({})
+        out["documents"] = {"present": bool(tool), "command": tool or "", "version": mineru_version(tool) or "",
+                            "models": mineru_home() or ""}
+    except Exception:  # noqa: BLE001 - a diagnostic must never fail
+        out["documents"] = {"present": False}
+    if missing:
+        _print(a, out, "This build is missing: " + ", ".join(missing) + ". Reinstall DANCR (or run 'uv sync').")
+    else:
+        doc = out.get("documents") or {}
+        extra = (f" Documents: MinerU {doc.get('version') or 'present'}" if doc.get("present")
+                 else " Documents: MinerU not found (install it to read PDF/Office files)")
+        _print(a, out, "All capabilities present: " + ", ".join(f"{k} {v}" for k, v in found.items()) + "." + extra)
+
+
+# the formats DANCR reads, and what to do with the ones it does not (mirrors dancr/help/formats.md)
+_FORMATS = {
+    "reads": [
+        "CSV, TSV, TXT, DAT, TAB, LOG (separator and types detected)",
+        "Excel .xlsx, .xlsm, .xls, .xlsb, .ods (every sheet; several tables on one sheet)",
+        "Parquet .parquet, .pq",
+        "GeoJSON .geojson (or a .json that is GeoJSON); GeoPackage .gpkg; shapefile .shp",
+        "a folder or glob of the above (Load folder, one table with a file-name column)",
+        "a table at a URL (Load from a URL); a database query or table (SQLite built in, servers included)",
+        "NetCDF .nc (Load NetCDF: one variable); HDF5 .h5/.hdf5 (Load HDF5: one dataset)",
+        "a small table you type (Type in a table)",
+        "FASTA/FASTQ .fa/.fasta/.fna/.fq/.fastq (also .gz) (Load sequences: one row per sequence)",
+        "VCF .vcf (also .vcf.gz) (Load variants: one row per variant, or genotype rows with dosage)",
+        "GFF3/GTF/BED .gff3/.gff/.gtf/.bed (Load features: one row per feature, attributes lifted)",
+        "GenBank .gb/.gbk (Load GenBank features: one row per feature)",
+        "PLINK .map + .ped (Load markers: one row per marker, a genotype column per sample)",
+        "PDF/Office/EPUB/HTML documents (Load document: one row per block, or the tables found, via MinerU)",
+    ],
+    "not_tables": {
+        "JSON Lines .jsonl / plain JSON": "spread the objects into rows and columns, save CSV/Parquet (a GeoJSON file loads as a table)",
+        "images / zip / XML / HTML / Markdown / YAML": "export the data part to CSV or Excel first (or, for a scanned page or a document, use Load document via MinerU)",
+        "HDF5 .h5 or NetCDF .nc opened with Load file": "use Load HDF5 / Load NetCDF and name the dataset or variable",
+    },
+}
+
+
+def cmd_formats(a: argparse.Namespace) -> None:
+    text = ("DANCR reads tables:\n  - " + "\n  - ".join(_FORMATS["reads"])
+            + "\n\nNot tables (and what to do):\n"
+            + "\n".join(f"  - {k}: {v}" for k, v in _FORMATS["not_tables"].items())
+            + "\n\nTip: 'dancr doctor' confirms every reader is present in this build.")
+    _print(a, _FORMATS, text)
+
+
+def cmd_inspect(a: argparse.Namespace) -> None:
+    from . import headless as hl
+    out = hl.inspect_file(a.file, a.rows)
+    if a.json:
+        _print(a, out)
+        return
+    lines = [f"{c['name']}  ({c['dtype']})" for c in out["columns"]]
+    lines += [str(m) for m in out.get("messages", [])]
+    _print(a, out, "\n".join(lines + ["", json.dumps(out["head"], indent=2, default=str)]))
+
+
 def cmd_mcp(a: argparse.Namespace) -> None:
     from .mcp_server import main as mcp_main
     mcp_main(a.root)
@@ -890,6 +972,9 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("open", help="open the window, optionally on a project"); s.add_argument("pipeline", nargs="?"); s.add_argument("--wait", action="store_true"); s.set_defaults(fn=cmd_open)
     s = sub.add_parser("mcp", help="start the MCP server (stdio) for AI agents"); s.add_argument("--root", help="the folder agents may create projects in (default: the current folder)"); s.set_defaults(fn=cmd_mcp)
     s = sub.add_parser("log", help="print the log file path and its last lines"); s.add_argument("--lines", type=int, default=40); s.set_defaults(fn=cmd_log)
+    s = sub.add_parser("doctor", help="check that every capability (geo, database, NetCDF/HDF5, the model client) is present"); s.set_defaults(fn=cmd_doctor)
+    s = sub.add_parser("formats", help="list the file formats DANCR reads, and what to do with the ones it can't"); s.set_defaults(fn=cmd_formats)
+    s = sub.add_parser("inspect", help="peek at any data file: columns, types and the first rows"); s.add_argument("file"); s.add_argument("--rows", type=int, default=5); s.set_defaults(fn=cmd_inspect)
     s = sub.add_parser("template", help="build a starter project (on sample data unless --data is given)"); s.add_argument("key", nargs="?"); s.add_argument("pipeline", nargs="?"); s.add_argument("--data"); s.add_argument("--list", action="store_true"); s.add_argument("--force", action="store_true"); s.set_defaults(fn=cmd_template)
     s = sub.add_parser("inputs", help="list, set or remove named inputs (values usable in formulas, filters and limits)"); s.add_argument("pipeline"); s.add_argument("name", nargs="?"); s.add_argument("value", nargs="?"); s.add_argument("--unit", default=""); s.add_argument("--note", default=""); s.add_argument("--remove"); s.set_defaults(fn=cmd_inputs)
     s = sub.add_parser("columns", help="list or set display names and units for columns"); s.add_argument("pipeline"); s.add_argument("name", nargs="?"); s.add_argument("--label"); s.add_argument("--unit"); s.set_defaults(fn=cmd_columns)

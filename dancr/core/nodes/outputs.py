@@ -142,39 +142,55 @@ def write_table(lf: pl.LazyFrame, out: Path) -> None:
 
 def write_geojson(lf: pl.LazyFrame, out: Path) -> None:
     """Write a table of points as GeoJSON. Needs a latitude and a longitude column (a WKT `geometry`
-    column is used as-is when present); every other column becomes a property."""
+    column is used as-is when present); every other column becomes a property.
+
+    Features are streamed to the file a batch at a time, so a million-point export never holds the whole
+    table (or the whole JSON document) in memory."""
     import json
     from ..dtypes import json_safe
     from ..geo import lat_lon_pair
     schema = dict(lf.collect_schema())
-    df = lf.collect(engine="streaming")
-    pair = None
     if "geometry" in schema:
-        geom_col = "geometry"
+        geom_col, lat, lon = "geometry", None, None
     else:
-        numeric = [(c, df[c].min(), df[c].max()) for c, dt in schema.items() if dt.is_numeric()]
-        pair = lat_lon_pair(numeric)
+        numeric_cols = [c for c, dt in schema.items() if dt.is_numeric()]
+        exprs = []
+        for c in numeric_cols:
+            exprs += [pl.col(c).min().alias(f"{c}\x00lo"), pl.col(c).max().alias(f"{c}\x00hi")]
+        row = lf.select(exprs).collect(engine="streaming").row(0, named=True) if exprs else {}
+        pair = lat_lon_pair([(c, row.get(f"{c}\x00lo"), row.get(f"{c}\x00hi")) for c in numeric_cols])
         if pair is None:
             raise ValueError("To save GeoJSON the table needs latitude and longitude columns (or a 'geometry' column). "
                              "Use 'Make a point' first.")
-        geom_col = None
-    lat, lon = pair if pair else (None, None)
-    prop_cols = [c for c in df.columns if c not in (lat, lon, "geometry")]
-    features = []
-    for row in df.iter_rows(named=True):
+        geom_col, (lat, lon) = None, pair
+    prop_cols = [c for c in schema if c not in (lat, lon, "geometry")]
+
+    def feature(row: dict) -> dict | None:
         if geom_col:
             geom = _wkt_geometry(row.get(geom_col))
         else:
             la, lo = row.get(lat), row.get(lon)
             if la is None or lo is None:
-                continue
+                return None
             geom = {"type": "Point", "coordinates": [float(lo), float(la)]}
         if geom is None:
-            continue
-        features.append({"type": "Feature", "geometry": geom,
-                         "properties": json_safe({c: _json_value(row.get(c)) for c in prop_cols})})
-    out.write_text(json.dumps({"type": "FeatureCollection", "features": features}, ensure_ascii=False, default=str),
-                   encoding="utf-8")
+            return None
+        return {"type": "Feature", "geometry": geom,
+                "properties": json_safe({c: _json_value(row.get(c)) for c in prop_cols})}
+
+    with open(out, "w", encoding="utf-8") as f:
+        f.write('{"type": "FeatureCollection", "features": [')
+        first = True
+        for batch in lf.collect_batches(chunk_size=50_000, engine="streaming"):
+            for row in batch.iter_rows(named=True):
+                feat = feature(row)
+                if feat is None:
+                    continue
+                if not first:
+                    f.write(", ")
+                first = False
+                f.write(json.dumps(feat, ensure_ascii=False, default=str))
+        f.write("]}")
 
 
 def _json_value(v: Any) -> Any:

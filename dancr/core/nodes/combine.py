@@ -178,11 +178,11 @@ def _nearest_feature(ctx: Ctx, left: pl.LazyFrame, right: pl.LazyFrame, ls: dict
         raise ValueError(f"There is already a column called {dist_col!r}; give the distance column another name")
     how = "inner" if (params.get("near_how") or "left") == "inner" else "left"
 
-    # right columns that clash with the first table are suffixed, so the join condition is unambiguous
+    # right columns that clash with the first table are suffixed, so the join condition is unambiguous.
+    # Each of rlat/rlon is suffixed on its own: a clash on one says nothing about the other.
     clash = [c for c in rs if c in ls]
-    rl, ro = (f"{rlat}{suffix}", f"{rlon}{suffix}") if rlat in clash else (rlat, rlon)
-    if rlon in clash:
-        ro = f"{rlon}{suffix}"
+    rl = f"{rlat}{suffix}" if rlat in clash else rlat
+    ro = f"{rlon}{suffix}" if rlon in clash else rlon
 
     left_i = left.with_row_index("__lrow")
     right_i = right.rename({c: f"{c}{suffix}" for c in clash}).with_row_index("__rrow")
@@ -203,6 +203,10 @@ def _nearest_feature(ctx: Ctx, left: pl.LazyFrame, right: pl.LazyFrame, ls: dict
     else:
         pairs = pairs.with_columns((distance_m_expr(llat, llon, rl, ro) / factor).alias(dist_col))
     nearest = pairs.sort([dist_col, "__rrow"]).unique(subset=["__lrow"], keep="first", maintain_order=True)
+    # keep only the pairing, the distance and the second table's own columns: the row index it carries would
+    # otherwise be rejoined onto the first table and appear a second time, suffixed by Polars
+    right_cols = [f"{c}{suffix}" if c in clash else c for c in rs]
+    nearest = nearest.select(["__lrow", "__rrow", dist_col, *right_cols])
     out = left_i.join(nearest, on="__lrow", how=how).sort("__lrow").drop("__lrow", "__rrow")
     left_cols = list(ls)
     extra = [c for c in out.collect_schema().names() if c not in left_cols]
@@ -240,25 +244,36 @@ def _within(ctx: Ctx, left: pl.LazyFrame, right: pl.LazyFrame, ls: dict[str, pl.
     how = params.get("near_how") or "left"
     places = right.collect(engine="streaming")            # places are usually few: read them to test containment
     name_col = next((c for c in places.columns if c != geom_col and places[c].dtype == pl.Utf8), None)
-    parsed = []
-    for g in places[geom_col].to_list():
-        rings = parse_wkt_rings(g)
-        parsed.append((rings, ring_bounds(rings)))
+    rings_by_place = [parse_wkt_rings(g) for g in places[geom_col].to_list()]
     label = (params.get("place_column") or "inside").strip() or "inside"
 
     left_i = left.with_row_index("__lrow")
     pts = left_i.select(["__lrow", llat, llon]).collect(engine="streaming")
-    rows: list[dict[str, Any]] = []
-    for r in pts.iter_rows(named=True):
-        lat, lon = r[llat], r[llon]
-        hit = None
-        if lat is not None and lon is not None:
-            for pi, (rings, b) in enumerate(parsed):
-                if rings and b and b[0] <= lon <= b[1] and b[2] <= lat <= b[3] and point_in_polygon(lon, lat, rings):
-                    hit = pi
-                    break
-        rows.append({"__lrow": int(r["__lrow"]), "__place": hit})
-    match = pl.DataFrame(rows, schema={"__lrow": pl.UInt32, "__place": pl.Int64}).lazy()
+    # A point can only be inside a polygon whose bounding box holds it, so prune to those pairs with a lazy
+    # join first; the exact (and costly) containment test then runs on the few survivors, in place order.
+    boxes = []
+    for pi, rings in enumerate(rings_by_place):
+        b = ring_bounds(rings) if rings else None
+        if b:
+            boxes.append({"__place": pi, "lon0": b[0], "lon1": b[1], "lat0": b[2], "lat1": b[3]})
+    hits: dict[int, int] = {}
+    if boxes:
+        cand = (pts.lazy()
+                .join_where(pl.DataFrame(boxes).lazy(),
+                            (pl.col(llon) >= pl.col("lon0")) & (pl.col(llon) <= pl.col("lon1"))
+                            & (pl.col(llat) >= pl.col("lat0")) & (pl.col(llat) <= pl.col("lat1")))
+                .select(["__lrow", "__place", llat, llon])
+                .collect(engine="streaming")
+                .sort(["__lrow", "__place"]))
+        for r in cand.iter_rows(named=True):
+            lr = int(r["__lrow"])
+            if lr in hits:                              # the first place (lowest index) that contains it wins
+                continue
+            pi = int(r["__place"])
+            if point_in_polygon(float(r[llon]), float(r[llat]), rings_by_place[pi]):
+                hits[lr] = pi
+    match = pl.DataFrame({"__lrow": list(hits.keys()), "__place": list(hits.values())},
+                         schema={"__lrow": pl.UInt32, "__place": pl.Int64}).lazy()
     out = left_i.join(match, on="__lrow", how="inner" if how == "inner" else "left")
     if name_col:
         lookup = pl.DataFrame({"__place": list(range(len(places))), label: places[name_col].to_list()},
@@ -272,7 +287,7 @@ def _within(ctx: Ctx, left: pl.LazyFrame, right: pl.LazyFrame, ls: dict[str, pl.
     msgs = [f"Matched each point to the place it falls inside ({label})"]
     if not ctx.preview:
         total = int(pts.height)
-        matched = sum(1 for r in rows if r["__place"] is not None)
+        matched = len(hits)
         pct = (100.0 * matched / total) if total else 0.0
         said = f"{fmt_pct(pct)} of points fell inside a place ({matched:,} of {total:,} rows)"
         report = {"matched": matched, "rows": total, "match_percent": pct,

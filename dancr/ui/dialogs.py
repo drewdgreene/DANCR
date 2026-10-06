@@ -50,6 +50,7 @@ class Toast(QFrame):
 class VersionsDialog(QDialog):
     def __init__(self, parent, doc: Document) -> None:
         super().__init__(parent)
+        self.setAttribute(Qt.WA_DeleteOnClose)     # freed when closed, so reopening never accumulates dialogs
         self.setWindowTitle("Earlier versions"); self.resize(520, 380)
         lay = QVBoxLayout(self)
         lab = QLabel("DANCR keeps a copy of the project every time it is saved. Pick one to go back to it (your current version is kept too)."); lab.setWordWrap(True)
@@ -94,6 +95,7 @@ class RelationsDialog(QDialog):
 
     def __init__(self, parent, relations, on_build=None) -> None:
         super().__init__(parent)
+        self.setAttribute(Qt.WA_DeleteOnClose)
         from ..core.profile import relation_phrase
         self.setWindowTitle("How these tables relate"); self.resize(560, 440)
         self._on_build = on_build
@@ -132,6 +134,7 @@ class CatalogDialog(QDialog):
 
     def __init__(self, parent, root: Path | None = None) -> None:
         super().__init__(parent)
+        self.setAttribute(Qt.WA_DeleteOnClose)     # also cancels the scan worker via the Serial owner
         self.setWindowTitle("Project catalog"); self.resize(820, 560)
         self.root = root
         lay = QVBoxLayout(self)
@@ -159,6 +162,8 @@ class CatalogDialog(QDialog):
         self.root = Path(root)
         self.label.setText(f"Scanning {self.root}…")
         from ..headless import build_catalog
+        if getattr(self, "_serial", None) is not None:
+            self._serial.cancel()                  # a previous scan must not keep a thread busy after a new one
         self._serial = Serial(self, waits_for_run=False)
         self._serial.submit(lambda: build_catalog(self.root, recursive=True), self._show,
                             lambda m: self.label.setText(f"Could not scan: {m}"))
@@ -217,6 +222,7 @@ class DatasetDialog(QDialog):
 
     def __init__(self, parent, meta: dict) -> None:
         super().__init__(parent)
+        self.setAttribute(Qt.WA_DeleteOnClose)
         self.setWindowTitle("Dataset details"); self.resize(560, 460)
         lay = QVBoxLayout(self)
         intro = QLabel("These travel with the project and appear in every metadata export. They are not sent anywhere by themselves.")

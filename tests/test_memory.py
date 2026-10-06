@@ -64,6 +64,13 @@ def test_recent_questions_dedupe_and_cap(tmp_path):
     assert r.count("question 3") == 1
 
 
+def test_aliases_ignore_a_malformed_store():
+    """A hand-edited or damaged project must not raise when its learned words are read."""
+    from types import SimpleNamespace
+    assert memory.aliases(SimpleNamespace(meta={"ask": {"aliases": [1, 2]}})) == {}
+    assert memory.aliases(SimpleNamespace(meta={"ask": {"aliases": "oops"}})) == {}
+
+
 def test_ask_question_learns_a_repair(tmp_path):
     p = _pipe(tmp_path)
     out = hl.ask_question(p, "total saels by region")          # a transposition the lexicon repairs

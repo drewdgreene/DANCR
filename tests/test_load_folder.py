@@ -161,3 +161,17 @@ def test_cache_invalidates_when_a_file_is_added(folder, tmp_path):
     h1 = ex.plan_hash("trials")
     pl.DataFrame({"site": ["D"], "yield": [1.0]}).write_csv(folder / "site_d.csv")
     assert ex.plan_hash("trials") != h1
+
+
+def test_strict_accepts_the_same_columns_in_a_different_order(tmp_path):
+    """'The same columns' is about the set, not the order: files written in another order still combine."""
+    d = tmp_path / "same"; d.mkdir()
+    pl.DataFrame({"site": ["A"], "yield": [1.0]}).write_csv(d / "one.csv")
+    pl.DataFrame({"yield": [2.0], "site": ["B"]}).write_csv(d / "two.csv")
+    p = Pipeline("p"); p.path = tmp_path / "p.json"
+    p.add_node("load_folder", params={"path": str(d), "unify": "strict"}, id="trials")
+    p.save()
+    res = Executor(p).run(["trials"])["trials"]
+    assert res.status == "done", res.error
+    df = pl.read_parquet(res.output)
+    assert df.columns == ["site", "yield", "source_file"] and df.height == 2

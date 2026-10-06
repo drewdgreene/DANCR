@@ -479,7 +479,8 @@ class Executor:
     def schema(self, node_id: str) -> dict[str, pl.DataType] | None:
         try:
             return dict(self.frame(node_id, 2_000).collect_schema())
-        except Exception:
+        except Exception as e:  # noqa: BLE001 - an unresolvable schema is not fatal; log so a real bug is visible
+            log.debug("could not determine the schema of %s: %s", node_id, e)
             return None
 
     def input_schemas(self, node_id: str) -> dict[str, dict[str, pl.DataType]]:
@@ -679,11 +680,31 @@ class Executor:
     MIN_FREE_BYTES = 512 * 1024 * 1024
 
     def _claim_cache_dir(self) -> None:
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
         if self.pipeline.path is None:
+            # An untitled project's cache is swept by another window if its owner looks gone. The folder must
+            # therefore appear with its owner.pid already inside it, or a sweep in the instant after mkdir would
+            # see a folder with no owner and delete the live cache. Build it aside, then rename it into place.
             owner = self.cache_dir / "owner.pid"
             if not owner.exists():
-                owner.write_text(str(os.getpid()))
+                self.cache_dir.parent.mkdir(parents=True, exist_ok=True)
+                tmp = self.cache_dir.with_name(f"{self.cache_dir.name}.{os.getpid()}.{uuid.uuid4().hex[:6]}.tmp")
+                try:
+                    tmp.mkdir(parents=True)
+                    (tmp / "owner.pid").write_text(str(os.getpid()))
+                    try:
+                        os.replace(tmp, self.cache_dir)      # atomic: the folder never exists without its owner
+                    except OSError:
+                        shutil.rmtree(tmp, ignore_errors=True)   # another writer claimed it first
+                except OSError:
+                    shutil.rmtree(tmp, ignore_errors=True)
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
+            if not owner.exists():                              # a fallback if the rename did not happen
+                try:
+                    owner.write_text(str(os.getpid()))
+                except OSError:
+                    pass
+            return
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
 
     def _check_disk(self) -> None:
         try:
@@ -740,8 +761,11 @@ class Executor:
     @staticmethod
     def _write_json(path: Path, data: dict[str, Any]) -> None:
         tmp = path.with_name(f"{path.stem}.{os.getpid()}.{uuid.uuid4().hex[:6]}.tmp.json")
-        tmp.write_text(json.dumps(data, default=str, indent=1))
-        os.replace(tmp, path)
+        try:
+            tmp.write_text(json.dumps(data, default=str, indent=1))
+            os.replace(tmp, path)
+        finally:
+            tmp.unlink(missing_ok=True)          # a failed write must not leave a temp file in the cache
 
     @staticmethod
     def _blank_report(output: str, stats: dict[str, dict[str, Any]] | None = None) -> list[str]:

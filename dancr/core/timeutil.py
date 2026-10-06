@@ -100,7 +100,9 @@ DATE_FORMATS = [
     "%d/%m/%Y %H:%M:%S%.f", "%d/%m/%Y %H:%M:%S", "%d/%m/%Y %H:%M", "%d/%m/%Y",
     "%m/%d/%Y %H:%M:%S%.f", "%m/%d/%Y %H:%M:%S", "%m/%d/%Y %H:%M", "%m/%d/%Y",
     "%d.%m.%Y %H:%M:%S", "%d.%m.%Y %H:%M", "%d.%m.%Y",
+    "%m.%d.%Y %H:%M:%S", "%m.%d.%Y %H:%M", "%m.%d.%Y",
     "%d-%m-%Y %H:%M:%S", "%d-%m-%Y %H:%M", "%d-%m-%Y",
+    "%m-%d-%Y %H:%M:%S", "%m-%d-%Y %H:%M", "%m-%d-%Y",
     "%d/%m/%y %H:%M", "%d/%m/%y", "%m/%d/%y %H:%M", "%m/%d/%y",
     "%d %b %Y %H:%M:%S", "%d %b %Y %H:%M", "%d %b %Y", "%b %d %Y", "%b %d, %Y", "%d %B %Y", "%B %d, %Y",
     "%Y%m%d%H%M%S", "%Y%m%d %H%M%S", "%Y%m%d",
@@ -108,7 +110,9 @@ DATE_FORMATS = [
 
 
 # Formats that read the same text two ways (01/05/2024: 1 May or 5 January). Month first is the default.
-DAY_FIRST = {f: f.replace("%d/%m", "%m/%d") for f in DATE_FORMATS if f.startswith("%d/%m")}
+# Every separator that separates day from month counts: "/", "-" and "." all have this ambiguity.
+DAY_FIRST = {f: f.replace("%d/%m", "%m/%d").replace("%d-%m", "%m-%d").replace("%d.%m", "%m.%d")
+             for f in DATE_FORMATS if f.startswith(("%d/%m", "%d-%m", "%d.%m"))}
 _MONTH_FIRST = {v: k for k, v in DAY_FIRST.items()}
 
 

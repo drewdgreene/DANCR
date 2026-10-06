@@ -28,7 +28,10 @@ def _keep_rows(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str
     mask = build_mask(schema, conditions, ctx.inputs)
     formula = (params.get("formula") or "").strip()
     if formula:
-        expr, kind, _ = compile_formula(formula, schema, ctx.inputs)
+        notes: list[str] = []
+        expr, kind, _ = compile_formula(formula, schema, ctx.inputs,
+                                        strict_columns=bool(params.get("strict_columns")), notes=notes)
+        msgs += notes
         if kind not in ("true/false", "any"):
             raise FormulaError("The formula must give a true/false answer, e.g. Value > 100")
         mask = expr if mask is None else (mask & expr)
@@ -50,6 +53,9 @@ registry.register(NodeType(
         Param("conditions", "Conditions", "conditions", default={"match": "all", "rules": []}),
         Param("formula", "Or a formula", "expr", default="", advanced=True,
               help="A true/false formula such as Value > 100 and Status = \"ok\""),
+        Param("strict_columns", "Column names must match exactly", "bool", default=False, advanced=True,
+              help="When on, a column name in a formula that is not exact (only spaces or underscores differ) is "
+                   "refused rather than matched to the closest column, which is otherwise noted in the step's messages"),
     ],
 ))
 
@@ -123,13 +129,17 @@ def _calculate(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str
     if not formulas:
         raise ValueError("Add at least one formula (a column name and an expression)")
     messages = []
+    strict = bool(params.get("strict_columns"))
     for f in formulas:
         schema = schema_of(lf)      # each formula can use the previous ones
         name = f["name"].strip()
+        notes: list[str] = []
         try:
-            expr, kind, used = compile_formula(f["expr"], schema, ctx.inputs)
+            expr, kind, used = compile_formula(f["expr"], schema, ctx.inputs,
+                                               strict_columns=strict, notes=notes)
         except FormulaError as e:
             raise ValueError(f"{name}: {e}") from e
+        messages += notes
         if name in schema:
             messages.append(f"{name} replaces the existing column of that name")
         lf = lf.with_columns(expr.alias(name))
@@ -147,6 +157,9 @@ registry.register(NodeType(
     params=[
         Param("formulas", "Formulas", "formulas", default=[]),
         Param("only_new", "Keep only the new columns", "bool", default=False, advanced=True),
+        Param("strict_columns", "Column names must match exactly", "bool", default=False, advanced=True,
+              help="When on, a column name in a formula that is not exact (only spaces or underscores differ) is "
+                   "refused rather than matched to the closest column, which is otherwise noted in the step's messages"),
     ],
 ))
 

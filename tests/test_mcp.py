@@ -53,6 +53,37 @@ def test_mcp_assistant_runs_with_a_scripted_fake(project, monkeypatch, mcp_root)
     assert out["kind"] == "text" and "text" in out
 
 
+def test_mcp_apply_edits_renames_and_sets_input(project, mcp_root):
+    out = json.loads(srv.apply_edits(str(project), [
+        {"op": "rename", "node": "src", "title": "Source table"},
+        {"op": "set_input", "name": "limit", "value": 5, "unit": "mm"},
+    ]))
+    assert out["ok"] and len(out["applied"]) == 2
+    assert "Source table" in srv.describe_pipeline(str(project))
+    with pytest.raises(ToolError):
+        srv.apply_edits(str(project), [{"op": "explode", "node": "src"}])
+
+
+def test_mcp_does_not_echo_a_secret_setting(tmp_path, mcp_root):
+    """A database password must be blanked in a tool's reply, as describe_pipeline already does."""
+    pj = tmp_path / "p.json"
+    srv.create_pipeline(str(pj))
+    srv.add_node(str(pj), "load_sql",
+                 {"connection": "postgresql://user:secretpw@host/db", "table": "t"}, node_id="db")
+    out = json.loads(srv.set_params(str(pj), "db", {"query": "select 1"}))
+    assert out["node"]["params"]["connection"] == "****"
+    assert "secretpw" not in json.dumps(out)
+
+
+def test_mcp_apply_edits_refuses_repointing_a_sink_outside_the_folder(project, tmp_path, mcp_root):
+    """apply_edits must enforce the same write confinement as add_node/set_params, before anything is saved."""
+    srv.add_node(str(project), "export", {"path": "out.csv"}, node_id="exp", after="src")
+    with pytest.raises(ToolError):
+        srv.apply_edits(str(project), [{"op": "set_params", "node": "exp", "params": {"path": "../escape.csv"}}])
+    reloaded = Pipeline.load(project)
+    assert reloaded.nodes["exp"].params["path"] == "out.csv"      # the refused edit was not saved
+
+
 def test_mcp_writes_stay_inside_the_project_folder(probe_dir, tmp_path, mcp_root):
     from mcp.server.mcpserver.exceptions import ToolError
     from dancr.mcp_server import create_pipeline, add_node, run_pipeline, export_node, render_chart, _inside_project

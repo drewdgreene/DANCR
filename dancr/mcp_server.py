@@ -109,6 +109,15 @@ def _editing(path: str) -> Iterator[Pipeline]:
         yield p
 
 
+def _editing_deferred(path: str, compute: Any) -> Any:
+    """Run a long operation against the project (a model turn, a build over the whole data) with the file's lock
+    released, saving briefly at the end. Keeps an agent's slow call from blocking the window and other tools."""
+    target = _in_root(path)
+    if not target.exists():
+        raise ValueError(f"No pipeline at {target}. Call create_pipeline first.")
+    return hl.editing_deferred(target, compute)
+
+
 def _folder(p: Pipeline) -> Path:
     return p.path.resolve().parent
 
@@ -274,8 +283,7 @@ def understand_data(path: str, files: list[str] | None = None) -> str:
 def connections(path: str, recompute: bool = False) -> str:
     """How the project's tables relate: links (each with its match percentage and cardinality), stacks and time
     alignments. The map is saved with the project; recompute=true works it out again."""
-    with _editing(path) as p:
-        out = hl.connection_map(p, recompute=recompute)
+    out = _editing_deferred(path, lambda pp: hl.connection_map(pp, recompute=recompute))
     return _dump(out)
 
 
@@ -378,9 +386,13 @@ def suggest_answers(path: str, files: list[str] | None = None, focus: str | None
         return _dump({"suggestions": sugs})
     if not 0 <= build < len(sugs):
         raise ToolError(f"There are {len(sugs)} suggestions (numbered from 0)")
-    with _editing(path) as p:
-        out = hl.build_answer(p, sugs[build]["spec"])
-        _check_outputs(p, out["terminal"])
+
+    def work(pp: Pipeline) -> dict[str, Any]:
+        out = hl.build_answer(pp, sugs[build]["spec"])
+        _check_outputs(pp, out["terminal"])
+        return out
+
+    out = _editing_deferred(path, work)      # building an answer reads the data: do it off the lock
     return _dump({"answer": out})
 
 
@@ -391,9 +403,11 @@ def ask(path: str, question: str, files: list[str] | None = None, dry_run: bool 
     'total qty by region', 'average pressure per hour for MJ03F', 'top 10 customers by sales', 'compare A and B',
     'orders where qty above 2', 'gaps in probe_A'. Builds the steps and an Answer (unless dry_run) and reports how
     the question was read (chips), what was assumed, and any word it did not know with 'did you mean' hints."""
-    with _editing(path) as p:
-        hl.add_files(p, _data_files(files))           # kept even when the question is not understood, as on the CLI
-        out = hl.ask_question(p, question, build=not dry_run)
+    def work(pp: Pipeline) -> dict[str, Any]:
+        hl.add_files(pp, _data_files(files))          # kept even when the question is not understood, as on the CLI
+        return hl.ask_question(pp, question, build=not dry_run)
+
+    out = _editing_deferred(path, work)               # reading the data to answer runs off the lock
     if not out["question"]["ok"]:
         q = out["question"]
         raise ToolError(q["message"] + (f" (unknown: {', '.join(q['unknown'])})" if q["unknown"] else ""))
@@ -409,12 +423,34 @@ def assistant(path: str, question: str, files: list[str] | None = None, build: b
     DANCR_ASSISTANT_BASE_URL / DANCR_ASSISTANT_MODEL; DANCR_ASSISTANT_FAKE=1 runs a scripted fake with no key).
     `files` adds data files first; `focus` limits it to one step's output. With build=true it applies the proposal
     (its steps and an Answer) and runs it. Returns {kind, text, proposal, flags, usage, tool_calls}."""
-    with _editing(path) as p:
-        hl.add_files(p, _data_files(files))
-        out = hl.assistant_turn(p, question, allow_samples=allow_samples, focus=focus, build=build)
+    def work(pp: Pipeline) -> dict[str, Any]:
+        hl.add_files(pp, _data_files(files))
+        return hl.assistant_turn(pp, question, allow_samples=allow_samples, focus=focus, build=build,
+                                 output_root=_folder(pp), check_output=_check_outputs)
+
+    # a model turn can run for minutes; the project file is locked only for the read and the final save, so the
+    # window can still autosave and other tools still work while the agent is thinking
+    out = _editing_deferred(path, work)
     if out.get("error"):
         raise ToolError(out["error"])
     return _dump(out)
+
+
+@mcp.tool()
+@friendly
+def apply_edits(path: str, edits: list[dict[str, Any]]) -> str:
+    """Apply a batch of project edits and save, as one change: each edit is
+    {"op": "rename", "node": id, "title": "…"}, {"op": "set_params", "node": id, "params": {…}},
+    {"op": "set_input", "name": "…", "value": …, "unit": "…", "note": "…"}, or
+    {"op": "column_label", "column": "…", "label": "…", "unit": "…"}. Returns the summaries applied."""
+    from .core.assistant.edits import apply_edits as _apply_edits
+    with _editing(path) as p:
+        applied = _apply_edits(p, edits)
+        # a repointed sink (an edit that changes a step's output path) must obey the same confinement as add/set
+        for nid in {str(e.get("node")) for e in edits if isinstance(e, dict) and e.get("node")}:
+            if nid in p.nodes:
+                _check_outputs(p, nid)
+    return _dump({"ok": True, "applied": applied})
 
 
 @mcp.tool()
@@ -452,7 +488,7 @@ def add_node(path: str, type_key: str, params: dict[str, Any] | None = None, tit
     with _editing(path) as p:
         node = hl.add_step(p, type_key, params, title, node_id, after, port, also_after)
         _check_outputs(p, node.id)
-    return _dump({"ok": True, "node": node.to_dict(), "inputs": p.inputs_of(node.id),
+    return _dump({"ok": True, "node": hl.node_public(p, node.id), "inputs": p.inputs_of(node.id),
                   "problems": [x for x in p.problems() if x.startswith(node.title + ":")]})
 
 
@@ -463,7 +499,7 @@ def set_params(path: str, node_id: str, params: dict[str, Any]) -> str:
     with _editing(path) as p:
         p.set_params(hl.require_node(p, node_id), **params)
         _check_outputs(p, node_id)
-    return _dump({"ok": True, "node": p.nodes[node_id].to_dict()})
+    return _dump({"ok": True, "node": hl.node_public(p, node_id)})
 
 
 @mcp.tool()
@@ -714,17 +750,23 @@ def open_in_gui(path: str) -> str:
 @mcp.tool()
 @friendly
 def inspect_file(file_path: str, rows: int = 5) -> str:
-    """Peek at a data file before building a pipeline: detected columns, types and the first rows.
-    A relative path is taken from the server's root folder."""
-    from .core.registry import Ctx
-    from .core.nodes.load import scan_file
-    fp = _from_root(file_path)
-    ctx = Ctx(fp.parent, "inspect", "inspect", preview=True)
-    lf, messages, _ = scan_file(ctx, {"path": str(fp), "has_header": True, "parse_dates": True})
-    schema = lf.collect_schema()
-    head = lf.head(max(1, min(int(rows), 100))).collect(engine="streaming")
-    return json.dumps({"columns": [{"name": k, "dtype": str(v)} for k, v in schema.items()], "messages": messages,
-                       "head": json.loads(head.write_json())}, default=str)
+    """Peek at a data file before building a pipeline: detected columns, types and the first rows. Reads any
+    format DANCR can open, including the bio formats (FASTA/FASTQ, VCF, GFF/GTF/BED, GenBank, PLINK) and
+    documents (PDF/Office/EPUB/HTML) through MinerU. A relative path is taken from the server's root folder."""
+    return _dump(hl.inspect_file(_from_root(file_path), rows))
+
+
+@mcp.tool()
+@friendly
+def read_document(file_path: str, what: str = "blocks", tier: str | None = None, pages: str | None = None,
+                  allow_remote: bool = False, rows: int = 200) -> str:
+    """Read a PDF/Office/EPUB/HTML document as a table through MinerU: one row per content block
+    (doc, page, block, type, text, locator) with what='blocks', or a catalog of the tables found with
+    what='tables' (each written to a CSV next to the document). A relative path is taken from the server's root
+    folder. Needs MinerU installed, or a folder MinerU already produced, or a configured endpoint."""
+    # extracted table CSVs are confined to the server's root folder, never written next to an arbitrary document
+    return _dump(hl.read_document(_from_root(file_path), what=what, tier=tier, pages=pages,
+                                  allow_remote=allow_remote, rows=rows, output_root=ROOT))
 
 
 def main(root: str | None = None) -> None:

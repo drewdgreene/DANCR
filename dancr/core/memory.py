@@ -33,8 +33,10 @@ def _store(pipeline: Any) -> dict[str, Any]:
 def aliases(pipeline: Any) -> dict[str, str]:
     """The words this project has learned to read, as {typed word (lower-case): the project's word}."""
     a = _store(pipeline).get("aliases") or {}
+    if not isinstance(a, dict):          # a hand-edited or damaged project: read it as nothing learned
+        return {}
     return {str(k).strip().lower(): str(v).strip() for k, v in a.items()
-            if isinstance(a, dict) and str(k).strip() and str(v).strip()}
+            if str(k).strip() and str(v).strip()}
 
 
 def remember_alias(pipeline: Any, typed: Any, means: Any) -> None:

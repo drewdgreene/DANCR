@@ -249,3 +249,29 @@ def test_listing_needs_no_lock_so_a_read_only_folder_works(tmp_path):
             assert code == 0, (cmd, err)
     finally:
         tmp_path.chmod(0o755)
+
+
+def test_doctor_reports_every_capability_present():
+    code, out, err = run("--json", "doctor")
+    assert code == 0, err
+    data = json.loads(out)
+    assert data["ok"] is True and data["missing"] == []
+    assert {"shapely", "pyproj", "sqlalchemy", "xarray", "h5py"} <= set(data["present"])
+
+
+def test_formats_lists_what_it_reads_and_refuses():
+    code, out, err = run("--json", "formats")
+    assert code == 0, err
+    data = json.loads(out)
+    assert any("CSV" in s for s in data["reads"])
+    assert any("HDF5" in k or "NetCDF" in k for k in data["not_tables"])
+    text = run("formats")[1]
+    assert "reads tables" in text and "Not tables" in text
+
+
+def test_formats_help_file_ships_and_matches_the_guard():
+    from dancr.help import __file__ as _  # noqa: F401  (ensure the package dir resolves)
+    doc = (ROOT / "dancr" / "help" / "formats.md").read_text()
+    assert "What DANCR can read" in doc
+    # the guard messages the loader raises are explained here
+    assert "Load HDF5" in doc and "Load NetCDF" in doc

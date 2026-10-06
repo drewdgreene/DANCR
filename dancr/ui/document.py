@@ -18,6 +18,7 @@ import copy
 import json
 import logging
 import os
+import time
 import re
 import shutil
 from contextlib import contextmanager
@@ -34,77 +35,28 @@ from ..core.executor import Executor, NodeState, _pid_alive
 from ..headless import ProjectBusy, project_lock, read_project, unsafe_outputs, output_files
 from .workers import RunThread, Task, view_pool
 from . import commands as cmd
+from .doc_edits import _DocEdits
+from .doc_recovery import _saved_paths, dead_recovery_files, recovery_path
 
-log = logging.getLogger("dancr.ui")
-AUTOSAVE_SECS = 60
-UNDO_LIMIT = 200
-POLL_MS = 2500              # how often states are re-read for changes made elsewhere (a CLI run, a rewritten source)
-AUTO_RUN_DELAY_MS = 700     # quiet time after an edit before an automatic run
-SOURCE_SETTLE_MS = 1500     # a data file being written fires many change events: wait for it to settle
-
-
-class ChangedOnDisk(PipelineError):
-    """Saving would overwrite changes another program made to the project file."""
+from .doc_common import (  # noqa: F401,E402
+    AUTOSAVE_SECS, AUTO_RUN_DELAY_MS, POLL_MS, SOURCE_SETTLE_MS, UNDO_LIMIT, ChangedOnDisk, log,
+)
+from .doc_watch import DocWatch
+from .doc_autosave import DocAutosave
+from .doc_state import DocState
 
 
-class _DocEdits:
-    """Plan edits as undoable commands (inside the caller's undo macro)."""
-
-    def __init__(self, doc: "Document") -> None:
-        self.doc = doc
-        self.pipe = doc.pipeline
-
-    def create(self, step, ins: dict[str, list[str]], x: float, y: float) -> str:
-        nid = self.doc.add_node(step.type, x, y, params=step.params, title=step.title)
-        for port, srcs in ins.items():
-            for s in srcs:
-                self.doc.connect(s, nid, port)
-        return nid
-
-    def set_params(self, nid: str, params: dict[str, Any]) -> None:
-        node = self.doc.pipeline.nodes[nid]
-        full = registry.get(node.type).normalize_params(params)
-        self.doc.set_params(nid, {k: v for k, v in full.items() if node.params.get(k) != v})
-
-    def set_title(self, nid: str, title: str) -> None:
-        self.doc.rename(nid, title)
-
-    def connect(self, source: str, target: str, port: str) -> None:
-        self.doc.connect(source, target, port)
-
-    def disconnect(self, source: str, target: str, port: str) -> None:
-        self.doc.disconnect(Edge(source, target, port))
-
-    def remove(self, ids: list[str]) -> None:
-        self.doc.remove_nodes(ids)
 
 
-def _saved_paths(p: Pipeline, nid: str) -> list[str]:
-    """The path settings of a step that saves files, as written."""
-    nt = registry.get(p.nodes[nid].type)
-    if nt.kind != "sink":
-        return []
-    return [str(v) for prm in nt.params if prm.kind == "path" and (v := p.nodes[nid].params.get(prm.name))]
 
 
-def recovery_path(pid: int | None = None) -> Path:
-    """Where this process keeps a copy of edits that are not in a project file yet (an unsaved project, or
-    changes autosave has not written), offered back on the next start if the process dies."""
-    from ..logsetup import log_path
-    return log_path().parent / f"recovery-{os.getpid() if pid is None else pid}.json"
 
 
-def dead_recovery_files() -> list[Path]:
-    """Recovery copies left by DANCR processes that are no longer running."""
-    out = []
-    for p in sorted(recovery_path().parent.glob("recovery-*.json")):
-        m = re.fullmatch(r"recovery-(\d+)\.json", p.name)
-        if m and not _pid_alive(int(m.group(1))):
-            out.append(p)
-    return out
 
 
-class Document(QObject):
+
+
+class Document(DocWatch, DocAutosave, DocState, QObject):
     nodeAdded = Signal(str)
     nodeRemoved = Signal(str)
     nodeChanged = Signal(str)          # params or title
@@ -183,151 +135,6 @@ class Document(QObject):
             self.dirtyChanged.emit(not clean)
         except RuntimeError:
             pass
-
-    # ------------------------------------------------------------ file
-    @property
-    def path(self) -> Path | None:
-        return self.pipeline.path
-
-    @property
-    def dirty(self) -> bool:
-        return not self.undo.isClean()
-
-    @staticmethod
-    def _watch(watcher: QFileSystemWatcher, paths: list[Path]) -> None:
-        """Watch exactly these files; for one that is missing (deleted, or being replaced), its folder instead,
-        so the file coming back is noticed however long it was gone."""
-        old = watcher.files() + watcher.directories()
-        if old:
-            watcher.removePaths(old)
-        want: set[str] = set()
-        for p in paths:
-            if p.exists():
-                want.add(str(p))
-            elif p.parent.is_dir():
-                want.add(str(p.parent))
-        if want:
-            watcher.addPaths(sorted(want))
-
-    def _rewatch(self) -> None:
-        self._watch(self._watcher, [self.pipeline.path] if self.pipeline.path else [])
-        self._rewatch_sources()
-
-    def _on_project_dir_changed(self, _dir: str) -> None:
-        p = self.pipeline.path
-        if p is not None and p.exists() and str(p) not in self._watcher.files():
-            self._on_file_changed(str(p))           # the project file is back: read it as any other change
-
-    # ------------------------------------------------------------ sources and auto-run
-    def source_paths(self) -> list[Path]:
-        """The files a project reads, for watching: a path or folder setting, and every member a folder source
-        matches (so adding, changing or removing a file in the folder is noticed)."""
-        out: list[Path] = []
-        seen: set[str] = set()
-
-        def add(p: Path) -> None:
-            key = str(p)
-            if key not in seen:
-                seen.add(key)
-                out.append(p)
-
-        for n in self.pipeline.nodes.values():
-            nt = registry.get(n.type)
-            if nt.kind != "source":
-                continue
-            for p in nt.params:
-                if p.kind in ("path", "dir") and n.params.get(p.name):
-                    v = Path(str(n.params[p.name])).expanduser()
-                    add(v if v.is_absolute() else self.pipeline.directory / v)
-            if nt.source_files is not None:
-                try:
-                    for f in nt.source_files(self.pipeline.directory, n.params):
-                        add(Path(f))
-                except Exception:  # noqa: BLE001 - an unreadable folder simply contributes no paths to watch
-                    pass
-        return out
-
-    def _rewatch_sources(self) -> None:
-        self._watch(self._src_watcher, self.source_paths())
-
-    def _on_source_changed(self, path: str) -> None:
-        self._source_timer.start()                  # restarted by each event: one refresh once writing stops
-
-    def _on_source_dir_changed(self, _dir: str) -> None:
-        watched = set(self._src_watcher.files())
-        if any(p.exists() and str(p) not in watched for p in self.source_paths()):
-            self._source_timer.start()              # a data file that was missing is there now
-
-    def _source_changed_settle(self) -> None:
-        self._rewatch_sources()
-        self.refresh_states()
-        self.message.emit("A data file changed on disk")
-        self.schedule_auto_run()
-
-    def source_bytes(self) -> int:
-        total = 0
-        for p in self.source_paths():
-            try:
-                total += p.stat().st_size
-            except OSError:
-                pass
-        return total
-
-    @property
-    def auto_run(self) -> bool:
-        """Small data runs itself after every change; big data waits for Run."""
-        forced = self.pipeline.meta.get("auto_run")
-        if forced in (True, False):
-            return bool(forced)
-        return bool(self.pipeline.nodes) and self.source_bytes() <= self.AUTO_RUN_BYTES
-
-    def set_auto_run(self, on: bool | None) -> None:
-        if on is None:
-            self.pipeline.meta.pop("auto_run", None)
-        else:
-            self.pipeline.meta["auto_run"] = bool(on)
-        self.autoRunChanged.emit(self.auto_run)
-        self.schedule_auto_run()
-
-    def schedule_auto_run(self) -> None:
-        if self.auto_run:
-            self._auto_pending = True
-            self._auto_gen += 1
-            self._auto_timer.start()
-
-    def _auto_run_now(self) -> None:
-        """Run what is not computed yet. Which steps those are means reading every step's state (files, maybe
-        on a network drive), so it is read on a worker; a change made meanwhile asks again once it is read."""
-        if not self._auto_pending or self._auto_task is not None or self._closed:
-            return
-        if self.running:
-            self._auto_timer.start(); return
-        gen, executor = self._auto_gen, self.executor
-        t = Task(self.snapshot_executor().states)
-        t.waits_for_run = False
-
-        def decide(states: dict[str, NodeState]) -> None:
-            if gen != self._auto_gen or executor is not self.executor or self.running:
-                return                              # changed meanwhile: asked again below
-            self._auto_pending = False
-            todo = [nid for nid in self.pipeline.nodes
-                    if nid not in self.held and not (self.held and self.held & self.pipeline.upstream_closure(nid))]
-            if any(states[nid].status != "done" for nid in todo if nid in states):
-                self.run(todo if self.held else None, auto=True)
-
-        def failed(_msg: str) -> None:
-            if gen == self._auto_gen:
-                self._auto_pending = False          # logged by the task; the next edit tries again
-
-        def finished() -> None:
-            self._auto_task = None
-            if self._auto_pending and not self._closed:
-                self._auto_timer.start()
-        t.signals.done.connect(decide)
-        t.signals.failed.connect(failed)
-        t.signals.finished.connect(finished)
-        self._auto_task = t
-        view_pool().start(t)
 
     # ------------------------------------------------------------ inputs and column registry (undoable)
     def set_input(self, name: str, value: Any = None, unit: str | None = None, note: str | None = None) -> None:
@@ -435,111 +242,6 @@ class Document(QObject):
             if unsafe_outputs(new, nid, folder):
                 out.add(nid)
         return out
-
-    # ------------------------------------------------------------ autosave, recovery, versions
-    def set_autosave(self, on: bool) -> None:
-        if self.autosave != on:
-            self.autosave = on
-            self.autosaveChanged.emit(self.autosave_paused)
-
-    def pause_autosave(self, reason: str) -> None:
-        if self.autosave_paused != reason:
-            self.autosave_paused = reason
-            self.autosaveChanged.emit(reason)
-
-    def resume_autosave(self) -> None:
-        if self.autosave_paused is not None:
-            self.autosave_paused = None
-            self.autosaveChanged.emit(None)
-
-    def autosave_now(self) -> None:
-        """Once a minute: with autosave on, save quietly when the project has a file (keeping the replaced file
-        as an autosave version). Edits that must not go into the file — autosave off, an unsaved project,
-        autosave paused, a run in progress, or a dialog open that asks about these very edits (Save changes?
-        Revert?) — are copied to the recovery file instead, so a crash or a force-quit loses nothing."""
-        self.flush_edits()
-        if not self.pipeline.nodes or not self.dirty:
-            return
-        if (not self.autosave or self.pipeline.path is None or self.autosave_paused or self.running
-                or QApplication.activeModalWidget() is not None):
-            self.write_recovery()
-            return
-        try:
-            self.save(auto=True)
-        except (ChangedOnDisk, ProjectBusy):
-            self.write_recovery()            # never over someone else's change; the person decides when saving
-            return
-        except (OSError, PipelineError):
-            log.exception("Autosave of %s failed", self.pipeline.path)
-            self.write_recovery()
-            return
-        self.autosaved.emit()
-
-    def write_recovery(self) -> None:
-        """Keep a copy of edits that are not in the project file (an unsaved project, or unsaved changes to a
-        saved one) so a crash, a force-quit or a logout loses nothing. Clears the copy when there are none."""
-        self.flush_edits()
-        if not self.pipeline.nodes or (self.pipeline.path is not None and not self.dirty):
-            self.clear_recovery()
-            return
-        try:
-            rp = recovery_path(); rp.parent.mkdir(parents=True, exist_ok=True)
-            tmp = rp.with_suffix(".tmp")
-            data = {"dancr_recovery": 1, "path": str(self.pipeline.path) if self.pipeline.path else None,
-                    "pipeline": self.pipeline.to_dict()}
-            tmp.write_text(json.dumps(data, indent=1, ensure_ascii=False), encoding="utf-8")
-            tmp.replace(rp)
-        except OSError:
-            log.exception("Could not write the recovery copy")
-
-    def clear_recovery(self) -> None:
-        try:
-            recovery_path().unlink(missing_ok=True)
-        except OSError:
-            log.exception("Could not remove the recovery copy")
-
-    @staticmethod
-    def pending_recovery() -> tuple[Pipeline, Path] | None:
-        """Unsaved edits left by a DANCR process that is gone, if any: the project (its ``path`` is the file
-        the edits belong to, or None for a project never saved) and the recovery file. Unreadable copies
-        are deleted."""
-        for rp in dead_recovery_files():
-            try:
-                data = json.loads(rp.read_text(encoding="utf-8"))
-                if not isinstance(data, dict) or data.get("dancr_recovery") != 1:
-                    raise ValueError("not a DANCR recovery file")
-                path = Path(data["path"]) if data.get("path") else None
-                pipe = Pipeline.from_dict(data["pipeline"], path)
-            except Exception:  # noqa: BLE001
-                log.exception("Recovery file %s is unreadable; deleting it", rp)
-                rp.unlink(missing_ok=True)
-                continue
-            if pipe.nodes:
-                return pipe, rp
-            rp.unlink(missing_ok=True)
-        return None
-
-    def recover(self, pipe: Pipeline, source: Path) -> None:
-        """Bring back unsaved edits. Their recovery copy becomes this process's copy, so it stays on disk
-        until the project is saved or deliberately closed. Autosave stays paused: the person decides
-        whether the recovered edits replace the file."""
-        self.replace_pipeline(pipe)
-        self.undo.resetClean()
-        try:
-            source.replace(recovery_path())
-        except OSError:
-            log.exception("Could not take over the recovery copy %s", source)
-        self.pause_autosave("recovered changes not saved yet" if pipe.path else "recovered project not saved yet")
-
-    def versions(self) -> list[Path]:
-        return self.pipeline.versions() if self.pipeline.path else []
-
-    def restore_version(self, version: Path) -> None:
-        """Load an earlier saved copy into the window without touching the file on disk."""
-        p = Pipeline.from_dict(json.loads(version.read_text(encoding="utf-8")), self.pipeline.path)
-        self.replace_pipeline(p)
-        self.undo.resetClean()
-        self.pause_autosave("an earlier version is open")
 
     # ------------------------------------------------------------ whole-pipeline replacement, save, shutdown
     def replace_pipeline(self, pipeline: Pipeline, disk_text: str | None = None) -> None:
@@ -665,72 +367,6 @@ class Document(QObject):
         self.resume_autosave()
         self.clear_recovery()
         return p
-
-    # ------------------------------------------------------------ queries
-    def state(self, nid: str) -> NodeState:
-        st = self._states_cache.get(nid)
-        if st is None:
-            st = self.executor.state(nid)
-            self._states_cache[nid] = st
-        return st
-
-    def refresh_states(self) -> None:
-        """Re-read every step's state (after an edit, a reload, a run). Any answer read before this call is
-        dropped; see ``_read_states``."""
-        self._states_token += 1
-        self._states_again = self._poll_task is not None
-        self._read_states()
-
-    def snapshot_executor(self) -> Executor:
-        """An Executor over a copy of the project as it is now, for work off the GUI thread: the live project
-        keeps changing under the person's hands, the copy does not. It shares the cache folder."""
-        return Executor(Pipeline.from_dict(self.pipeline.to_dict(), self.pipeline.path), self.executor.cache_dir)
-
-    def _poll_states(self) -> None:
-        """The periodic check for changes made elsewhere (a CLI run, a source file rewritten)."""
-        self._read_states()
-
-    def _read_states(self) -> None:
-        """Every step's state means reading files (sources are stat'ed and sampled), which can be slow on a
-        network drive, so it runs on a worker over a snapshot of the project, one read at a time; the answer is
-        dropped if the project was edited meanwhile, and a refresh asked for during a read gets one more read
-        (however many were asked for) once it ends."""
-        if self._poll_task is not None or self._closed:
-            return
-        ex = self.snapshot_executor()
-        token, executor = self._states_token, self.executor
-        t = Task(ex.states)
-        t.waits_for_run = False
-        t.signals.done.connect(lambda new: self._apply_states(new) if token == self._states_token and executor is self.executor else None)
-
-        def finished() -> None:
-            self._poll_task = None
-            if self._states_again:
-                self._states_again = False
-                self._read_states()
-        t.signals.finished.connect(finished)
-        self._poll_task = t
-        view_pool().start(t)
-
-    def _apply_states(self, new: dict[str, NodeState]) -> None:
-        # keep "running" markers from the live run
-        for nid, st in self._states_cache.items():
-            if st.status == "running" and nid in new and new[nid].status != "done":
-                new[nid] = st
-        changed = set(new) != set(self._states_cache) or any(
-            new[k].status != self._states_cache[k].status or new[k].hash != self._states_cache[k].hash for k in new)
-        self._states_cache = new
-        # While a run is in flight this read is over a snapshot taken before it: its hashes are not what the live
-        # executor now holds, so writing them would drop the run's own held results from this window's lease and let
-        # another process's cache sweep delete them. The run holds its own lease; refresh this window's right after
-        # it finishes (`_on_run_done` -> `refresh_states`).
-        if not self.running:
-            held = {k: st.hash for k, st in new.items()}
-            if held != self._held:                   # other processes' cache sweeps keep what this window shows
-                self._held = held
-                self.executor.hold(held)
-        if changed:
-            self.statesChanged.emit()
 
     # ------------------------------------------------------------ edits (undoable)
     def add_node(self, type_key: str, x: float, y: float, params: dict[str, Any] | None = None, title: str | None = None,
@@ -1050,3 +686,8 @@ class Document(QObject):
         self.runFinished.emit(t.outcome == "done" and not failed, results)
         if self._auto_pending:
             self._auto_timer.start()
+        self._run = None                         # release the finished thread (and its snapshot) at once
+        try:
+            t.deleteLater()
+        except RuntimeError:
+            pass

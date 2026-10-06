@@ -18,3 +18,5 @@ testdata/run/report/
 /report.pdf
 .venv-install.log
 .dancr-scratch/
+
+.dancr-mineru/

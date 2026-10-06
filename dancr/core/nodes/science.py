@@ -1,6 +1,6 @@
 """Read scientific array formats: NetCDF (``load_netcdf``) and HDF5 (``load_hdf5``).
 
-Both need the optional ``dancr[science]`` packages (xarray for NetCDF, h5py for HDF5) and turn one variable or
+Both use xarray (NetCDF) and h5py (HDF5), which ship with DANCR, and turn one variable or
 dataset into an ordinary table, so everything downstream (time steps, charts, reports) works as usual. A plain
 message asks for the extra when it is missing.
 """
@@ -15,8 +15,9 @@ from ..params import Param
 from ..registry import NodeType, Ctx, NodeResult, registry
 
 
-def _need(package: str, extra: str) -> None:
-    raise ValueError(f"Reading this format needs the optional '{package}' package. Install 'dancr[{extra}]'")
+def _need(package: str, extra: str | None = None) -> None:
+    raise ValueError(f"This build is missing the '{package}' package needed to read this format. "
+                     "Reinstall DANCR (or, in a source checkout, run 'uv sync').")
 
 
 def _load_netcdf(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, Any]) -> NodeResult:
@@ -54,7 +55,7 @@ def _load_netcdf(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[s
 
 registry.register(NodeType(
     key="load_netcdf", label="Load NetCDF", category="Get data", icon="wave-sine", kind="source", inputs=[],
-    description="Read one variable of a NetCDF file as a table (needs the optional dancr[science]: xarray).",
+    description="Read one variable of a NetCDF file as a table (uses xarray, included).",
     apply=_load_netcdf, summary=lambda p: Path(str(p.get("path") or "")).name or "no file",
     params=[
         Param("path", "File", "path", required=True, help="A .nc / .nc4 NetCDF file"),
@@ -100,7 +101,7 @@ def _load_hdf5(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str
 
 registry.register(NodeType(
     key="load_hdf5", label="Load HDF5", category="Get data", icon="columns", kind="source", inputs=[],
-    description="Read one dataset of an HDF5 file as a table (needs the optional dancr[science]: h5py).",
+    description="Read one dataset of an HDF5 file as a table (uses h5py, included).",
     apply=_load_hdf5, summary=lambda p: Path(str(p.get("path") or "")).name or "no file",
     params=[
         Param("path", "File", "path", required=True, help="An .h5 / .hdf5 file"),

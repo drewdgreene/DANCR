@@ -36,6 +36,16 @@ def test_parse_duration_forms():
             parse_duration(bad)
 
 
+def test_ambiguous_dates_with_dashes_and_dots_are_month_first_by_default():
+    """01-05-2024 reads both ways exactly like 01/05/2024; the separator must not change the answer."""
+    for sep in ("-", "."):
+        s = pl.Series([f"01{sep}05{sep}2024", f"02{sep}06{sep}2024", f"03{sep}07{sep}2024"])
+        assert detect_datetime_format(s) == f"%m{sep}%d{sep}%Y"
+        assert detect_datetime_format(s, day_first=True) == f"%d{sep}%m{sep}%Y"
+    # an unambiguous day (>12) still decides on its own
+    assert detect_datetime_format(pl.Series(["13-05-2024", "01-05-2024"])) == "%d-%m-%Y"
+
+
 def test_ambiguous_dates_default_to_month_first():
     s = pl.Series(["01/05/2024", "02/06/2024", "03/07/2024"])
     assert detect_datetime_format(s) == "%m/%d/%Y"

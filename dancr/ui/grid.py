@@ -122,9 +122,10 @@ class TableModel(QAbstractTableModel):
             return self._decimals[col]
         st = self.column_stats.get(col) or {}
         d: int | None = None
-        if not st and self.pager is not None and 0 in self.pager._pages and col in self.pager._pages[0].columns:
+        first = self.pager.cached_page(0) if self.pager is not None else None
+        if not st and first is not None and col in first.columns:
             try:
-                ser = self.pager._pages[0][col]
+                ser = first[col]
                 if ser.dtype.is_numeric():
                     st = {"min": ser.min(), "max": ser.max()}
             except Exception:

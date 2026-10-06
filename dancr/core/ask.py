@@ -330,6 +330,16 @@ SYNONYMS = [
     {"visits", "views", "sessions", "hits", "traffic"},
     {"start", "started", "hired", "joined", "hire"},
     {"stock", "inventory", "on hand"},
+    # measurement nouns that help find a column when the header spells the quantity out
+    {"yield", "yields", "production", "output"},
+    {"height", "tall"},
+    {"maturity", "maturing", "matures"},
+    {"disease", "diseases", "infection"},
+    {"lodging"},
+    {"temperature", "temp"},
+    {"pressure"},
+    {"humidity", "rh"},
+    {"salinity", "salt"},
 ]
 
 
@@ -409,7 +419,27 @@ def _column_phrases(name: str, label: str) -> list[tuple[str, bool]]:
     out = [(p, False) for p in sorted(x for x in full if x and x.strip())]
     if len(words) > 1 and words[-1] not in ("id", "key", "code", "no"):
         out.append((words[0], True))                  # pressure_psia is 'pressure', customer_name is 'customer'
+        # the modifier + head noun ('grain yield', 'plant height'), so a question that says both words lands on
+        # one column instead of naming it twice, plus the head noun on its own ('yield', 'height')
+        tail = list(words[1:])
+        while tail and (len(tail[-1]) < 3 or not tail[-1].isalnum() or tail[-1] in _FILLER_WORDS):
+            tail.pop()
+        if tail:
+            out.append((" ".join(words[:1 + len(tail)]), True))
+            head = tail[-1]
+            if head.isalpha() and len(head) >= 3 and head not in _FILLER_WORDS:
+                out.append((head, True))
     return out
+
+
+# words that must never stand alone as a column name (grammar words, statistic words, units spelled short)
+_FILLER_WORDS = {
+    "per", "and", "to", "of", "for", "the", "a", "an", "in", "on", "at", "by", "vs", "with",
+    "avg", "average", "mean", "median", "max", "min", "sum", "total", "count", "std", "sd", "se",
+    "pct", "percent", "num", "number", "no", "id", "key", "code", "new", "old",
+    "day", "days", "hour", "hours", "minute", "minutes", "sec", "second", "seconds",
+    "cm", "mm", "km", "kg", "mg", "ml", "ha", "bar", "psi", "kpa", "mph", "ph",
+}
 
 
 # =================================================================== reading

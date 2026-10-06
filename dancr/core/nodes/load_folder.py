@@ -15,9 +15,10 @@ import polars as pl
 
 from ..params import Param
 from ..registry import NodeType, Ctx, NodeResult, registry
-from .load import scan_file, tables_in, CSV_EXT, EXCEL_EXT, PARQUET_EXT, GEOJSON_EXT, VECTOR_EXT
+from .load import scan_file, tables_in, CSV_EXT, EXCEL_EXT, PARQUET_EXT, GEOJSON_EXT, VECTOR_EXT, BIO_EXT, effective_ext
+from .bio import bio_node_for
 
-DATA_EXT = CSV_EXT | EXCEL_EXT | PARQUET_EXT | GEOJSON_EXT | VECTOR_EXT
+DATA_EXT = CSV_EXT | EXCEL_EXT | PARQUET_EXT | GEOJSON_EXT | VECTOR_EXT | set(BIO_EXT)
 
 # the read options shared by every file in the folder, passed straight to scan_file
 SHARED = ("has_header", "layout", "skip_rows", "parse_dates", "parse_numbers", "date_format",
@@ -49,7 +50,7 @@ def matched_files(directory: Path, params: dict[str, Any]) -> list[Path]:
     out: list[Path] = []
     for f in found:
         try:
-            if f.is_file() and f.suffix.lower() in DATA_EXT and not f.name.startswith("."):
+            if f.is_file() and effective_ext(f) in DATA_EXT and not f.name.startswith("."):
                 out.append(f.resolve())
         except OSError:
             continue
@@ -81,11 +82,14 @@ def _apply(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, An
     labels: list[str] = []
     report_files: list[dict[str, Any]] = []
     skipped: list[str] = []
+    bio_files: set[str] = set()
+    bio_params = params.get("bio_params") or {}
     for f in files:
-        # Which table(s) of this file to read: just the first, every sheet/table/layer it holds (like dropping a
-        # workbook brings in each table), or the ones whose name matches.
+        # A scientific file (FASTA/FASTQ, VCF, GFF/GTF/BED, GenBank, PLINK) is one table read by its own step; a
+        # table file can hold several (a sheet, a table on a sheet, a layer), chosen by `tables`.
+        bio_type = bio_node_for(f)
         parts: list[tuple[str, dict[str, Any]]] = []
-        if mode == "first":
+        if bio_type or mode == "first":
             parts = [(f.stem, {})]
         else:
             try:
@@ -106,7 +110,14 @@ def _apply(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, An
             parts = found or [(f.stem, {})]
         for title, extra in parts:
             try:
-                lf, msgs, rep = scan_file(ctx, {**shared, **extra, "path": str(f)})
+                if bio_type:
+                    res = registry.get(bio_type).apply(ctx, {}, {"path": str(f), **bio_params})
+                    lf = getattr(res, "frame", res)
+                    msgs = list(getattr(res, "messages", []) or [])
+                    rep = dict(getattr(res, "report", {}) or {})
+                    bio_files.add(f.name)
+                else:
+                    lf, msgs, rep = scan_file(ctx, {**shared, **extra, "path": str(f)})
             except Exception as e:  # noqa: BLE001 - reported with the file named, or skipped when asked
                 from ..executor import friendly_error
                 why = friendly_error(e)
@@ -135,7 +146,10 @@ def _apply(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, An
                 raise ValueError(f"{name} does not have the same columns as {where[0]} "
                                  f"({_schema_diff(base_schema, sch)}). Set 'Combine files' to 'union' or 'text' "
                                  "to read files or tables that differ")
-        out = pl.concat(frames, how="vertical")
+        # same set of columns, but they may be in a different order per file: vertical concat needs one order,
+        # so line every table up with the first (data is keyed by column name, so this cannot change values)
+        order = list(base_schema)
+        out = pl.concat([fr.select(order) for fr in frames], how="vertical")
     elif unify == "text":
         as_text = [fr.with_columns([pl.col(c).cast(pl.Utf8) for c in fr.collect_schema().names()]) for fr in frames]
         out = pl.concat(as_text, how="diagonal_relaxed")
@@ -150,6 +164,9 @@ def _apply(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, An
         messages.append(f"Each row's file is in '{source_column}'")
     if table_column and mode != "first":
         messages.append(f"Which table each row came from is in '{table_column}'")
+    if bio_files:
+        messages.append(f"{len(bio_files)} scientific file{'s' if len(bio_files) != 1 else ''} read with "
+                        f"{'their' if len(bio_files) != 1 else 'its'} own reader")
     if skipped:
         messages.append(f"Skipped {len(skipped)} file(s): " + "; ".join(skipped))
     return NodeResult(out, report={"kind": "folder", "path": raw, "pattern": pattern, "count": len(frames),
@@ -187,9 +204,10 @@ registry.register(NodeType(
     icon="▤",
     kind="source",
     inputs=[],
-    description="Read every CSV, text, Excel, Parquet or geo file matching a folder (and a pattern) as one table, "
-                "with a column naming the file each row came from. The same file reader as Load file, so layout, "
-                "dates and numbers are handled identically.",
+    description="Read every CSV, text, Excel, Parquet, geo or scientific file matching a folder (and a pattern) as "
+                "one table, with a column naming the file each row came from. The same reader as Load file, and "
+                "FASTA/FASTQ, VCF, GFF/GTF/BED, GenBank and PLINK files are read by their own step — so a folder of "
+                "VCFs or FASTAs is one table.",
     apply=_apply,
     summary=_summary,
     source_files=source_files,
@@ -199,6 +217,9 @@ registry.register(NodeType(
         Param("pattern", "File name pattern", "text", default="*",
               help="Which files inside the folder to read, e.g. *.csv or *.xlsx (ignored when the folder path is itself a glob)"),
         Param("recursive", "Look inside sub-folders", "bool", default=False),
+        Param("bio_params", "Settings for scientific files", "mapping", default={}, advanced=True,
+              help="Passed to the reader for FASTA/FASTQ, VCF, GFF/GTF/BED, GenBank and PLINK files, e.g. "
+                   "{\"samples\": \"genotype\"} for a folder of VCFs"),
         Param("source_column", "Put the file name in", "text", default="source_file",
               help="A column naming the file each row came from. Leave blank for none"),
         Param("tables", "Which tables to read", "choice", default="first",

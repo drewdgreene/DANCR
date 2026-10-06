@@ -1,5 +1,5 @@
 """The formula language: Excel's answers, names, types, functions, blanks and errors."""
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 import polars as pl
 import pytest
@@ -392,3 +392,44 @@ def test_divide_and_power_refuse_text_dates_and_true_false_like_the_other_arithm
         compile_formula(src, DF.schema)
     assert check_formula(src, DF.schema) is not None
     assert evaluate("n / 2") == [0.5, None, 1.5, 2.0] and evaluate("n ^ 2") == [1.0, None, 9.0, 16.0]
+
+
+# ---------------------------------------------------------------- durations, COUNT, POW, ROUND
+DD = pl.DataFrame({"t1": [datetime(2024, 1, 1)], "t2": [datetime(2024, 1, 2)]}).with_columns(
+    pl.col("t1").cast(pl.Datetime("us")), pl.col("t2").cast(pl.Datetime("us")))
+
+
+def test_duration_compares_with_a_text_span():
+    assert evaluate('(t2 - t1) > "1d"', DD) == [False]
+    assert evaluate('(t2 - t1) >= "1d"', DD) == [True]
+    assert evaluate('(t2 - t1) < "12h"', DD) == [False]
+
+
+def test_duration_compared_with_a_plain_number_is_refused_not_a_polars_error():
+    msg = check_formula("(t2 - t1) > 5", DD.schema)
+    assert msg is not None and "duration" in msg.lower()
+
+
+def test_duration_divided_by_a_number_stays_a_duration():
+    assert evaluate("(t2 - t1) / 2", DD) == [timedelta(hours=12)]
+
+
+def test_duration_divided_by_a_duration_is_a_plain_ratio():
+    assert evaluate("(t2 - t1) / (t2 - t1)", DD) == [1.0]
+
+
+def test_pow_and_caret_agree_when_there_is_no_answer():
+    assert evaluate("POW(-1, 0.5)") == [None]
+    assert evaluate("(-1)^0.5") == [None]
+
+
+def test_count_counts_only_non_empty_values():
+    df = pl.DataFrame({"v": [1.0, float("nan"), None, 3.0], "s": ["a", "", None, "  "]})
+    assert evaluate("COUNT(v)", df) == [2]
+    assert evaluate("COUNT(s)", df) == [1]
+    assert evaluate("COUNT(v)", df) == evaluate("SUM(IF(ISBLANK(v), 0, 1))", df)
+
+
+def test_round_with_extreme_digits_is_sane():
+    assert evaluate("ROUND(1.5, 400)") == [1.5]      # no fractional place is left: the value is unchanged
+    assert evaluate("ROUND(1.5, -1000)") == [0.0]    # rounds to a magnitude no double can hold

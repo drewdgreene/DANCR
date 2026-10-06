@@ -23,6 +23,7 @@ class TablePager:
         self._rows = rows
         self._rows_lock = threading.Lock()
         self._pages: OrderedDict[int, pl.DataFrame] = OrderedDict()
+        self._pages_lock = threading.Lock()      # page fetches finish on workers; the grid reads on the GUI thread
 
     @property
     def rows(self) -> int:
@@ -41,15 +42,17 @@ class TablePager:
         return self.lf.slice(i * self.page_size, self.page_size).collect(engine="streaming")
 
     def store_page(self, i: int, df: pl.DataFrame) -> None:
-        self._pages[i] = df
-        self._pages.move_to_end(i)
-        if len(self._pages) > self.max_pages:
-            self._pages.popitem(last=False)
+        with self._pages_lock:
+            self._pages[i] = df
+            self._pages.move_to_end(i)
+            if len(self._pages) > self.max_pages:
+                self._pages.popitem(last=False)
 
     def page(self, i: int) -> pl.DataFrame:
-        if i in self._pages:
-            self._pages.move_to_end(i)
-            return self._pages[i]
+        with self._pages_lock:
+            if i in self._pages:
+                self._pages.move_to_end(i)
+                return self._pages[i]
         df = self.fetch_page(i)
         self.store_page(i, df)
         return df
@@ -63,15 +66,21 @@ class TablePager:
             return None
         return df[r, col]
 
+    def cached_page(self, i: int) -> pl.DataFrame | None:
+        """A page already fetched, or None. Safe to call from the GUI thread while workers store pages."""
+        with self._pages_lock:
+            return self._pages.get(i)
+
     def cached_value(self, row: int, col: int) -> tuple[bool, Any]:
         """(available, value) without any I/O."""
         if row < 0:
             return True, None
         p, r = divmod(row, self.page_size)
-        df = self._pages.get(p)
-        if df is None:
-            return False, None
-        return True, (df[r, col] if r < len(df) else None)
+        with self._pages_lock:
+            df = self._pages.get(p)
+            if df is None:
+                return False, None
+            return True, (df[r, col] if r < len(df) else None)
 
 
 def column_title(name: str | None, columns: dict[str, dict] | None = None) -> str:
