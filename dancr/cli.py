@@ -396,6 +396,9 @@ def cmd_watch(a: argparse.Namespace) -> None:
     """Watch a project and its data files, and rerun when anything changes."""
     if a.batch and (not a.files or not a.out_dir):
         raise CliError("--batch needs --files and --out-dir")
+    if a.repo and a.once:
+        raise CliError("--once is for a single project; a repository watch records events as changes happen. "
+                       "Drop --once, or use `dancr events` to read the log.")
 
     def on_event(e: dict[str, Any]) -> None:
         if a.json:
@@ -508,9 +511,6 @@ def cmd_gateway(a: argparse.Namespace) -> None:
         gateway_main(a.root, host=a.host, port=a.port, path=a.path, allow_remote=a.allow_remote)
     except KeyboardInterrupt:
         pass
-
-
-
 
 
 def cmd_catalog(a: argparse.Namespace) -> None:
@@ -820,7 +820,6 @@ def cmd_scenarios(a: argparse.Namespace) -> None:
             print(f"manifest: {rec['manifest']}")
     if not rec["ok"]:
         sys.exit(EXIT_FAILED)
-
 
 
 def cmd_assistant(a: argparse.Namespace) -> None:

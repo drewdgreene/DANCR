@@ -12,6 +12,7 @@ scenarios and the same hashes.
 from __future__ import annotations
 
 import copy
+import re
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +28,24 @@ from ._safety import unsafe_write
 from ._atomic import write_text_atomic
 
 SCENARIO_EXT = ("csv", "parquet", "xlsx")
+_UNSAFE_NAME = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def _output_names(scenarios: list[dict[str, Any]], ext: str) -> dict[str, str]:
+    """A safe, unique output file name per scenario id (an id may hold path separators or collide), decided up
+    front and deterministically, so the logical id stays in the record and the combined column."""
+    names: dict[str, str] = {}
+    taken: set[str] = set()
+    for i, sc in enumerate(scenarios):
+        base = _UNSAFE_NAME.sub("_", str(sc["id"])).strip("._-") or f"scenario_{i + 1}"
+        name = f"{base}.{ext}"
+        n = 2
+        while name.casefold() in taken:
+            name = f"{base}_{n}.{ext}"
+            n += 1
+        taken.add(name.casefold())
+        names[str(sc["id"])] = name
+    return names
 
 
 def scenario_set(spec: dict[str, Any] | list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -68,6 +87,7 @@ def run_scenarios(p: Pipeline, spec: dict[str, Any] | list[dict[str, Any]], *, t
     if in_dancr_folder(destination, folder):
         raise ValueError(f"Won't write scenario results into DANCR's own .dancr folder: {destination}")
     destination.mkdir(parents=True, exist_ok=True)
+    names = _output_names(scenarios, ext)
 
     def one(sc: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
         sid = str(sc["id"])
@@ -79,7 +99,7 @@ def run_scenarios(p: Pipeline, spec: dict[str, Any] | list[dict[str, Any]], *, t
         rec: dict[str, Any] = {"id": sid, "inputs": dict(sc.get("inputs") or {}), "status": (st.status if st else "idle"),
                                "plan_hash": ex.safe_hash(target)}
         if st is not None and st.status == "done" and st.output:
-            out_file = destination / f"{sid}.{ext}"
+            out_file = destination / names[sid]
             why = unsafe_write(clone, out_file, folder)
             if why:
                 rec.update(status="failed", error=why)

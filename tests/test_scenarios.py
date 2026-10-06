@@ -89,6 +89,14 @@ def test_scenario_set_rejects_duplicate_ids():
         scenario_set([{"id": "a", "inputs": {}}, {"id": "a", "inputs": {}}])
 
 
+def test_a_scenario_id_with_a_path_separator_is_written_safely(tmp_path):
+    p = make(tmp_path)
+    rec = run_scenarios(p, [{"id": "../evil/x", "inputs": {"factor": 2}}], out_dir="out")
+    assert rec["ok"] and rec["scenarios"][0]["id"] == "../evil/x"       # the logical id is kept
+    out = Path(rec["scenarios"][0]["output"]).resolve()
+    assert out.parent == (tmp_path / "out").resolve()                  # but it cannot escape the folder
+
+
 def test_cli_scenarios(tmp_path):
     make(tmp_path)
     (tmp_path / "spec.json").write_text(json.dumps({"sweep": {"factor": [1, 2]}}))

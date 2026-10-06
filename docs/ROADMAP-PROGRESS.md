@@ -179,11 +179,17 @@ A review pass fixed several real bugs and rough edges, each locked with a test:
 - **Approval scoping:** `consume_approval` matched only principal+tool, so an approval for one project could
   authorise another; it now matches the project too, and reads/consumes under the repository lock (no
   double-spend).
+- **Stale cross-project edge:** a *reused* project carried over its old `xlink:` edges, which could survive after
+  another project's key changed; cross-project edges are no longer carried (they are regenerated every build).
+- **Unsafe scenario filename:** a scenario id was used directly as an output file name, so an id with a path
+  separator caused confusing refusals; names are now sanitised and de-duplicated (the logical id is kept in the
+  record and the combined column).
 - **Edge case:** `limit=0` in `events.read`/`audit_records` returned everything (`[-0:]`); now empty.
 - **Robustness:** `load_graph` rebuilds on a damaged or differently-shaped database (catches `KeyError` etc.);
   `Policy.from_dict` raises a clear `ValueError` for a non-object `quotas`; the MCP `run_scenarios` accepts an
-  explicit list spec; the gateway runs its policy/audit file I/O off the event loop.
+  explicit list spec; the gateway runs its policy/audit file I/O off the event loop; `dancr watch --repo --once`
+  is refused (a repo watch has no single-shot mode) rather than silently doing nothing.
 - Mechanical cleanups (unused imports/locals, `collections.abc`, `zip(strict=)`), verified with a broader
   advisory ruff selection; the repo's configured `ruff check dancr tests` stays clean.
 
-Final suite: **1497 passed, 2 warnings in 274.87 s**.
+Final suite: **1499 passed, 2 warnings in 269.91 s**.

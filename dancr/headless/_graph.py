@@ -122,7 +122,9 @@ def _file_size_sample(path: Path) -> tuple[int | None, str]:
 
 
 def _carry_over(src: Graph, dst: Graph, project_id_: str) -> None:
-    """Copy a project and everything hanging off its datasets from the stored graph into the new one."""
+    """Copy a project and everything hanging off its datasets from the stored graph into the new one. Cross-project
+    edges (``xlink:``) are *not* carried: they depend on other projects too and are regenerated every build, so
+    carrying one over could keep a stale link after another project's key changed."""
     if (proj := src.projects.get(project_id_)) is not None:
         dst.add_project(proj)
     ids = [d.id for d in src.datasets.values() if d.project == project_id_]
@@ -130,7 +132,7 @@ def _carry_over(src: Graph, dst: Graph, project_id_: str) -> None:
     for did in sorted(ids):
         dst.add_dataset(src.datasets[did])
     for e in sorted(src.edges.values(), key=lambda x: x.id):
-        if e.left in idset or e.right in idset:
+        if (e.left in idset or e.right in idset) and not e.id.startswith("xlink:"):
             dst.add_edge(e)
 
 

@@ -115,6 +115,19 @@ def test_shared_keys_and_path_across_projects(tmp_path):
     assert path["found"] and path["hops"] == 1
 
 
+def test_a_reused_project_drops_a_stale_cross_project_edge(tmp_path):
+    """A reused project must not carry over an old cross-project link when the *other* project's key changed."""
+    make_repo(tmp_path)
+    build_graph(tmp_path)
+    assert graph_shared_keys(tmp_path)["count"] >= 1
+    # rename B's shared key so no cross-project link exists any more; A is untouched and will be reused
+    pl.DataFrame({"buyer_id": [1, 2, 3]}).write_csv(tmp_path / "b" / "contacts.csv")
+    pl.DataFrame({"sale_id": [1, 2, 3], "buyer_id": [1, 2, 3]}).write_csv(tmp_path / "b" / "sales.csv")
+    rec = build_graph(tmp_path)
+    assert rec["rebuilt"] == ["b/b.json"] and rec["reused"] == ["a/a.json"]
+    assert graph_shared_keys(tmp_path)["count"] == 0
+
+
 def test_query_text_finds_a_dataset(tmp_path):
     make_repo(tmp_path)
     build_graph(tmp_path)
