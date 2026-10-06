@@ -14,9 +14,9 @@ import polars as pl
 from ..params import Param
 from ..registry import NodeType, InputSpec, Ctx, NodeResult, registry
 from ..findings import finding, plural
-from ..rag import (DEFAULT_DIM, doc_content_hash, embed, load_index, matrix, merge_index, read_context_feed,
-                   save_index, top_k)
-from ._common import first_input, schema_of
+from ..rag import (DEFAULT_DIM, EMBEDDER_ID, doc_content_hash, load_index, merge_index, rank,
+                   read_context_feed, save_index, save_index_meta)
+from ._common import first_input
 
 _RESERVED = ("chunk_id", "chunk_index", "text", "vector")
 
@@ -102,6 +102,7 @@ def _build_index(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[s
                          "or use larger chunks")
     if target is not None:
         save_index(out, target)
+        save_index_meta(target, embedder=EMBEDDER_ID, dim=dim)     # how the vectors were made, for provenance
         changes["index_path"] = str(target)
 
     said = (f"Indexed {changes['documents']:,} document(s) into {out.height:,} passage(s): "
@@ -110,8 +111,8 @@ def _build_index(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[s
             + (f" ({changes['reused_chunks']:,} passages reused, {changes['embedded_chunks']:,} embedded)"
                if existing is not None else "")
             + (f"; skipped {len(skip)} unchanged dataset(s)" if skip else ""))
-    report = {"documents": changes["documents"], "chunks": out.height, "dim": dim, "index": changes,
-              "skipped_datasets": sorted(skip),
+    report = {"documents": changes["documents"], "chunks": out.height, "dim": dim, "embedder": EMBEDDER_ID,
+              "index": changes, "skipped_datasets": sorted(skip),
               "finding": finding("summary", said, magnitude=float(changes["embedded_chunks"]), exact=True)}
     return NodeResult(out.lazy(), report=report, messages=([said] + ([feed_note] if feed_note else [])))
 
@@ -144,37 +145,42 @@ registry.register(NodeType(
 
 def _retrieve(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, Any]) -> NodeResult:
     lf = first_input(inputs)
-    schema = schema_of(lf)
     query = (params.get("query") or "").strip()
     if not query:
         raise ValueError("Type what to search for")
     k = int(params.get("k") or 5)
     min_score = float(params.get("min_score") if params.get("min_score") is not None else 0.0)
+    retriever = str(params.get("retriever") or "lexical")
     df = lf.collect(engine="streaming")
-    if "vector" not in df.columns:
-        raise ValueError("Connect a 'Build search index' step to this one (it provides the 'vector' column)")
+    if df.height == 0:
+        empty = df.drop("vector").with_columns(pl.Series("rank", [], dtype=pl.Int64),
+                                               pl.Series("score", [], dtype=pl.Float64)).lazy() \
+            if "vector" in df.columns else df.with_columns(pl.Series("rank", [], dtype=pl.Int64),
+                                                           pl.Series("score", [], dtype=pl.Float64)).lazy()
+        return NodeResult(empty, report={"hits": 0, "withheld": 0},
+                          messages=["The index has no searchable passages"])
     withheld = 0
     if "sensitivity" in df.columns and not params.get("allow_restricted"):
         restricted = df["sensitivity"].cast(pl.Utf8).str.to_lowercase().is_in(["confidential", "restricted"])
         withheld = int(restricted.sum())
         df = df.filter(~restricted)
-    if df.height == 0:
-        empty = df.drop("vector").with_columns(pl.Series("rank", [], dtype=pl.Int64),
-                                               pl.Series("score", [], dtype=pl.Float64)).lazy()
-        return NodeResult(empty, report={"hits": 0, "withheld": withheld}, messages=["The index has no searchable passages"])
-    mat = matrix(df["vector"].to_list())
-    scores = mat @ embed(query, mat.shape[1])
-    order = top_k(scores, k, min_score)
-    picked = df.drop("vector")[order]
+    texts = df["text"].to_list() if "text" in df.columns else [""] * df.height
+    vectors = df["vector"].to_list() if "vector" in df.columns else []
+    use = retriever if (vectors or retriever == "bm25") else "bm25"      # no vectors: fall back to keyword search
+    order, scores, provenance = rank(query, texts=texts, vectors=vectors, dim=None, retriever=use,
+                                     k=k, min_score=min_score)
+    picked = (df.drop("vector") if "vector" in df.columns else df)[order]
     picked = picked.with_columns(pl.Series("rank", list(range(1, len(order) + 1)), dtype=pl.Int64),
                                  pl.Series("score", [round(float(scores[i]), 4) for i in order], dtype=pl.Float64))
     cols = ["rank", "score"] + [c for c in picked.columns if c not in ("rank", "score")]
     out = picked.select(cols)
     top = float(scores[order[0]]) if len(order) else None
     said = (f"Found {plural(len(order), 'passage')}" + (f" (best match {top:.2f})" if top is not None else "")
-            + (f" for {query!r}; {withheld:,} restricted withheld" if withheld else f" for {query!r}"))
+            + (f" for {query!r}; {withheld:,} restricted withheld" if withheld else f" for {query!r}")
+            + (f" [{use}]" if use != "lexical" else ""))
     report: dict[str, Any] = {"hits": len(order), "withheld": withheld,
-                              "top_score": (round(top, 4) if top is not None else None)}
+                              "top_score": (round(top, 4) if top is not None else None),
+                              "retrieval": provenance}
     return NodeResult(out.lazy(), report=report, messages=[said])
 
 
@@ -189,6 +195,10 @@ registry.register(NodeType(
         Param("k", "How many passages", "int", default=5, min=1, max=200),
         Param("min_score", "Minimum similarity", "float", default=0.0, min=0.0, max=1.0, advanced=True,
               help="0 keeps the top k whatever their score; raise it to drop weak matches"),
+        Param("retriever", "Retriever", "choice", default="lexical",
+              choices=[("lexical", "Offline embedding (default)"), ("bm25", "Keyword (BM25)"),
+                       ("hybrid", "Hybrid (embedding + keyword)")],
+              help="All three are offline and deterministic. 'hybrid' fuses the offline embedding with BM25 scoring"),
         Param("allow_restricted", "Include confidential/restricted passages", "bool", default=False, advanced=True,
               help="When the index has a 'sensitivity' column, restricted passages are withheld unless this is on"),
     ],

@@ -374,7 +374,7 @@ def cmd_search(a: argparse.Namespace) -> None:
     """Search the project's own text index (built by a 'Build search index' step)."""
     p = _load(a.pipeline)
     res = hl.search_knowledge(p, a.query, node=a.node, k=a.k, min_score=a.min_score,
-                              allow_restricted=a.allow_restricted, executor=Executor(p))
+                              allow_restricted=a.allow_restricted, retriever=a.retriever, executor=Executor(p))
     if a.json:
         _print(a, res)
         return
@@ -590,6 +590,80 @@ def cmd_connections(a: argparse.Namespace) -> None:
             bits.append(c["cardinality"])
         lines.append(" ↔ ".join(c.get("tables", [])) + "  (" + ", ".join(str(b) for b in bits if b) + ")")
     _print(a, out, "\n".join(lines) or "No relations found between the tables")
+
+
+def cmd_graph_build(a: argparse.Namespace) -> None:
+    """Build or refresh the cross-project entity graph for a repository folder."""
+    rec = hl.build_graph(a.root, projects=a.project, force=a.force, jobs=a.jobs)
+    lines = [f"{rec['datasets']} dataset(s), {rec['edges']} edge(s) from {rec['projects']} project(s) under {rec['root']}"]
+    if rec.get("rebuilt"):
+        lines.append("  rebuilt: " + ", ".join(rec["rebuilt"]))
+    if rec.get("reused"):
+        lines.append("  reused:  " + ", ".join(rec["reused"]))
+    for k, v in rec.get("skipped", {}).items():
+        lines.append(f"  ! {k}: {v}")
+    _print(a, rec, "\n".join(lines))
+
+
+def cmd_graph_summary(a: argparse.Namespace) -> None:
+    rec = hl.graph_summary(a.root)
+    lines = [f"{rec['projects']} project(s), {rec['datasets']} dataset(s), {rec['edges']} edge(s)"]
+    if rec.get("edge_kinds"):
+        lines.append("  edges: " + ", ".join(f"{k} {v}" for k, v in rec["edge_kinds"].items()))
+    if rec.get("withheld_restricted"):
+        lines.append(f"  withheld (restricted): {rec['withheld_restricted']} dataset(s)")
+    _print(a, rec, "\n".join(lines))
+
+
+def cmd_graph_query(a: argparse.Namespace) -> None:
+    rec = hl.graph_query(a.root, kind=a.kind, project=a.project, text=a.text,
+                         allow_restricted=a.allow_restricted, limit=a.limit)
+    if a.json:
+        _print(a, rec); return
+    lines = [f"{rec['count']} dataset(s)" + (f" of {rec['total']}" if rec.get("total") != rec.get("count") else "")]
+    for d in rec["datasets"]:
+        rows = f"{d['rows']:,} rows" if d.get("rows") is not None else "rows unknown"
+        sens = f" · {d['sensitivity']}" if d.get("sensitivity") not in (None, "", "public") else ""
+        lines.append(f"  [{d['id']}] {d['title']}  ({d['shape']}, {rows}){sens}")
+    for e in rec["edges"]:
+        bits = []
+        if e.get("left_on"):
+            bits.append(f"{e['left_on']} = {e.get('right_on')}")
+        if e.get("match_pct"):
+            bits.append(f"{e['match_pct']}% match")
+        lines.append(f"    {e['kind']}  {e['left']} → {e['right']}  ({', '.join(bits)})")
+    _print(a, rec, "\n".join(lines))
+
+
+def cmd_graph_neighbors(a: argparse.Namespace) -> None:
+    rec = hl.graph_neighbors(a.root, a.dataset, allow_restricted=a.allow_restricted)
+    if a.json:
+        _print(a, rec); return
+    lines = [f"{rec['dataset']['title']} [{rec['dataset']['id']}]: {rec['count']} neighbour(s)"]
+    for n in rec["neighbors"]:
+        e = n["edge"]
+        lines.append(f"  {e['kind']}: {e['left']} → {e['right']}  ({e.get('evidence', '')})")
+    _print(a, rec, "\n".join(lines))
+
+
+def cmd_graph_path(a: argparse.Namespace) -> None:
+    rec = hl.graph_path(a.root, a.source, a.target, allow_restricted=a.allow_restricted)
+    if a.json:
+        _print(a, rec); return
+    if not rec["found"]:
+        _print(a, rec, f"No relation joins {a.source} and {a.target}")
+        return
+    _print(a, rec, " → ".join(rec["datasets"]) + f"  ({rec['hops']} hop(s))")
+
+
+def cmd_graph_shared_keys(a: argparse.Namespace) -> None:
+    rec = hl.graph_shared_keys(a.root, allow_restricted=a.allow_restricted)
+    if a.json:
+        _print(a, rec); return
+    lines = [f"{rec['count']} cross-project key(s)"]
+    for k in rec["keys"]:
+        lines.append(f"  {k['left_on']} = {k['right_on']}  {k['left']} ↔ {k['right']}  ({k.get('match_pct')}% match)")
+    _print(a, rec, "\n".join(lines))
 
 
 def cmd_assistant(a: argparse.Namespace) -> None:
@@ -1063,6 +1137,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("pipeline"); s.add_argument("query"); s.add_argument("--node", help="the index step (needed only if there are several)")
     s.add_argument("--k", type=int, default=5, help="how many passages"); s.add_argument("--min-score", type=float, default=0.0, dest="min_score")
     s.add_argument("--allow-restricted", action="store_true", dest="allow_restricted", help="include confidential/restricted passages (withheld by default)")
+    s.add_argument("--retriever", choices=["lexical", "bm25", "hybrid"], default="lexical", help="how to rank: the offline embedding (default), keyword BM25, or a hybrid of both")
     s.set_defaults(fn=cmd_search)
     s = sub.add_parser("eval", help="score questions against the project (the engine, or the Assistant with --model)")
     s.add_argument("pipeline"); s.add_argument("--set", required=True, help="an evaluation set file (JSON {'cases': [...]}, a JSON list, or JSON Lines)")
@@ -1152,6 +1227,30 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("inputs", help="list, set or remove named inputs (values usable in formulas, filters and limits)"); s.add_argument("pipeline"); s.add_argument("name", nargs="?"); s.add_argument("value", nargs="?"); s.add_argument("--unit", default=""); s.add_argument("--note", default=""); s.add_argument("--remove"); s.set_defaults(fn=cmd_inputs)
     s = sub.add_parser("columns", help="list or set display names and units for columns"); s.add_argument("pipeline"); s.add_argument("name", nargs="?"); s.add_argument("--label"); s.add_argument("--unit"); s.set_defaults(fn=cmd_columns)
     s = sub.add_parser("synth", help="generate a synthetic two-probe test dataset"); s.add_argument("out_dir"); s.add_argument("--hours", type=float, default=1.0); s.add_argument("--rate", type=float, default=20.0); s.add_argument("--seed", type=int, default=1); s.add_argument("--format", choices=["csv", "parquet"], default="csv"); s.set_defaults(fn=cmd_synth)
+
+    s = sub.add_parser("graph", help="the cross-project entity graph: build it, query it, follow relations")
+    gs = s.add_subparsers(dest="graph_cmd", required=True, parser_class=_Parser)
+    g = gs.add_parser("build", help="build or refresh the graph for a repository folder")
+    g.add_argument("root"); g.add_argument("--project", action="append", help="only this project file (repeatable)")
+    g.add_argument("--force", action="store_true", help="rebuild every project, not only the changed ones")
+    g.add_argument("--jobs", type=int, default=1, help="projects to build at once (default 1)")
+    g.set_defaults(fn=cmd_graph_build)
+    g = gs.add_parser("summary", help="counts and metadata of the stored graph")
+    g.add_argument("root"); g.set_defaults(fn=cmd_graph_summary)
+    g = gs.add_parser("query", help="datasets and edges matching a filter")
+    g.add_argument("root"); g.add_argument("--kind", help="only edges of this kind (link, stack, align, near, containment)")
+    g.add_argument("--project", help="only datasets of this project file"); g.add_argument("--text", help="match a dataset, column or file name")
+    g.add_argument("--limit", type=int); g.add_argument("--allow-restricted", action="store_true", dest="allow_restricted")
+    g.set_defaults(fn=cmd_graph_query)
+    g = gs.add_parser("neighbors", help="what a dataset relates to")
+    g.add_argument("root"); g.add_argument("dataset"); g.add_argument("--allow-restricted", action="store_true", dest="allow_restricted")
+    g.set_defaults(fn=cmd_graph_neighbors)
+    g = gs.add_parser("path", help="the shortest chain of relations joining two datasets")
+    g.add_argument("root"); g.add_argument("source"); g.add_argument("target"); g.add_argument("--allow-restricted", action="store_true", dest="allow_restricted")
+    g.set_defaults(fn=cmd_graph_path)
+    g = gs.add_parser("shared-keys", help="keys that link datasets across different projects")
+    g.add_argument("root"); g.add_argument("--allow-restricted", action="store_true", dest="allow_restricted")
+    g.set_defaults(fn=cmd_graph_shared_keys)
     return ap
 
 

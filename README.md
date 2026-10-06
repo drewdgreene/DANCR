@@ -60,10 +60,17 @@ The app is self-contained. You don't need to install anything else first.
 - Searches a project's own text: a **Build search index** step turns tables and documents into offline,
   deterministic vectors; **Search index** (and `dancr search` / the `search_knowledge` MCP tool) returns the
   closest passages with their source rows — withholding confidential/restricted ones unless you ask for them.
+  Ranking can be the offline embedding (default), keyword BM25, or a deterministic hybrid of both, and every
+  result says which retrievers and embedder were used.
   With a persistent index file, re-indexing is **incremental**: each document is hashed and only the ones whose
   content changed are embedded again (the step reports added / changed / unchanged / removed). Point it at a
   `dancr context --changed` feed and whole datasets that did not move are skipped and carried over from the
   index without being read again.
+- Indexes a whole folder of projects into a **cross-project graph** — one vertex per project, dataset, column
+  and source, one edge per relation the engine found (links, stacks, time alignments, nearest place,
+  containment), each with its evidence. Build it with `dancr graph build`, then ask what relates to what, the
+  shortest chain joining two datasets, or which keys link projects (`dancr graph shared-keys`). It is rebuilt
+  incrementally and deterministically, and confidential datasets stay withheld unless you ask.
 - Stewards data: **Check data contract** (column kinds, blanks, uniqueness, range, allowed values, patterns,
   cross-column rules and keys that must exist elsewhere), **Compare two versions** (what changed), a
   data-dictionary step, **Label sensitivity**, and **Redact** columns for a shareable copy.

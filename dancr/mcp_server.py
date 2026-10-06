@@ -429,14 +429,17 @@ def get_proof(path: str, node_id: str) -> str:
 @mcp.tool()
 @friendly
 def search_knowledge(path: str, query: str, node: str | None = None, k: int = 5, min_score: float = 0.0,
-                     allow_restricted: bool = False) -> str:
+                     allow_restricted: bool = False, retriever: str = "lexical") -> str:
     """Search the project's own text index (built by a 'Build search index' step) and return the closest
-    passages, each with the source columns it came from. Offline and deterministic; `node` names the index step
-    when there is more than one. When the index has a 'sensitivity' column, confidential/restricted passages are
-    withheld unless allow_restricted is true (the withheld count is reported)."""
+    passages, each with the source columns it came from and a provenance block (which retrievers and embedder
+    were used). Offline and deterministic; `node` names the index step when there is more than one.
+    `retriever` is 'lexical' (the offline embedding, default), 'bm25' (keyword) or 'hybrid'. When the index has
+    a 'sensitivity' column, confidential/restricted passages are withheld unless allow_restricted is true (the
+    withheld count is reported)."""
     p = _load(path)
     return _dump(hl.search_knowledge(p, query, node=node, k=int(k), min_score=float(min_score),
-                                     allow_restricted=bool(allow_restricted), executor=_executor(p)))
+                                     allow_restricted=bool(allow_restricted), retriever=retriever,
+                                     executor=_executor(p)))
 
 
 @mcp.tool()
@@ -865,6 +868,73 @@ def read_document(file_path: str, what: str = "blocks", tier: str | None = None,
     # extracted table CSVs are confined to the server's root folder, never written next to an arbitrary document
     return _dump(hl.read_document(_from_root(file_path), what=what, tier=tier, pages=pages,
                                   allow_remote=allow_remote, rows=rows, output_root=ROOT))
+
+
+# ----------------------------------------------------------------- cross-project graph
+def _repo_root(root: str | None) -> Path:
+    """The repository folder a graph tool works on: inside the server's root, never a .dancr folder. `root` is
+    optional and defaults to the server's root."""
+    if ROOT_REFUSED:
+        raise ToolError(f"The DANCR MCP server was started in {ROOT}, so it won't build or change derived state "
+                        "anywhere under it. Start it in the repository folder, or with --root <folder>.")
+    p = Path(root).expanduser() if root else ROOT
+    p = (p if p.is_absolute() else ROOT / p).resolve()
+    if not p.is_relative_to(ROOT):
+        raise ToolError(f"Only repositories inside {ROOT} are allowed, not {p}")
+    if in_dancr_folder(p, ROOT):
+        raise ToolError(f"Won't use DANCR's own .dancr folder as a repository: {p}")
+    if not p.is_dir():
+        raise ToolError(f"{p} is not a folder")
+    return p
+
+
+@mcp.tool()
+@friendly
+def graph_build(root: str | None = None) -> str:
+    """Build or refresh the cross-project entity graph for a repository folder (default: the server's root):
+    one vertex per project, dataset, column and source, and one edge per relation the engine found (link,
+    stack, align, nearest-place, containment), each carrying its evidence and confidence. Incremental: projects
+    whose file and source files have not changed are carried over. Writes <root>/.dancr/graph/graph.db."""
+    return _dump(hl.build_graph(_repo_root(root)))
+
+
+@mcp.tool()
+@friendly
+def graph_query(root: str | None = None, kind: str | None = None, project: str | None = None,
+                text: str | None = None, allow_restricted: bool = False, limit: int | None = None) -> str:
+    """Datasets and edges in the repository graph matching a filter. `kind` limits edges by relation; `project`
+    limits to one project file; `text` matches a dataset id, title, node, column name or source file name.
+    Confidential/restricted datasets (and the edges touching them) are withheld unless allow_restricted."""
+    return _dump(hl.graph_query(_repo_root(root), kind=kind, project=project, text=text,
+                                allow_restricted=bool(allow_restricted), limit=limit))
+
+
+@mcp.tool()
+@friendly
+def graph_neighbors(root: str | None = None, dataset: str = "", allow_restricted: bool = False) -> str:
+    """What one dataset relates to: its links, stacks, time alignments, nearest-place and containment edges,
+    each with the evidence the engine recorded. `dataset` is a dataset id from graph_query (file#node)."""
+    if not dataset:
+        raise ToolError("Give a dataset id (from graph_query), e.g. data/shop.json#orders")
+    return _dump(hl.graph_neighbors(_repo_root(root), dataset, allow_restricted=bool(allow_restricted)))
+
+
+@mcp.tool()
+@friendly
+def graph_path(root: str | None = None, source: str = "", target: str = "", allow_restricted: bool = False) -> str:
+    """The shortest chain of relations joining two datasets in the repository graph, with the edges between
+    them. Deterministic: ties are broken by id."""
+    if not source or not target:
+        raise ToolError("Give two dataset ids (from graph_query)")
+    return _dump(hl.graph_path(_repo_root(root), source, target, allow_restricted=bool(allow_restricted)))
+
+
+@mcp.tool()
+@friendly
+def graph_shared_keys(root: str | None = None, allow_restricted: bool = False) -> str:
+    """Keys that link datasets across different projects: the same join key reaching across a repository, with
+    its cardinality, match percentage and evidence."""
+    return _dump(hl.graph_shared_keys(_repo_root(root), allow_restricted=bool(allow_restricted)))
 
 
 def main(root: str | None = None) -> None:

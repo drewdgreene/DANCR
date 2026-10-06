@@ -60,7 +60,34 @@ PY
 
 ## Phase 1 — A1 graph + C1 retrieval
 
-Status: not started
+Status: **done**
+
+- [x] `dancr/core/graph.py` — graph schema, in-memory model, deterministic queries, SQLite IO.
+- [x] `dancr/headless/_graph.py` — build/load/query; incremental carry-over; cross-project key edges.
+- [x] CLI `dancr graph build|summary|query|neighbors|path|shared-keys` (+ `search --retriever`).
+- [x] MCP tools `graph_build`, `graph_query`, `graph_neighbors`, `graph_path`, `graph_shared_keys`;
+      `search_knowledge` gains `retriever`.
+- [x] SDK names (`Graph`, `build_graph`, `load_graph`, `graph_summary`, `graph_query`, `graph_neighbors`,
+      `graph_path`, `graph_shared_keys`, `graph_slice`).
+- [x] Edges carry evidence + confidence; sensitivity withheld by default.
+- [x] C1 hybrid retrieval: `lexical` (default, unchanged) / `bm25` / `hybrid` fusion, embedder sidecar,
+      provenance on every result.
+- [x] tests: `tests/test_graph.py` (9), `tests/test_retrieval.py` (9).
+
+Verification (Phase 1):
+
+- `ruff check dancr tests` → **All checks passed**
+- `pytest -q` → **1450 passed, 2 warnings in 348.86 s** (Phase 0's 1432 + 18 new)
+
+Demo:
+
+```bash
+dancr graph build /path/to/repo
+dancr graph shared-keys /path/to/repo
+dancr graph neighbors /path/to/repo data/shop.json#orders
+dancr graph path /path/to/repo a/a.json#orders b/b.json#contacts
+dancr search shop.json "drought tolerance" --retriever hybrid
+```
 
 ## Phase 2 — B1 gateway + A2 events
 

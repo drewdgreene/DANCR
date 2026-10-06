@@ -89,6 +89,12 @@ def column_id(name: Any) -> str:
     return f"column:{key_norm(name)}"
 
 
+def dataset_column_id(dataset: str, name: Any) -> str:
+    """A column *vertex* in the graph, scoped to its dataset: ``"<dataset id>:column:<normalized name>"``.
+    The same column name appears in many datasets, so the dataset is part of a column's identity."""
+    return f"{dataset}:{column_id(name)}"
+
+
 def entity_id(column: Any, value: Any) -> str:
     """A resolved key value's identity: ``"value:<normalized column>=<value>"``. Deterministic and model-free."""
     return f"value:{key_norm(column)}={value}"

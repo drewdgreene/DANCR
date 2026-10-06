@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import unicodedata
@@ -78,6 +79,120 @@ def top_k(scores: np.ndarray, k: int, min_score: float = 0.0) -> np.ndarray:
     if min_score > 0.0:
         order = order[scores[order] >= min_score]
     return order[:max(0, int(k))].astype(np.int64)
+
+
+# ---------------------------------------------------------------- hybrid retrieval (C1)
+# Deterministic and offline: a lexical vector retriever (the default), a standard-library BM25 keyword
+# retriever, and a deterministic fusion of the two. No randomness, no model, no vector database. A neural
+# embedder, if one is ever added, must be pinned by id and version and recorded in the index sidecar so a run
+# stays auditable (docs/adr/0004). The provenance block on every result states which retrievers were used.
+EMBEDDER_ID = "dancr-lexical-v1"
+RETRIEVERS = ("lexical", "bm25", "hybrid")
+INDEX_META_SUFFIX = ".meta.json"
+
+
+def _tokens(text: Any) -> list[str]:
+    return [w.lower() for w in _WORD.findall(str(text or ""))]
+
+
+def bm25_scores(texts: list[Any], query: str, *, k1: float = 1.5, b: float = 0.75) -> np.ndarray:
+    """Okapi BM25 of every passage against the query. Pure standard library and deterministic; computed at
+    query time from the stored passage text, so adding it needs no re-embedding."""
+    docs = [_tokens(t) for t in texts]
+    n = len(docs)
+    if n == 0:
+        return np.zeros(0, dtype=np.float32)
+    q = _tokens(query)
+    avgdl = (sum(len(d) for d in docs) / n) or 1.0
+    df_count: dict[str, int] = {}
+    for d in docs:
+        for w in set(d):
+            df_count[w] = df_count.get(w, 0) + 1
+    scores = np.zeros(n, dtype=np.float32)
+    for term in q:
+        df = df_count.get(term, 0)
+        if df == 0:
+            continue
+        idf = math.log(1.0 + (n - df + 0.5) / (df + 0.5))
+        for i, d in enumerate(docs):
+            tf = d.count(term)
+            if tf == 0:
+                continue
+            denom = tf + k1 * (1.0 - b + b * (len(d) / avgdl))
+            scores[i] += idf * (tf * (k1 + 1.0)) / denom
+    return scores
+
+
+def _minmax(scores: np.ndarray) -> np.ndarray:
+    """Scale scores to [0, 1] for fusion; all-equal (or empty) becomes zeros. Deterministic."""
+    if scores.size == 0:
+        return scores
+    lo, hi = float(scores.min()), float(scores.max())
+    if hi <= lo:
+        return np.zeros_like(scores)
+    return (scores - lo) / (hi - lo)
+
+
+def lexical_scores(query: str, vectors: list[Any], dim: int) -> np.ndarray:
+    """Cosine similarity of the query's offline embedding against the stored passage vectors (the default)."""
+    mat = matrix(vectors)
+    if mat.size == 0:
+        return np.zeros(0, dtype=np.float32)
+    return mat @ embed(query, int(dim or mat.shape[1]))
+
+
+def rank(query: str, *, texts: list[Any], vectors: list[Any] | None, dim: int | None = None,
+         retriever: str = "lexical", k: int = 5, min_score: float = 0.0,
+         weight: float = 0.5) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
+    """Rank passages by the chosen retriever. Returns ``(order, scores, provenance)``.
+
+    ``lexical`` uses the offline embedding (the default, byte-identical to before); ``bm25`` uses keyword
+    scoring with no vectors at all; ``hybrid`` fuses both (weighted, each min-max scaled). ``min_score`` is a
+    floor on the reported score and is ignored for BM25, whose scores are unbounded."""
+    if retriever not in RETRIEVERS:
+        raise ValueError(f"Unknown retriever {retriever!r}. Choose one of: {', '.join(RETRIEVERS)}")
+    vectors = vectors or []
+    provenance: dict[str, Any] = {"retriever": retriever, "embedder": None, "retrievers": []}
+    if retriever == "bm25" or not vectors:
+        scores = bm25_scores(texts, query)
+        provenance["retrievers"] = ["bm25"]
+        floor = 0.0
+    else:
+        size = int(dim or (len(vectors[0]) if vectors else DEFAULT_DIM))
+        lex = lexical_scores(query, vectors, size)
+        provenance["embedder"] = EMBEDDER_ID
+        if retriever == "hybrid":
+            bm = bm25_scores(texts, query)
+            w = min(1.0, max(0.0, float(weight)))
+            scores = w * _minmax(lex) + (1.0 - w) * _minmax(bm)
+            provenance["retrievers"] = ["lexical", "bm25"]
+            provenance["fusion"] = {"method": "weighted_minmax", "lexical_weight": w}
+        else:
+            scores = lex
+            provenance["retrievers"] = ["lexical"]
+        floor = min_score
+    order = top_k(scores, k, floor)
+    return order, scores, provenance
+
+
+# ---------------------------------------------------------------- persistent index metadata
+def save_index_meta(index_path: Path | str, *, embedder: str = EMBEDDER_ID, dim: int = DEFAULT_DIM,
+                    retriever: str = "lexical") -> Path | None:
+    """Write the small sidecar next to a persistent index that records how its vectors were made. A neural
+    embedder (future) would be pinned here by id and version; today it is the offline lexical embedder."""
+    from .repo import write_json_atomic
+    p = Path(index_path).expanduser()
+    return write_json_atomic(str(p) + INDEX_META_SUFFIX,
+                             {"kind": "dancr.index", "version": 1, "embedder": embedder, "dim": int(dim),
+                              "retriever": retriever})
+
+
+def load_index_meta(index_path: Path | str) -> dict[str, Any]:
+    """The sidecar for a persistent index, or an empty mapping for an index built before it existed (read as
+    the lexical embedder — the only one there was)."""
+    from .repo import read_json
+    data = read_json(str(Path(index_path).expanduser()) + INDEX_META_SUFFIX)
+    return data if isinstance(data, dict) else {}
 
 
 # ----------------------------------------------------------------- incremental, persistent index
@@ -207,10 +322,11 @@ def read_context_feed(source: Any) -> tuple[bool, dict[str, str | None]]:
 
 def search_knowledge(pipe, query: str, *, node: str | None = None, k: int = 5, min_score: float = 0.0,
                      allow_restricted: bool = False, restricted_levels: tuple[str, ...] = ("confidential", "restricted"),
-                     executor: Any = None) -> dict[str, Any]:
-    """Search a project's own text index: embed the query, rank the indexed chunks by cosine similarity, and
-    return the best ones with their source columns. ``node`` names the 'Build search index' step; when there is
-    exactly one it is used automatically. The index is computed first if it has not been.
+                     retriever: str = "lexical", executor: Any = None) -> dict[str, Any]:
+    """Search a project's own text index: rank the indexed chunks by the chosen retriever (the offline lexical
+    embedding by default; ``bm25`` and ``hybrid`` are offline alternatives), and return the best ones with their
+    source columns and a provenance block. ``node`` names the 'Build search index' step; when there is exactly
+    one it is used automatically. The index is computed first if it has not been.
 
     When the index carries a ``sensitivity`` column, passages marked confidential or restricted are **withheld**
     by default (their count is reported); pass ``allow_restricted=True`` to include them."""
@@ -245,18 +361,31 @@ def search_knowledge(pipe, query: str, *, node: str | None = None, k: int = 5, m
         restricted = df["sensitivity"].cast(pl.Utf8).str.to_lowercase().is_in([s.lower() for s in restricted_levels])
         withheld = int(restricted.sum())
         df = df.filter(~restricted)
-    if "vector" not in df.columns or df.height == 0:
-        return {"kind": "dancr.search", "query": query, "node": node, "count": 0, "withheld": withheld, "hits": []}
-    mat = matrix(df["vector"].to_list())
-    dim = mat.shape[1]
-    scores = mat @ embed(query, dim)
-    order = top_k(scores, k, min_score)
-    view = df.drop("vector")[order]
+    if df.height == 0:
+        return {"kind": "dancr.search", "query": query, "node": node, "count": 0, "withheld": withheld,
+                "provenance": {"retriever": retriever, "retrievers": [], "embedder": None}, "hits": []}
+    texts = df["text"].to_list() if "text" in df.columns else [""] * df.height
+    vectors = df["vector"].to_list() if "vector" in df.columns else []
+    use = retriever if (vectors or retriever == "bm25") else "bm25"   # an index with no vectors still searches by keywords
+    order, scores, provenance = rank(query, texts=texts, vectors=vectors, dim=None, retriever=use,
+                                     k=k, min_score=min_score)
+    provenance["node"] = node
+    idx_path = str(pipe.nodes[node].params.get("index_path") or "")
+    if idx_path and "lexical" in provenance["retrievers"]:
+        from .registry import resolve_path
+        meta = load_index_meta(resolve_path(pipe.directory, idx_path))
+        if meta.get("embedder"):
+            provenance["embedder"] = meta["embedder"]
+        if meta.get("dim"):
+            provenance["dim"] = meta["dim"]
+    view = df.drop("vector") if "vector" in df.columns else df
+    picked = view[order]
     hits = []
-    for rank, i in enumerate(order.tolist(), start=1):
-        rec = view.row(rank - 1, named=True)
-        rec["rank"] = rank
+    for pos, i in enumerate(order.tolist(), start=1):
+        rec = picked.row(pos - 1, named=True)
+        rec["rank"] = pos
         rec["score"] = round(float(scores[i]), 4)
         hits.append(rec)
     return {"kind": "dancr.search", "query": query, "node": node, "count": len(hits), "withheld": withheld,
-            "top_score": (round(float(scores[order[0]]), 4) if len(order) else None), "hits": hits}
+            "top_score": (round(float(scores[order[0]]), 4) if len(order) else None),
+            "provenance": provenance, "hits": hits}

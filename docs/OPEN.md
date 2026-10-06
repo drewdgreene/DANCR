@@ -101,5 +101,21 @@
   `mineru parse --json` response). `what=tables` writes one CSV per table under `out_dir`. `dancr doctor` reports
   whether MinerU is present; `dancr inspect` and the MCP `read_document` tool preview/read documents.
 
+- The cross-project graph (`dancr graph`, `docs/adr/0001-graph-identity.md`) has limits worth knowing. A
+  dataset's identity is its project file's path relative to the repository root plus the step id, so **moving or
+  renaming a project file inside the repository is a new identity** (its datasets and edges are re-created). The
+  graph describes relations from a *sample* of each table (the same `understand` pass the answer engine uses);
+  row counts and key uniqueness may be estimates. Cross-project links are **by key name only** — two datasets in
+  different projects whose resolved key columns share a normalized name get a proposal edge, and the match
+  percentage is left unmeasured (0), so it is a hypothesis to check, not a measured join. The build reads each
+  changed project's sources; it therefore takes longer the more data changed. It holds the repository lock while
+  writing (one writer per repository) but never a project lock, because it does not change project files.
+- Hybrid retrieval (`docs/adr/0004-retrieval-embedder-policy.md`) keeps the deterministic offline embedder as the
+  default; BM25 and the hybrid fusion are computed at query time from the stored passage text, so their cost
+  grows with the index size and a very large index is slower to search than the vector-only path. The hybrid
+  weight is fixed (0.5 lexical / 0.5 keyword). There is no neural embedder: the interfaces carry an embedder id
+  and the persistent index records it in a `.meta.json` sidecar, so a neural one could be added and recorded
+  later, pinned by id and version, without changing the retrieval contract.
+
 Design and extension of the answer engine: `docs/ANSWERS.md`. Earlier plans and review worklists
 (all items done): `docs/history/`.

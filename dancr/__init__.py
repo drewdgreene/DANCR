@@ -87,6 +87,16 @@ _PUBLIC: dict[str, tuple[str, str]] = {
     "proof_card": ("dancr.headless", "proof_card"),
     # in-product retrieval over a project's own text
     "search_knowledge": ("dancr.headless", "search_knowledge"),
+    # the cross-project entity graph (A1)
+    "Graph": ("dancr.core.graph", "Graph"),
+    "build_graph": ("dancr.headless", "build_graph"),
+    "load_graph": ("dancr.headless", "load_graph"),
+    "graph_summary": ("dancr.headless", "graph_summary"),
+    "graph_query": ("dancr.headless", "graph_query"),
+    "graph_neighbors": ("dancr.headless", "graph_neighbors"),
+    "graph_path": ("dancr.headless", "graph_path"),
+    "graph_shared_keys": ("dancr.headless", "graph_shared_keys"),
+    "graph_slice": ("dancr.headless", "graph_slice"),
     # the compact profile the Assistant reads (the schema half of the context document)
     "project_profile": ("dancr.core.profile", "project_profile"),
     "table_card": ("dancr.core.profile", "table_card"),

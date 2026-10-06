@@ -32,6 +32,10 @@ from ..core.verify import (  # noqa: E402 - the attestation + verification surfa
 )
 from ..core.lineage import build_lineage, proof_card  # noqa: E402 - the lineage + proof surface
 from ..core.rag import search_knowledge  # noqa: E402 - retrieve from a project's own text index
+from ._graph import (  # noqa: E402 - the cross-project entity graph (A1)
+    build_graph, graph_neighbors, graph_path, graph_query, graph_shared_keys, graph_slice, graph_summary,
+    load_graph,
+)
 
 
 class StepFailed(ValueError):

@@ -26,7 +26,9 @@ Two interfaces, same engine:
   `verify_pipeline` (re-run and check it still reproduces), `lineage` (what produced a step, what depends on it),
   `get_proof` (a proof card for one step), `search_knowledge` (search a project's own text index),
   `get_trace` (the Assistant conversation as an audit log), `run_eval` (score questions against the project),
-  `catalog` (every project under a folder), `open_in_gui`.
+  `catalog` (every project under a folder),
+  `graph_build` / `graph_query` / `graph_neighbors` / `graph_path` / `graph_shared_keys` (the cross-project
+  entity graph — see below), `open_in_gui`.
 - **CLI**: `dancr --json <command> …` prints JSON. `dancr ask p.json "total sales by region" --file a.csv`,
   `dancr suggest p.json [--build N]` (`--file` on a workbook adds every sheet),   `dancr answer p.json [ID] [--set stat=mean] [--choose N M] [--remove --steps]`
   and `dancr understand p.json` are the answer commands. `dancr context p.json [--samples] [--jsonl] [--changed old.jsonl]` (alias
@@ -41,7 +43,12 @@ Two interfaces, same engine:
   it still reproduces (`verified` | `mismatch` | `incomplete` | `engine-changed`); `dancr lineage p.json NODE
   [--up|--down]` shows what produced a step and what depends on it;   `dancr proof p.json NODE` prints a proof card.
   Build a search index with a `build_index` step, search a node with a `retrieve` step, or `dancr search p.json "query"
-  [--node NODE] [--k N]` searches the project's own text index (offline, deterministic).
+  [--node NODE] [--k N] [--retriever lexical|bm25|hybrid]` searches the project's own text index (offline, deterministic);
+  the result carries a `provenance` block (the retrievers, their scores and the embedder).
+  `dancr graph build DIR [--project FILE] [--force] [--jobs N]` builds the repository's cross-project graph
+  under `<DIR>/.dancr/graph/graph.db`; `dancr graph summary|query|neighbors|path|shared-keys DIR …` reads it.
+  A project whose file and source files have not changed is carried over from the stored graph without being
+  read again (the build is incremental and deterministic). See `docs/GRAPH.md`.
   `dancr eval p.json --set cases.json [--model]` scores questions against the project (the engine, or the Assistant);
   `dancr trace p.json` prints the saved Assistant conversation as an audit log.
   `dancr assistant p.json "…" [--file …] [--build]`
@@ -264,7 +271,7 @@ then `render_map`. Offline country outlines are drawn when `basemap` is on; noth
 - `pivot` (rows into columns, the inverse of `unpivot`): `index` (columns kept as rows), `columns` (whose values become the new columns), `values` (cell values; blank = count rows), `agg` sum|mean|min|max|median|first|last|count, `fill_zero`, `max_columns`. Report: `new_columns`, `rows`.
 - `describe_dataset` (a data dictionary): `definitions` (a column→description mapping). Output one row per column with `role`, `type`, `unit`, `definition`, `missing`, `missing_percent`, `distinct`, `min`, `max`, `mean`, `example`; `report` has `columns`, `with_units`, `with_blanks`, `undocumented`.
 - `build_index` (offline text index): inputs `items` (tables/documents); `text_column` (blank = a `text` column, else all columns joined), `chunk_chars`, `chunk_overlap`, `dim`, `id_column`, `index_path`, `changed_path`, `max_chunks`. Output one row per passage with `dataset`, `doc_key`, `content_hash`, `chunk_id`, `chunk_index`, `text`, `vector` (a fixed-size float array) and the source columns. With `index_path` it keeps a persistent index: each document's text+metadata is hashed, and only documents whose `content_hash` changed are embedded again — the report's `index` block gives `added`/`changed`/`unchanged`/`removed` documents and `reused_chunks`/`embedded_chunks`. `id_column` names the column that identifies a document across runs (blank falls back to the source row's position). With `changed_path` (a `dancr context --jsonl` export, or its `--changed` form) a whole dataset whose content has not moved is **skipped** and carried over from the persistent index without being read again; the report adds `skipped_datasets` and `carried_chunks`. A `--changed` feed lists only what moved (datasets absent are skipped); a full context is compared per dataset by `content_hash`.
-- `retrieve` (search an index): input `in` (a `build_index` table); `query`, `k`, `min_score`, `allow_restricted`. Output the best passages ranked, each with `rank`, `score` and its source columns. `dancr search p.json "query" [--node NODE] [--k N]` and the MCP `search_knowledge` tool run the same search. When the index carries a `sensitivity` column, confidential/restricted passages are withheld unless `allow_restricted`.
+- `retrieve` (search an index): input `in` (a `build_index` table); `query`, `k`, `min_score`, `retriever` (`lexical` offline embedding, the default | `bm25` keyword | `hybrid`), `allow_restricted`. Output the best passages ranked, each with `rank`, `score` and its source columns; the report carries a `retrieval` provenance block. `dancr search p.json "query" [--node NODE] [--k N] [--retriever …]` and the MCP `search_knowledge` tool run the same search. When the index carries a `sensitivity` column, confidential/restricted passages are withheld unless `allow_restricted`.
 - `check_contract` (a data contract): `in` (a table) plus optional `references` (other tables); `contract` (JSON text) or `contract_path` (a file); `output` rows|issues. Contract JSON: `{"columns": {"c": {"kind": "number"|"text"|"date/time", "required": true, "unique": true, "min": .., "max": .., "allowed": [..], "regex": ".."}}, "rules": [{"name": "..", "expr": ".."}], "references": [{"column": "..", "to_node": "..", "to_column": ".."}]}`. With no contract it infers a draft into `report["inferred_contract"]`. Report: `checks`, `issues`, `errors`.
 - `diff_tables` (two versions): inputs `a` (before), `b` (after); `key`, `compare`, `tolerance`, `schema_only`. Output rows `change_type` added|removed|changed, `column`, `before`, `after`, `delta`. Report: `changed`, `added`, `removed`, `columns_added/removed/retyped`.
 - `label_sensitivity`: `level` public|internal|confidential|restricted (whole table) or `column` (per-row labels); `name` (default `sensitivity`). The label is a column that travels with the rows.
@@ -357,7 +364,35 @@ The public names: `read_project`, `editing`, `project_lock`, `ProjectBusy`, `Pip
 `add_step`, `build_template`, `data_model`, `suggestions`, `build_answer`, `ask_question`, `change_answer`,
 `assistant_turn`, `connection_map`, `run_record`, `node_record`, `run_batch`, `build_context`, `context_jsonl`,
 `context_text`, `context_changes`, `export_fair`, `dataset_jsonld`, `datapackage`, `run_manifest`,
-`project_profile`, `table_card`.
+`project_profile`, `table_card`, and the cross-project graph (`Graph`, `build_graph`, `load_graph`,
+`graph_summary`, `graph_query`, `graph_neighbors`, `graph_path`, `graph_shared_keys`, `graph_slice`).
+
+## The cross-project entity graph (A1)
+
+A repository (the folder holding your projects) can be indexed once into a **graph** of datasets, columns and
+sources and the relations between them — each link, stack, time alignment, nearest-place and containment edge
+carrying its evidence and confidence. It is derived state under `<root>/.dancr/graph/graph.db` (SQLite), always
+rebuildable, never a source of truth.
+
+```bash
+dancr graph build .                     # one vertex per project/dataset/column/source, one edge per relation
+dancr --json graph query . --text orders
+dancr graph neighbors . shop.json#orders
+dancr graph path . a.json#orders b.json#customers
+dancr graph shared-keys .               # keys that link datasets across different projects
+```
+
+- **Incremental and deterministic.** A project whose file bytes and source-file stamps have not changed is
+  carried over from the stored graph without being read again; the same repository always produces the same
+  graph (see `docs/adr/0001-graph-identity.md`).
+- **Identity is readable.** A dataset is `<project file relative path>#<node id>` (the catalog key); a column is
+  scoped to its dataset. Moving a project file inside the repo is, by decision, a new identity.
+- **Cross-project links are proposals, not joins.** Two datasets in *different* projects whose resolved key
+  columns have the same normalized name get a `link` edge with a fixed confidence; the match percentage is left
+  unmeasured (0) and the evidence says so. No value scan, no model, no silent join.
+- **Sensitivity is respected.** A project can declare `meta["sensitivity"]`, or a `Label sensitivity` step sets
+  its own level; confidential/restricted datasets (and the edges touching them) are withheld from `graph_query`
+  and exports unless `allow_restricted` is passed — matching `search_knowledge`.
 
 ## The Assistant (the in-app AI, for people, not for agents)
 
