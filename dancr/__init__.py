@@ -77,6 +77,16 @@ _PUBLIC: dict[str, tuple[str, str]] = {
     "datapackage": ("dancr.core.fair", "datapackage"),
     "run_manifest": ("dancr.core.fair", "run_manifest"),
     "ro_crate": ("dancr.core.fair", "ro_crate"),
+    # attestations, verification and lineage (reproducibility and impact)
+    "build_attestation": ("dancr.headless", "build_attestation"),
+    "verify_pipeline": ("dancr.headless", "verify_pipeline"),
+    "attestation_hash": ("dancr.headless", "attestation_hash"),
+    "output_hash": ("dancr.headless", "output_hash"),
+    "load_attestation": ("dancr.headless", "load_attestation"),
+    "build_lineage": ("dancr.headless", "build_lineage"),
+    "proof_card": ("dancr.headless", "proof_card"),
+    # in-product retrieval over a project's own text
+    "search_knowledge": ("dancr.headless", "search_knowledge"),
     # the compact profile the Assistant reads (the schema half of the context document)
     "project_profile": ("dancr.core.profile", "project_profile"),
     "table_card": ("dancr.core.profile", "table_card"),

@@ -6,11 +6,12 @@ from typing import Any
 import polars as pl
 
 from ..conditions import build_mask, incomplete_rules, describe as describe_conditions
-from ..expr import compile_formula, FormulaError, kind_of_dtype, excel_round
+from ..expr import compile_formula, FormulaError, kind_of_dtype, excel_round, NUM, TIME, STR
 from ..params import Param
 from ..registry import NodeType, InputSpec, Ctx, NodeResult, registry
 from ._common import first_input, schema_of, require_column, number_param
 from ..dtypes import datetime_literal, is_temporal, temp_name, text_to_bool, text_to_bool_expr, text_to_number_expr, typed_value
+from ..findings import finding
 
 
 # ------------------------------------------------------------- keep rows
@@ -520,5 +521,152 @@ registry.register(NodeType(
         Param("value_column", "Call their values", "text", default="value"),
         Param("year", "Year of the months (makes real dates)", "text", default="", advanced=True,
               help="With month columns (Jan … Dec) and a year, each row gets the first day of its month as a date"),
+    ],
+))
+
+
+# ------------------------------------------------------------- pivot (rows into columns)
+_PIVOT_AGGS = [("sum", "total"), ("mean", "average"), ("min", "minimum"), ("max", "maximum"),
+               ("median", "median"), ("first", "first"), ("last", "last"), ("count", "count of rows")]
+
+
+def _pivot(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, Any]) -> NodeResult:
+    lf = first_input(inputs)
+    schema = schema_of(lf)
+    msgs: list[str] = []
+    index = [require_column(schema, c, "row-identifier column") for c in (params.get("index") or [])]
+    on_col = require_column(schema, params.get("columns"), "column whose values become the new columns")
+    values = (params.get("values") or "").strip()
+    agg = params.get("agg") or "sum"
+    if values:
+        vcol = require_column(schema, values, "value column")
+    else:
+        vcol = temp_name("count", schema)
+        lf = lf.with_columns(pl.lit(1, dtype=pl.Int64).alias(vcol))
+        agg = "sum"
+        msgs.append(f"No value column: counting rows per {on_col} value")
+    if not index:
+        index = [c for c in schema if c not in (on_col, vcol)]
+        if not index:
+            raise ValueError("Give at least one column to identify a row (the columns to keep as rows)")
+        msgs.append(f"Keeping {', '.join(index)} as the row identifiers")
+    distinct = (lf.select(pl.col(on_col).drop_nulls().unique().sort())
+                  .collect(engine="streaming").get_column(on_col).to_list())
+    if not distinct:
+        raise ValueError(f"{on_col!r} has no values to turn into columns")
+    limit = int(params.get("max_columns") or 200)
+    if len(distinct) > limit:
+        raise ValueError(f"{on_col!r} has {len(distinct):,} distinct values, which would make {len(distinct):,} columns. "
+                         f"Filter the rows first, or raise 'Most new columns' above {len(distinct):,}")
+    agg = "len" if agg == "count" else agg
+    out = lf.pivot(on=on_col, on_columns=distinct, index=index, values=vcol,
+                   aggregate_function=agg, maintain_order=True)
+    if params.get("fill_zero", True) and agg in ("sum", "len"):
+        made = [c for c in out.collect_schema().names() if c not in index]
+        out = out.with_columns([pl.col(c).fill_null(0) for c in made])
+    report: dict[str, Any] = {"new_columns": len(distinct), "index": index}
+    if not ctx.preview:
+        n = int(out.select(pl.len()).collect(engine="streaming")[0, 0])
+        report["rows"] = n
+    return NodeResult(out, report=report, messages=msgs + [f"Turned {len(distinct)} values of {on_col} into columns"])
+
+
+registry.register(NodeType(
+    key="pivot", label="Rows into columns", category="Combine", icon="⤒",
+    description="Spread one column's values across new columns (the inverse of Columns into rows): one row per "
+                "identifier, one column per value, the numbers in the cells. A long table becomes a wide one.",
+    apply=_pivot,
+    summary=lambda p: (f"{p.get('agg') or 'sum'} of {p.get('values') or 'rows'} by {p.get('columns') or '?'}"
+                       + (f" over {p.get('index')}" if p.get("index") else "")),
+    params=[
+        Param("index", "Rows are identified by", "columns", default=[], required=False,
+              help="The columns that stay as rows. Leave empty to keep every other column"),
+        Param("columns", "Column whose values become new columns", "column", default="", required=True),
+        Param("values", "Values to fill the cells", "column", default="", column_group="any",
+              help="Leave empty to count rows in each cell"),
+        Param("agg", "When several rows share a cell", "choice", default="sum", choices=_PIVOT_AGGS),
+        Param("fill_zero", "Show 0 instead of blank (totals and counts)", "bool", default=True, advanced=True),
+        Param("max_columns", "Most new columns to make", "int", default=200, min=1, max=5000, advanced=True),
+    ],
+))
+
+
+# ------------------------------------------------------------- describe (a data dictionary)
+def _describe(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, Any]) -> NodeResult:
+    lf = first_input(inputs)
+    schema = schema_of(lf)
+    if not schema:
+        raise ValueError("Connect a table to describe")
+    columns_meta = getattr(ctx, "columns", {}) or {}
+    definitions = params.get("definitions") or {}
+    if not isinstance(definitions, dict):
+        definitions = {}
+    total = int(lf.select(pl.len()).collect(engine="streaming")[0, 0])
+    exprs: list[pl.Expr] = []
+    for c, dt in schema.items():
+        exprs.append(pl.col(c).null_count().alias(f"{c}\x00missing"))
+        exprs.append(pl.col(c).n_unique().alias(f"{c}\x00distinct"))
+        exprs.append(pl.col(c).cast(pl.Utf8).drop_nulls().first().alias(f"{c}\x00example"))
+        k = kind_of_dtype(dt)
+        if k == NUM:
+            exprs += [pl.col(c).min().alias(f"{c}\x00min"), pl.col(c).max().alias(f"{c}\x00max"),
+                      pl.col(c).mean().alias(f"{c}\x00mean")]
+        elif k == TIME:
+            exprs += [pl.col(c).min().cast(pl.Utf8).alias(f"{c}\x00min"), pl.col(c).max().cast(pl.Utf8).alias(f"{c}\x00max")]
+    row = lf.select(exprs).collect(engine="streaming").row(0, named=True) if exprs else {}
+
+    def g(c: str, key: str) -> Any:
+        return row.get(f"{c}\x00{key}")
+
+    recs: list[dict[str, Any]] = []
+    role_of = {NUM: "number", TIME: "time", STR: "text"}
+    blank_cols, unit_cols, undocumented = [], [], []
+    for c, dt in schema.items():
+        k = kind_of_dtype(dt)
+        m = int(g(c, "missing") or 0)
+        unit = (columns_meta.get(c) or {}).get("unit", "") if isinstance(columns_meta.get(c), dict) else ""
+        definition = str(definitions.get(c, "") or "")
+        if m:
+            blank_cols.append(c)
+        if unit:
+            unit_cols.append(c)
+        if not definition:
+            undocumented.append(c)
+        recs.append({
+            "column": c,
+            "role": role_of.get(k, str(k)),
+            "type": str(dt),
+            "unit": unit,
+            "definition": definition,
+            "missing": m,
+            "missing_percent": round(100.0 * m / total, 1) if total else None,
+            "distinct": g(c, "distinct"),
+            "min": None if g(c, "min") is None else str(g(c, "min")),
+            "max": None if g(c, "max") is None else str(g(c, "max")),
+            "mean": g(c, "mean"),
+            "example": None if g(c, "example") is None else str(g(c, "example"))[:120],
+        })
+    out = pl.DataFrame(recs) if recs else pl.DataFrame({"column": [], "role": [], "type": [], "unit": [], "definition": [],
+                                                        "missing": [], "missing_percent": [], "distinct": [],
+                                                        "min": [], "max": [], "mean": [], "example": []})
+    said = (f"Documented {len(recs)} column(s) over {total:,} row(s)"
+            + (f"; {len(blank_cols)} have blanks" if blank_cols else "")
+            + (f"; {len(unit_cols)} have units" if unit_cols else "")
+            + (f"; {len(undocumented)} have no description" if params.get("definitions") is not None and undocumented and definitions else ""))
+    report: dict[str, Any] = {"columns": len(recs), "rows": total, "with_units": len(unit_cols),
+                              "with_blanks": len(blank_cols), "undocumented": len(undocumented),
+                              "finding": finding("summary", said, magnitude=float(len(blank_cols)), exact=True)}
+    return NodeResult(out.lazy(), report=report, messages=[said])
+
+
+registry.register(NodeType(
+    key="describe_dataset", label="Describe dataset", category="Describe", icon="📖",
+    description="Build a data dictionary for a table: every column's role, type, unit, how many values are blank, "
+                "distinct count, range and an example. A steward's first deliverable, and the input a scientist reads.",
+    apply=_describe,
+    summary=lambda p: f"data dictionary ({len(p.get('definitions') or {})} described)",
+    params=[
+        Param("definitions", "Column descriptions", "mapping", default={},
+              help="One line per column to record what it means, keyed by the column name"),
     ],
 ))

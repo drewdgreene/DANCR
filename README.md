@@ -57,7 +57,24 @@ The app is self-contained. You don't need to install anything else first.
   or a NetCDF/HDF5 file, alongside local files, keeping credentials in the environment and out of logs.
 - Watches a project and its data and reruns when a file arrives or changes, and catalogs a whole folder of projects
   with each dataset's content hash — so a team can find everything and re-index only what moved.
+- Searches a project's own text: a **Build search index** step turns tables and documents into offline,
+  deterministic vectors; **Search index** (and `dancr search` / the `search_knowledge` MCP tool) returns the
+  closest passages with their source rows — withholding confidential/restricted ones unless you ask for them.
+  With a persistent index file, re-indexing is **incremental**: each document is hashed and only the ones whose
+  content changed are embedded again (the step reports added / changed / unchanged / removed). Point it at a
+  `dancr context --changed` feed and whole datasets that did not move are skipped and carried over from the
+  index without being read again.
+- Stewards data: **Check data contract** (column kinds, blanks, uniqueness, range, allowed values, patterns,
+  cross-column rules and keys that must exist elsewhere), **Compare two versions** (what changed), a
+  data-dictionary step, **Label sensitivity**, and **Redact** columns for a shareable copy.
+- Trusts its AI: `dancr eval` scores a question set against the engine or the Assistant, and `dancr trace`
+  prints the saved Assistant conversation — the tools it called, the step it built, and any figure no tool backed.
+- Also adds **Rows into columns** (pivot) and **fuzzy text-key matching** (join keys that are almost the same).
 - Records every step, so the same project reruns on a new file.
+- Proves a result: writes an **attestation** (the engine, each source file's content sample, and every step's
+  plan hash, output content hash and the numbers it found), **verifies** the project still reproduces it, and
+  shows a step's **lineage** (what produced it, what depends on it) and a one-node **proof card**. A result can
+  be re-checked by someone else, and the CLI exits non-zero when a claim no longer holds.
 - Writes FAIR metadata for your datasets: set who made it, the license and how to cite it, then export a
   schema.org/Dataset record (Google Dataset Search), a Frictionless data package, or a run manifest that records
   exactly what produced the results — or package the whole thing as a self-contained RO-Crate. Units are written as

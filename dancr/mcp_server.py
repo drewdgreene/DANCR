@@ -379,6 +379,96 @@ def package_project(path: str, out_path: str, copy: str = "metadata", zip: bool 
 
 @mcp.tool()
 @friendly
+def record_attestation(path: str, out_path: str | None = None) -> str:
+    """Record an attestation of the project: a self-contained, checkable record of exactly what produced its
+    results (engine and library versions, the code fingerprint, each source file's content sample, and every
+    step's plan hash, output content hash, row count and reported numbers). With out_path (inside the pipeline
+    file's folder) it is written to a file; otherwise the attestation is returned. Re-check it with verify_pipeline."""
+    p = _load(path)
+    att = hl.build_attestation(p, _executor(p))
+    out = _inside_project(p, out_path) if out_path else None
+    if out is not None:
+        hl.write_text_atomic(out, hl.dump_attestation(att))
+    return _dump({"ok": True, "path": str(out) if out else None, "attestation_hash": att["attestation_hash"],
+                  "nodes": len(att["nodes"]), "answers": len(att.get("answers", [])), "attestation": att})
+
+
+@mcp.tool()
+@friendly
+def verify_pipeline(path: str, reference_path: str, rerun: bool = False, strict_sources: bool = False) -> str:
+    """Verify the project still reproduces an attestation (or run manifest): re-run and compare the engine
+    fingerprint, source content samples, every step's plan hash and output content hash, and the numbers in each
+    report. reference_path is relative to the server's root folder (or absolute). rerun recomputes every step
+    instead of using the cache (the strong claim); strict_sources treats a changed source file as a mismatch.
+    Returns {verdict, ok, checks, mismatches, notices, summary}."""
+    p = _load(path)
+    ref = _from_root(reference_path)
+    reference: Any = ref.read_text(encoding="utf-8") if ref.is_file() else reference_path
+    res = hl.verify_pipeline(p, reference, mode="rerun" if rerun else "stored", strict_sources=strict_sources)
+    return _dump(res)
+
+
+@mcp.tool()
+@friendly
+def lineage(path: str, node_id: str, direction: str = "both") -> str:
+    """What produced a step and/or what depends on it: the upstream chain (direction='up'), everything
+    downstream (direction='down': later steps, Answers, files written and Assistant turns), or both."""
+    p = _load(path)
+    return _dump(hl.build_lineage(p, node_id, direction=direction, executor=_executor(p)))
+
+
+@mcp.tool()
+@friendly
+def get_proof(path: str, node_id: str) -> str:
+    """A proof card for one step: its chain of steps with plan hashes, the source files with content samples,
+    its output content hash and finding, and the command that re-checks it. Show this next to a result."""
+    p = _load(path)
+    return _dump(hl.proof_card(p, _executor(p), node_id))
+
+
+@mcp.tool()
+@friendly
+def search_knowledge(path: str, query: str, node: str | None = None, k: int = 5, min_score: float = 0.0,
+                     allow_restricted: bool = False) -> str:
+    """Search the project's own text index (built by a 'Build search index' step) and return the closest
+    passages, each with the source columns it came from. Offline and deterministic; `node` names the index step
+    when there is more than one. When the index has a 'sensitivity' column, confidential/restricted passages are
+    withheld unless allow_restricted is true (the withheld count is reported)."""
+    p = _load(path)
+    return _dump(hl.search_knowledge(p, query, node=node, k=int(k), min_score=float(min_score),
+                                     allow_restricted=bool(allow_restricted), executor=_executor(p)))
+
+
+@mcp.tool()
+@friendly
+def get_trace(path: str) -> str:
+    """The Assistant conversation saved with the project, as an audit log: each turn's question, reply, the step
+    or answer it built, its flags and any figure no tool backed. Read-only."""
+    return _dump(hl.assistant_trace(_load(path)))
+
+
+@mcp.tool()
+@friendly
+def run_eval(path: str, cases: list[dict[str, Any]] | None = None, cases_path: str | None = None,
+             model: bool = False) -> str:
+    """Score a set of questions against the project. Give `cases` (a list of {"id","question","expect_recipe" |
+    "expect_text" | "expect_no_text" | "expect_refuse"}) or `cases_path` (a file inside the server's root folder,
+    or JSON/JSONL text). Without `model` it scores the deterministic engine; with `model=true` it scores the
+    Assistant (no unverified figures, injection payloads not echoed, refusals honoured). Returns per-case results,
+    a summary and `ok`."""
+    p = _load(path)
+    if cases_path:
+        cp = _from_root(cases_path)
+        src: Any = cp.read_text(encoding="utf-8") if cp.is_file() else cases_path
+    elif cases is not None:
+        src = cases
+    else:
+        raise ToolError("Give cases (a list) or cases_path")
+    return _dump(hl.run_eval(p, hl.load_eval_set(src), model=bool(model)))
+
+
+@mcp.tool()
+@friendly
 def suggest_answers(path: str, files: list[str] | None = None, focus: str | None = None, build: int | None = None) -> str:
     """Answers DANCR can give on its own for the project's tables, best first ({index, title, recipe, why, spec}).
     `files` adds data files first; `focus` limits them to one step's output; `build` = an index builds that answer

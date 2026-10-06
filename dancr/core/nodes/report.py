@@ -90,6 +90,33 @@ def _title(c: str, columns: dict[str, dict] | None) -> str:
     return column_title(c, columns)
 
 
+def _provenance_html(item_meta: list[dict[str, Any]]) -> str:
+    """A short, honest provenance footer: the steps the report drew on, the source files behind them, the
+    tool that made it, and how to re-check it. Full hashes come from ``dancr verify`` / ``dancr proof``; this
+    block never claims more than it can show."""
+    from dancr import __version__
+    steps: list[str] = []
+    sources: list[str] = []
+    for m in item_meta or []:
+        title = str(m.get("title") or m.get("node") or "").strip()
+        nt = str(m.get("node_type") or "").strip()
+        if title:
+            steps.append(f"{title} ({nt})" if nt else title)
+        p = (m.get("params") or {}).get("path")
+        if isinstance(p, str) and p.strip():
+            sources.append(Path(p).name)
+    bits = ["<h3>Provenance</h3>"]
+    bits.append(f"<p class='muted'>Made with DANCR {html.escape(str(__version__))} on {datetime.now():%Y-%m-%d %H:%M}"
+                + (f" · {len(steps)} step(s)." if steps else ".") + "</p>")
+    if steps:
+        bits.append("<p class='muted'>Steps: " + html.escape(", ".join(steps)) + "</p>")
+    if sources:
+        bits.append("<p class='muted'>Sources: " + html.escape(", ".join(dict.fromkeys(sources))) + "</p>")
+    bits.append("<p class='muted'>Re-check this result: <code>dancr verify &lt;project&gt;.json "
+                "--manifest &lt;attestation&gt;.json</code></p>")
+    return "<div class='provenance'>" + "".join(bits) + "</div>"
+
+
 def build_report(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, Any], item_meta: list[dict[str, Any]],
                  columns: dict[str, dict] | None = None, project_inputs: dict[str, Any] | None = None) -> str:
     """Return a self-contained HTML document. item_meta: one dict per input in order with keys
@@ -139,6 +166,8 @@ def build_report(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[s
     for i in range(len(frames)):
         if i not in used:
             parts += _item_html(i, frames[i], item_meta[i] if i < len(item_meta) else {}, params, columns, project_inputs)
+    if params.get("include_proof", False):
+        parts.append(_provenance_html(item_meta))
     css = """
     .company { font-size: 13px; letter-spacing: 1px; text-transform: uppercase; color: #555; margin-bottom: 0; }
     .verdict { font-weight: 700; padding: 6px 10px; border-radius: 4px; display: inline-block; }
@@ -153,6 +182,8 @@ def build_report(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[s
     table { border-collapse: collapse; font-size: 12.5px; margin: 8px 0; } th, td { border: 1px solid #e3e3e8; padding: 4px 8px; text-align: right; }
     th { background: #f2f2f4; text-align: left; } td:first-child, th:first-child { text-align: left; }
     table.kv th { width: 200px; } @media print { body { margin: 0; } h2 { page-break-before: auto; } img { page-break-inside: avoid; } }
+    .provenance { margin-top: 40px; border-top: 1px solid #ddd; padding-top: 8px; } .provenance h3 { font-size: 13px; color: #555; margin: 8px 0 4px; }
+    .provenance code { background: #f2f2f4; padding: 1px 4px; border-radius: 3px; }
     """
     return f"<!doctype html><html><head><meta charset='utf-8'><title>{html.escape(title)}</title><style>{css}</style></head><body>{''.join(parts)}</body></html>"
 
@@ -235,5 +266,6 @@ registry.register(NodeType(
         Param("pdf", "Also save a PDF", "bool", default=True, advanced=True),
         Param("max_rows", "Rows to show per table", "int", default=30, min=5, max=500, advanced=True),
         Param("include_stats", "Add summary statistics under long tables", "bool", default=True, advanced=True),
+        Param("include_proof", "Add a provenance footer (how to re-check the report)", "bool", default=True, advanced=True),
     ],
 ))

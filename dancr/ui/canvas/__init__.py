@@ -7,10 +7,13 @@ from pathlib import Path
 from PySide6.QtCore import Qt, QPointF, QRectF, Signal, QPoint, QSize
 from PySide6.QtGui import QColor, QPen, QBrush, QPainter, QPainterPath, QFont, QFontMetrics, QPolygonF, QPainterPathStroker
 from PySide6.QtWidgets import (QGraphicsView, QGraphicsScene, QGraphicsObject, QGraphicsItem, QGraphicsPathItem, QMenu,
-                               QWidget, QGraphicsSceneMouseEvent, QInputDialog, QToolButton, QHBoxLayout, QLabel)
+                               QWidget, QGraphicsSceneMouseEvent, QInputDialog, QToolButton, QHBoxLayout, QLabel,
+                               QDialog, QPlainTextEdit, QVBoxLayout, QDialogButtonBox)
 
 from ...core import registry, PipelineError
 from ...core.model import Edge, Node, Note, Answer
+from ...core.executor import Executor
+from ...core.lineage import build_lineage, proof_card
 from ...core.nodes.load import CSV_EXT, EXCEL_EXT, PARQUET_EXT
 from ..document import Document
 from ..common import listen
@@ -21,6 +24,20 @@ from .items import (  # noqa: E402
     ANSWER_H, ANSWER_W, DATA_EXT, EdgeItem, GhostItem, NODE_H, NODE_MIME, NODE_W, NodeItem, NoteItem,
     PORT_HIT, PORT_R, PlusButton, PortItem, AnswerItem, bezier, dot_grid,
 )
+
+def _show_text(parent, title: str, text: str) -> None:
+    """A read-only monospace panel for the lineage and proof cards (long, plain text a person can copy)."""
+    dlg = QDialog(parent)
+    dlg.setWindowTitle(title)
+    dlg.resize(760, 560)
+    lay = QVBoxLayout(dlg)
+    box = QPlainTextEdit(); box.setReadOnly(True); box.setPlainText(text)
+    box.setStyleSheet("font-family: monospace;")
+    lay.addWidget(box)
+    bb = QDialogButtonBox(QDialogButtonBox.Close); bb.rejected.connect(dlg.reject); bb.accepted.connect(dlg.accept)
+    lay.addWidget(bb)
+    dlg.exec()
+
 
 class CanvasScene(QGraphicsScene):
     nodeActivated = Signal(str)
@@ -366,6 +383,9 @@ class CanvasScene(QGraphicsScene):
         m.addSeparator()
         disc = m.addAction("Disconnect all")
         delete = m.addAction(icon("trash", T.text), "Delete")
+        m.addSeparator()
+        lineage = m.addAction("Lineage…")
+        proof = m.addAction("Proof && verify…")
         run_here.setEnabled(not self.doc.running)
         r = m.exec(screen_pos)
         if r == run_here:
@@ -386,6 +406,71 @@ class CanvasScene(QGraphicsScene):
                     self.doc.disconnect(e)
         elif r == delete:
             self.doc.remove_nodes(self.selected_node_ids() or [nid])
+        elif r == lineage:
+            self._show_lineage(nid)
+        elif r == proof:
+            self._show_proof(nid)
+
+    def _dialog_parent(self):
+        views = self.views()
+        return views[0] if views else None
+
+    def _show_lineage(self, nid: str) -> None:
+        p = self.doc.pipeline
+        parent = self._dialog_parent()
+        try:
+            res = build_lineage(p, nid, direction="both", executor=Executor(p))
+        except Exception as e:  # noqa: BLE001 - show the reason, never a traceback in a dialog
+            _show_text(parent, "Lineage", str(e))
+            return
+        lines = [res["sentence"], ""]
+        lines.append("Upstream (what it is built from):")
+        up = (res.get("up") or {}).get("nodes") or []
+        lines += [f"  {n}  {p.nodes[n].title}" for n in up] or ["  (nothing — a source)"]
+        down = res.get("down") or {}
+        lines.append("")
+        lines.append("Downstream (what depends on it):")
+        nodes = down.get("nodes") or []
+        lines += [f"  {n}  {p.nodes[n].title}" for n in nodes] or ["  (nothing)"]
+        for x in down.get("answers", []):
+            lines.append(f"  answer: {x['title']} ({x['id']})")
+        for x in down.get("artifacts", []):
+            lines.append(f"  file: {x['file']}")
+        for x in down.get("agent_turns", []):
+            lines.append(f"  agent turn {x.get('turn')}: {x.get('question', '')}")
+        _show_text(parent, f"Lineage — {p.nodes[nid].title}", "\n".join(lines))
+
+    def _show_proof(self, nid: str) -> None:
+        p = self.doc.pipeline
+        parent = self._dialog_parent()
+        try:
+            card = proof_card(p, Executor(p), nid)
+        except Exception as e:  # noqa: BLE001
+            _show_text(parent, "Proof", str(e))
+            return
+        rows = card.get("rows")
+        lines = [f"{card['title']}  [{card['node']}]",
+                 f"result: {rows:,} row(s)" if isinstance(rows, int) else "result: not computed"]
+        if card.get("output_hash"):
+            lines.append(f"content hash: {card['output_hash']}")
+        if card.get("finding"):
+            lines.append(f"finding: {card['finding']}")
+        lines.append("")
+        lines.append("Steps:")
+        for s in card["steps"]:
+            lines.append(f"  {s['id']}  ({s['type']})  {s.get('plan_hash')}")
+        if card["sources"]:
+            lines.append("")
+            lines.append("Sources:")
+            for s in card["sources"]:
+                lines.append(f"  {s.get('path')}  [{s.get('sample')}]")
+        if card["assumptions"]:
+            lines.append("")
+            lines.append("Assumptions:")
+            lines += [f"  {a}" for a in card["assumptions"]]
+        lines.append("")
+        lines.append(f"Verify: {card['verify']}")
+        _show_text(parent, f"Proof — {card['title']}", "\n".join(lines))
 
     def delete_selection(self) -> None:
         answer_ids = self.selected_answer_ids()

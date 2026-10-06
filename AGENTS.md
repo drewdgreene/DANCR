@@ -22,7 +22,11 @@ Two interfaces, same engine:
   `get_stats`, `render_chart` (returns a PNG image), `render_map` (a map PNG), `read_document` (a PDF/Office
   document as content blocks or a table catalog, via MinerU),
   `export_node`, `export_fair` (schema.org / Frictionless / manifest / RO-Crate), `package_project` (a
-  self-contained RO-Crate), `catalog` (every project under a folder), `open_in_gui`.
+  self-contained RO-Crate), `record_attestation` (a checkable record of what produced the results),
+  `verify_pipeline` (re-run and check it still reproduces), `lineage` (what produced a step, what depends on it),
+  `get_proof` (a proof card for one step), `search_knowledge` (search a project's own text index),
+  `get_trace` (the Assistant conversation as an audit log), `run_eval` (score questions against the project),
+  `catalog` (every project under a folder), `open_in_gui`.
 - **CLI**: `dancr --json <command> …` prints JSON. `dancr ask p.json "total sales by region" --file a.csv`,
   `dancr suggest p.json [--build N]` (`--file` on a workbook adds every sheet),   `dancr answer p.json [ID] [--set stat=mean] [--choose N M] [--remove --steps]`
   and `dancr understand p.json` are the answer commands. `dancr context p.json [--samples] [--jsonl] [--changed old.jsonl]` (alias
@@ -32,6 +36,14 @@ Two interfaces, same engine:
   descriptor; `dancr package p.json --out study.rocrate.zip [--copy data|results|all]` writes a self-contained crate;
   `dancr catalog DIR [--jsonl --output index.jsonl]` catalogs every project under a folder; `dancr watch p.json
   [--once] [--batch --files … --out-dir …]` reruns when the data changes.
+  `dancr verify p.json --record att.json` records an **attestation** (a checkable record of exactly what produced
+  the results); `dancr verify p.json --manifest att.json [--rerun] [--strict-sources]` re-runs and reports whether
+  it still reproduces (`verified` | `mismatch` | `incomplete` | `engine-changed`); `dancr lineage p.json NODE
+  [--up|--down]` shows what produced a step and what depends on it;   `dancr proof p.json NODE` prints a proof card.
+  Build a search index with a `build_index` step, search a node with a `retrieve` step, or `dancr search p.json "query"
+  [--node NODE] [--k N]` searches the project's own text index (offline, deterministic).
+  `dancr eval p.json --set cases.json [--model]` scores questions against the project (the engine, or the Assistant);
+  `dancr trace p.json` prints the saved Assistant conversation as an audit log.
   `dancr assistant p.json "…" [--file …] [--build]`
   is the conversational front end (needs a model key in the environment); with `--build` it applies and runs
   the proposal. Same core as the in-app Assistant: `docs/ASSISTANT.md`. `dancr nodes -v` documents
@@ -249,6 +261,14 @@ then `render_map`. Offline country outlines are drawn when `basemap` is on; noth
 - `fix_missing`: `method` drop|drop_all|value|forward|backward|interpolate|mean|zero, `value`, `columns`. `change_type`: `columns`, `to` number|integer|text|datetime|bool, `date_format`, `epoch_unit`, `time_zone` (as `load_file`).
 - `unpivot` (columns into rows): `columns` (e.g. Jan … Dec), `name_column` (month), `value_column` (value), `year` (month columns then also get a `date`). Answers add it by themselves in front of a wide table.
 - `take_sample`: `mode` first|last|every|random, `rows`, `every`, `fraction`, `seed`. `stack`: `label_column`, `labels`; connect tables to `tables`.
+- `pivot` (rows into columns, the inverse of `unpivot`): `index` (columns kept as rows), `columns` (whose values become the new columns), `values` (cell values; blank = count rows), `agg` sum|mean|min|max|median|first|last|count, `fill_zero`, `max_columns`. Report: `new_columns`, `rows`.
+- `describe_dataset` (a data dictionary): `definitions` (a column→description mapping). Output one row per column with `role`, `type`, `unit`, `definition`, `missing`, `missing_percent`, `distinct`, `min`, `max`, `mean`, `example`; `report` has `columns`, `with_units`, `with_blanks`, `undocumented`.
+- `build_index` (offline text index): inputs `items` (tables/documents); `text_column` (blank = a `text` column, else all columns joined), `chunk_chars`, `chunk_overlap`, `dim`, `id_column`, `index_path`, `changed_path`, `max_chunks`. Output one row per passage with `dataset`, `doc_key`, `content_hash`, `chunk_id`, `chunk_index`, `text`, `vector` (a fixed-size float array) and the source columns. With `index_path` it keeps a persistent index: each document's text+metadata is hashed, and only documents whose `content_hash` changed are embedded again — the report's `index` block gives `added`/`changed`/`unchanged`/`removed` documents and `reused_chunks`/`embedded_chunks`. `id_column` names the column that identifies a document across runs (blank falls back to the source row's position). With `changed_path` (a `dancr context --jsonl` export, or its `--changed` form) a whole dataset whose content has not moved is **skipped** and carried over from the persistent index without being read again; the report adds `skipped_datasets` and `carried_chunks`. A `--changed` feed lists only what moved (datasets absent are skipped); a full context is compared per dataset by `content_hash`.
+- `retrieve` (search an index): input `in` (a `build_index` table); `query`, `k`, `min_score`, `allow_restricted`. Output the best passages ranked, each with `rank`, `score` and its source columns. `dancr search p.json "query" [--node NODE] [--k N]` and the MCP `search_knowledge` tool run the same search. When the index carries a `sensitivity` column, confidential/restricted passages are withheld unless `allow_restricted`.
+- `check_contract` (a data contract): `in` (a table) plus optional `references` (other tables); `contract` (JSON text) or `contract_path` (a file); `output` rows|issues. Contract JSON: `{"columns": {"c": {"kind": "number"|"text"|"date/time", "required": true, "unique": true, "min": .., "max": .., "allowed": [..], "regex": ".."}}, "rules": [{"name": "..", "expr": ".."}], "references": [{"column": "..", "to_node": "..", "to_column": ".."}]}`. With no contract it infers a draft into `report["inferred_contract"]`. Report: `checks`, `issues`, `errors`.
+- `diff_tables` (two versions): inputs `a` (before), `b` (after); `key`, `compare`, `tolerance`, `schema_only`. Output rows `change_type` added|removed|changed, `column`, `before`, `after`, `delta`. Report: `changed`, `added`, `removed`, `columns_added/removed/retyped`.
+- `label_sensitivity`: `level` public|internal|confidential|restricted (whole table) or `column` (per-row labels); `name` (default `sensitivity`). The label is a column that travels with the rows.
+- `redact`: `columns`, `method` mask|hash|drop, `keep`, `mask` — mask keeps the first few characters, hash gives a stable pseudonym.
 - `enter_data`: `columns` = `[{"name","type": text|number|datetime|bool}]`, `rows` = list of lists.
 - `keep_rows`: `mode` keep|remove, `conditions` = `{"match":"all"|"any","rules":[{"column","op","value","value2"}]}`  (also **`strict_columns`**, as in New column)
   with ops `eq ne gt lt ge le between contains not_contains starts ends in empty not_empty true false year month` (`year`/`month` on date columns: `2024`, `3` or `March`); values may be input names; or `formula`. As in Excel (and as `=`/`<>` in formulas), text matches ignoring case, a blank cell counts as not equal to (and not containing) any value, blank cells are matched with `empty` / `not_empty`; a rule without the value it needs is left out until it has one (the step says so in `messages`). `in` takes a list, or text separated by `;` or `,` (`"1,000; 2,500"` for numbers with thousands separators).
@@ -281,6 +301,7 @@ then `render_map`. Offline country outlines are drawn when `basemap` is on; noth
 - A GeoJSON, GeoPackage or shapefile loads as one row per feature: its attributes are columns, plus `geometry` (WKT) and a `longitude`/`latitude` centre. A layer in another CRS is reprojected to WGS84 lon/lat on load (the projection and geometry libraries are included in the install; a `.gpkg` with several layers becomes one load step per layer).
 - `combine` also has `method` `nearest_feature`: `left_lat`,`left_lon`,`right_lat`,`right_lon`,`max_distance` (e.g. `10km`, blank = any), `units`, `distance_column`, `near_how` `left`|`inner`. Adds a distance column and the nearest place's columns.
 - `combine` also has `method` `within` (point-in-polygon): `left_lat`,`left_lon`,`right_geometry` (a WKT polygon column), `place_column`, `near_how` `left`|`inner`. Looks up which polygon each point falls inside (holes handled) and adds the place's columns.
+- `combine` also has `method` `fuzzy` (text keys that are almost the same): `left_key`, `right_key`, `algorithm` `normalized`|`nearest`, `threshold` (nearest), `max_candidates`, `score_column`, `how`, `suffix`. `normalized` matches after tidying case, spaces and punctuation; `nearest` picks the closest key within the similarity. Rows that match nothing keep a blank key and score; the report gives the match percentage.
 - `export` accepts `.geojson` as well as `.csv`/`.tsv`/`.parquet`/`.xlsx` (needs latitude/longitude, or a `geometry` column).
 
 ## Indexing a project for a knowledge base (and the Python API)

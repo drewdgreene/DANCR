@@ -26,6 +26,12 @@ from ._context import (  # noqa: E402 - re-exported for the CLI, MCP server and 
     catalog_changes, catalog_jsonl, context_changes, context_jsonl, context_text, engine_version,
     export_fair, find_pipelines, package_rocrate, parse_context,
 )
+from ..core.fair._common import ATTESTATION_KIND, ATTESTATION_VERSION  # noqa: E402
+from ..core.verify import (  # noqa: E402 - the attestation + verification surface, shared by every front end
+    attestation_hash, build_attestation, dump_attestation, load_attestation, output_hash, verify_pipeline,
+)
+from ..core.lineage import build_lineage, proof_card  # noqa: E402 - the lineage + proof surface
+from ..core.rag import search_knowledge  # noqa: E402 - retrieve from a project's own text index
 
 
 class StepFailed(ValueError):
@@ -879,3 +885,102 @@ def _check_choice(p: Pipeline, a, key: str, value: Any) -> None:
         raise ValueError(f"{key} cannot be {json.dumps(value)}. Choose one of: {shown}")
 
 
+
+
+# ----------------------------------------------------------------- audit + evaluation (agent trust)
+def assistant_trace(p: Pipeline) -> dict[str, Any]:
+    """The Assistant conversation saved with the project, as an audit log: each turn's question, reply, the
+    tools it called, the step or answer it built, its flags and any figure no tool backed. Read-only."""
+    from ..core.assistant import load_thread
+    thread = load_thread(p)
+    return {"kind": "dancr.trace", "model": thread.model, "count": len(thread.turns),
+            "turns": [t.to_dict() for t in thread.turns]}
+
+
+def load_eval_set(source: Any) -> list[dict[str, Any]]:
+    """An evaluation set from a path or its text: a JSON object ``{"cases": [...]}``, a JSON list, or JSON Lines."""
+    if isinstance(source, list):
+        return [c for c in source if isinstance(c, dict)]
+    text = ""
+    if isinstance(source, (str, Path)):
+        p = Path(str(source)).expanduser()
+        text = p.read_text(encoding="utf-8") if p.is_file() else str(source)
+    data: Any
+    try:
+        data = json.loads(text)
+    except ValueError:
+        data = [json.loads(line) for line in text.splitlines() if line.strip()]
+    if isinstance(data, dict):
+        data = data.get("cases") or []
+    if not isinstance(data, list):
+        raise ValueError("An evaluation set is a JSON object {'cases': [...]}, a JSON list, or JSON Lines")
+    return [c for c in data if isinstance(c, dict)]
+
+
+def run_eval(p: Pipeline, cases: list[dict[str, Any]], *, model: bool = False, provider: Any = None,
+             settings: Any = None, check_determinism: bool = True) -> dict[str, Any]:
+    """Score a set of questions against the project.
+
+    Without ``model`` it scores the deterministic answer engine: did each question build, does the recipe match,
+    does the title contain (or avoid) the expected words, and does the same question read the same way twice.
+    With ``model`` it scores the Assistant per case: no unverified figures, an injection payload never echoed,
+    and a refusal expectation honoured. Returns per-case results, a summary and ``ok`` (every case passed)."""
+    from ..core.ask import ask
+    from ..core.answers import model_for
+    from ..core import memory
+
+    results: list[dict[str, Any]] = []
+    for i, c in enumerate(cases):
+        cid = str(c.get("id") or f"case_{i + 1}")
+        q = str(c.get("question") or "")
+        if not q:
+            results.append({"id": cid, "question": q, "ok": False, "reason": "no question"})
+            continue
+        if model:
+            out = assistant_turn(p, q, build=False, provider=provider, settings=settings)
+            text = str(out.get("text") or "")
+            unver = list(out.get("unverified") or [])
+            kind = out.get("kind")
+            reasons: list[str] = []
+            if kind == "error":
+                reasons.append("the turn errored")
+            if unver:
+                reasons.append(f"unverified figures: {unver}")
+            if c.get("expect_no_text") and str(c["expect_no_text"]).lower() in text.lower():
+                reasons.append(f"reply contained {c['expect_no_text']!r}")
+            if c.get("expect_refuse") and kind in ("answer", "steps", "edits"):
+                reasons.append("built something instead of refusing")
+            if c.get("expect_kind") and kind != c["expect_kind"]:
+                reasons.append(f"kind was {kind}, expected {c['expect_kind']}")
+            results.append({"id": cid, "question": q, "ok": not reasons, "model": True, "kind": kind,
+                            "reason": "; ".join(reasons), "unverified": unver, "flags": out.get("flags") or [],
+                            "text": text[:300], "expected": c})
+            continue
+        m = model_for(p, Executor(p))
+        asked = ask(m, q, aliases=memory.aliases(p))
+        spec = asked.spec if asked.ok else {}
+        reasons = []
+        if c.get("expect_refuse"):
+            if asked.ok:
+                reasons.append("built an answer; the case expects a refusal")
+        elif not asked.ok:
+            reasons.append(f"refused: {asked.message}")
+        else:
+            if c.get("expect_recipe") and spec.get("recipe") != c["expect_recipe"]:
+                reasons.append(f"recipe was {spec.get('recipe')}, expected {c['expect_recipe']}")
+            title = str(asked.title or "")
+            if c.get("expect_text") and str(c["expect_text"]).lower() not in title.lower():
+                reasons.append(f"title lacks {c['expect_text']!r}")
+            if c.get("expect_no_text") and str(c["expect_no_text"]).lower() in title.lower():
+                reasons.append(f"title contains {c['expect_no_text']!r}")
+            if check_determinism:
+                again = ask(m, q, aliases=memory.aliases(p))
+                if again.spec != spec:
+                    reasons.append("the same question read differently the second time")
+        results.append({"id": cid, "question": q, "ok": not reasons, "model": False, "built": bool(asked.ok),
+                        "recipe": spec.get("recipe"), "title": asked.title, "reason": "; ".join(reasons),
+                        "expected": c})
+    passed = sum(1 for r in results if r["ok"])
+    return {"kind": "dancr.eval", "model": bool(model), "cases": results,
+            "summary": {"total": len(results), "passed": passed, "failed": len(results) - passed},
+            "ok": bool(results) and passed == len(results)}

@@ -40,6 +40,9 @@ def _combine(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, 
     if method == "within":
         return _within(ctx, left, right, ls, rs, params, suffix)
 
+    if method == "fuzzy":
+        return _fuzzy(ctx, left, right, ls, rs, params, suffix)
+
     if method == "nearest_time":
         lt = params.get("left_time") or next(iter(temporal_columns(ls)), None)
         rt = params.get("right_time") or next(iter(temporal_columns(rs)), None)
@@ -309,6 +312,89 @@ def _common_key_type(a: pl.DataType, b: pl.DataType) -> pl.DataType:
     return pl.Float64                        # a decimal key on either side: compare as decimals
 
 
+def _norm_expr(col: str) -> pl.Expr:
+    """A text key tidied for matching: lower case, accents folded as far as a plain replace goes, runs of
+    anything that is not a letter or digit collapsed to one space, trimmed."""
+    return (pl.col(col).cast(pl.Utf8).str.to_lowercase()
+            .str.replace_all(r"[^0-9a-z]+", " ").str.strip_chars())
+
+
+def _fuzzy(ctx: Ctx, left: pl.LazyFrame, right: pl.LazyFrame, ls: dict[str, pl.DataType],
+           rs: dict[str, pl.DataType], params: dict[str, Any], suffix: str) -> NodeResult:
+    """Match two text keys that are not spelled the same: after tidying (case, spaces, punctuation), or by the
+    nearest key within a similarity threshold. Never guesses silently: a row that found nothing keeps a blank
+    key and score, and the report says how many matched."""
+    import difflib
+    lk = require_column(ls, params.get("left_key"), "key column of the first table", STR)
+    rk = require_column(rs, params.get("right_key"), "key column of the second table", STR)
+    how = {"inner": "inner", "left": "left", "outer": "full", "right": "right"}.get(params.get("how") or "left", "left")
+    taken = {*ls, *rs}
+    score_col = (params.get("score_column") or "match_score").strip() or "match_score"
+    if score_col in taken:
+        score_col = temp_name("score", taken)
+    algorithm = params.get("algorithm") or "normalized"
+    ltmp, rtmp = temp_name("lkey", taken), temp_name("rkey", taken)
+    l = left.with_columns(_norm_expr(lk).alias(ltmp))
+    r = right.with_columns(_norm_expr(rk).alias(rtmp))
+    msgs: list[str] = []
+
+    if algorithm == "nearest":
+        cap = int(params.get("max_candidates") or 100000)
+        threshold = float(params.get("threshold") if params.get("threshold") is not None else 0.9)
+        rkeys = r.select(pl.col(rtmp)).drop_nulls().unique().collect(engine="streaming").get_column(rtmp).to_list()
+        if len(rkeys) > cap:
+            raise ValueError(f"The second table has {len(rkeys):,} distinct keys; nearest matching needs at most "
+                             f"{cap:,}. Raise 'Most candidate keys', or use 'after tidying' instead.")
+        lkeys = l.select(pl.col(ltmp)).drop_nulls().unique().collect(engine="streaming").get_column(ltmp).to_list()
+        lookup: dict[str, tuple[str, float]] = {}
+        for a in lkeys:
+            best, bs = None, 0.0
+            for b in rkeys:
+                s = difflib.SequenceMatcher(None, str(a), str(b)).ratio()
+                if s > bs:
+                    bs, best = s, b
+            if best is not None and bs >= threshold:
+                lookup[str(a)] = (best, round(float(bs), 4))
+        if not lookup:
+            msgs.append(f"No key in the first table reached a similarity of {threshold:g}")
+        mapping = pl.DataFrame({ltmp: list(lookup), "__rmatch": [v[0] for v in lookup.values()],
+                                score_col: [v[1] for v in lookup.values()]})
+        l = l.join(mapping.lazy(), on=ltmp, how="left")
+        total = len(lkeys)
+        matched = len(lookup)
+        out = l.join(r, left_on="__rmatch", right_on=rtmp, how=how, suffix=suffix)
+        present = out.collect_schema().names()
+        out = out.drop([c for c in (ltmp, "__rmatch", rtmp) if c in present])
+        msgs.append(f"Matched {lk} to the nearest {rk} within a similarity of {threshold:g}")
+    else:
+        l = l.rename({ltmp: "__lkey"})
+        r = r.rename({rtmp: "__lkey"})
+        total = int(l.select(pl.col("__lkey").drop_nulls().n_unique()).collect(engine="streaming")[0, 0] or 0)
+        rk_unique = r.select(pl.col("__lkey")).drop_nulls().unique()
+        found = int(l.select(pl.col("__lkey")).drop_nulls().unique().join(rk_unique, on="__lkey", how="semi")
+                    .select(pl.len()).collect(engine="streaming")[0, 0] or 0)
+        matched = found
+        out = l.join(r, on="__lkey", how=how, suffix=suffix, coalesce=True,
+                     maintain_order="left" if how in ("left", "inner") else "none")
+        rk_out = f"{rk}{suffix}" if rk in ls else rk
+        out = out.with_columns(pl.when(pl.col(rk_out).is_not_null()).then(1.0).otherwise(None).alias(score_col))
+        out = out.drop("__lkey")
+        msgs.append(f"Matched {lk} to {rk} after tidying case, spaces and punctuation")
+
+    report: dict[str, Any] = {}
+    if not ctx.preview and total:
+        pct = 100.0 * matched / total
+        said = (f"{fmt_pct(pct)} of the first table's keys matched ({matched:,} of {total:,})"
+                + (f"; {total - matched:,} matched nothing" if matched < total else ""))
+        report = {"matched_keys": matched, "left_keys": total, "match_percent": pct,
+                  "finding": finding("summary", said, magnitude=100.0 - pct, exact=True)}
+        msgs.append(said)
+    # keep the first table's columns, then the second's
+    left_cols = list(ls)
+    extra = [c for c in out.collect_schema().names() if c not in left_cols]
+    return NodeResult(out.select([*left_cols, *extra]), report=report, messages=msgs)
+
+
 def _summary(p: dict[str, Any]) -> str:
     m = p.get("method", "match")
     if m == "match":
@@ -319,6 +405,9 @@ def _summary(p: dict[str, Any]) -> str:
         return "nearest place" + (f" within {p['max_distance']}" if p.get("max_distance") else "")
     if m == "within":
         return "which place each point is inside"
+    if m == "fuzzy":
+        return f"fuzzy match {p.get('left_key') or '?'} → {p.get('right_key') or '?'}" + (
+            f" (nearest ≥ {p.get('threshold')})" if p.get("algorithm") == "nearest" else " (after tidying)")
     return "side by side"
 
 
@@ -334,12 +423,13 @@ registry.register(NodeType(
             ("nearest_time", "Line up by nearest time"),
             ("nearest_feature", "Line up by nearest place (latitude/longitude)"),
             ("within", "Find which place each point is inside (polygons)"),
+            ("fuzzy", "Match text keys that are almost the same (fuzzy)"),
             ("side_by_side", "Side by side, row by row")]),
         Param("on", "Match on (first table)", "columns", default=[], port="left", visible_when={"method": "match"},
               help="Leave empty to use every column both tables share"),
         Param("right_on", "Match on (second table)", "columns", default=[], port="right", visible_when={"method": "match"},
               help="Only needed if the key has a different name in the second table"),
-        Param("how", "Which rows to keep", "choice", default="left", visible_when={"method": "match"}, choices=[
+        Param("how", "Which rows to keep", "choice", default="left", visible_when={"method": ["match", "fuzzy"]}, choices=[
             ("left", "All rows of the first table"), ("inner", "Only rows found in both"),
             ("outer", "All rows of both tables"), ("right", "All rows of the second table")]),
         Param("near_how", "Which rows to keep", "choice", default="left", visible_when={"method": ["nearest_feature", "within"]}, choices=[
@@ -363,6 +453,17 @@ registry.register(NodeType(
               help="The WKT text column of polygons (a GeoJSON file loads one as 'geometry')"),
         Param("place_column", "Name for the place column", "text", default="inside", visible_when={"method": "within"},
               help="The column added naming the place each point falls inside"),
+        Param("left_key", "Text key (first table)", "column", column_group="string", port="left", visible_when={"method": "fuzzy"}),
+        Param("right_key", "Text key (second table)", "column", column_group="string", port="right", visible_when={"method": "fuzzy"}),
+        Param("algorithm", "How to match", "choice", default="normalized", visible_when={"method": "fuzzy"}, choices=[
+            ("normalized", "After tidying case, spaces and punctuation"),
+            ("nearest", "Nearest key, up to a similarity")]),
+        Param("threshold", "Minimum similarity (nearest)", "float", default=0.9, min=0.0, max=1.0, advanced=True,
+              visible_when={"method": "fuzzy", "algorithm": "nearest"},
+              help="1.0 means the keys must be identical after tidying; 0.8 allows a small difference"),
+        Param("max_candidates", "Most candidate keys (nearest)", "int", default=100000, min=1, advanced=True,
+              visible_when={"method": "fuzzy", "algorithm": "nearest"}),
+        Param("score_column", "Name for the match score", "text", default="match_score", advanced=True, visible_when={"method": "fuzzy"}),
         Param("suffix", "Added to column names that exist in both tables", "text", default="_2", advanced=True),
     ],
 ))

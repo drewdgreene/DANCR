@@ -140,3 +140,15 @@ def test_report_ignores_malformed_block_index(tmp_path):
     r = p.add_node("report", params={"title": "T", "path": "r.html", "pdf": False, "blocks": [{"type": "item", "index": "zero"}, {"type": "heading", "text": "H"}]})
     p.connect("src", r.id, "items")
     assert Executor(p).run()[r.id].status == "done" and "<h2>H</h2>" in (tmp_path / "r.html").read_text()
+
+
+def test_report_provenance_footer_can_be_turned_off(tmp_path):
+    p = pipe_with(tmp_path, pl.DataFrame({"x": [1.0, 2.0]}))
+    r = p.add_node("report", params={"path": "r.html", "pdf": False}, id="r")
+    p.connect("src", r.id, "items")
+    assert Executor(p).run()[r.id].status == "done"
+    html = (tmp_path / "r.html").read_text()
+    assert "Provenance" in html and "dancr verify" in html
+    p.set_params(r.id, include_proof=False)
+    assert Executor(p).run()[r.id].status == "done"
+    assert "Provenance" not in (tmp_path / "r.html").read_text()

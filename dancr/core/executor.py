@@ -483,6 +483,7 @@ class Executor:
                 up_node = self.pipeline.nodes[s]
                 up_state = (results or {}).get(s) or self.state(s, memo)
                 lst.append({"node": s, "title": up_node.title, "node_type": up_node.type, "params": up_node.params,
+                            "hash": self.safe_hash(s, memo),
                             "messages": [m for m in up_state.messages if not m.startswith(BLANK_NOTE)], "report": up_state.report,
                             "status": up_state.status})
             meta[port] = lst

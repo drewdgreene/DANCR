@@ -329,6 +329,67 @@ def cmd_fair(a: argparse.Namespace) -> None:
         _print(a, doc)
 
 
+def cmd_trace(a: argparse.Namespace) -> None:
+    """The Assistant conversation saved with the project, as an audit log."""
+    p = _load(a.pipeline)
+    tr = hl.assistant_trace(p)
+    if a.json:
+        _print(a, tr)
+        return
+    if not tr["turns"]:
+        print("No Assistant conversation is saved in this project.")
+        return
+    print(f"{tr['count']} turn(s)" + (f" · model {tr['model']}" if tr["model"] else ""))
+    for i, t in enumerate(tr["turns"]):
+        print(f"[{i}] {t.get('role', '?')}: " + " ".join(str(t.get("text") or "").split())[:160])
+        if t.get("node"):
+            print(f"     built: {t['node']}" + (f" · answer {t['answer']}" if t.get("answer") else ""))
+        if t.get("finding"):
+            print(f"     finding: {t['finding']}")
+        if t.get("unverified"):
+            print(f"     UNVERIFIED FIGURES: {t['unverified']}")
+        if t.get("flags"):
+            print(f"     flags: {t['flags']}")
+
+
+def cmd_eval(a: argparse.Namespace) -> None:
+    """Score a set of questions against the project: the deterministic engine, or the Assistant with --model."""
+    p = _load(a.pipeline)
+    cases = hl.load_eval_set(a.set)
+    res = hl.run_eval(p, cases, model=a.model)
+    if a.json:
+        _print(a, res)
+    else:
+        s = res["summary"]
+        print(f"{s['passed']}/{s['total']} passed" + (" (Assistant)" if res["model"] else " (engine)"))
+        for c in res["cases"]:
+            print(f"  {'✓' if c['ok'] else '✗'} {c['id']}: {c['question']}")
+            if not c["ok"]:
+                print(f"      {c.get('reason', '')}")
+    if not res["ok"]:
+        sys.exit(EXIT_FAILED)
+
+
+def cmd_search(a: argparse.Namespace) -> None:
+    """Search the project's own text index (built by a 'Build search index' step)."""
+    p = _load(a.pipeline)
+    res = hl.search_knowledge(p, a.query, node=a.node, k=a.k, min_score=a.min_score,
+                              allow_restricted=a.allow_restricted, executor=Executor(p))
+    if a.json:
+        _print(a, res)
+        return
+    extra = f" ({res['withheld']} restricted withheld)" if res.get("withheld") else ""
+    if not res["hits"]:
+        print(f"No passages matched {a.query!r}{extra}")
+        return
+    print(f"{res['count']} passage(s) for {a.query!r}{extra}:")
+    for h in res["hits"]:
+        src = h.get("source") or h.get("doc") or h.get("chunk_id")
+        text = " ".join(str(h.get("text", "")).split())
+        print(f"  [{h['rank']}] {h['score']:.3f}  {src}")
+        print(f"      {text[:200]}{'…' if len(text) > 200 else ''}")
+
+
 def cmd_watch(a: argparse.Namespace) -> None:
     """Watch a project and its data files, and rerun when anything changes."""
     if a.batch and (not a.files or not a.out_dir):
@@ -391,6 +452,94 @@ def cmd_package(a: argparse.Namespace) -> None:
     p = _load(a.pipeline)
     rec = hl.package_rocrate(p, Executor(p), out=a.out, copy=a.copy, zip=not a.dir, overwrite=a.force)
     _print(a, rec, f"Wrote a RO-Crate to {rec['path']} ({rec['format']}, {rec['count']} data/result file(s))")
+
+
+def cmd_verify(a: argparse.Namespace) -> None:
+    """Record an attestation of the project, or verify the project still reproduces one."""
+    p = _load(a.pipeline)
+    ex = Executor(p)
+    if a.manifest:
+        ref = Path(a.manifest).expanduser()
+        res = hl.verify_pipeline(p, ref, mode="rerun" if a.rerun else "stored", strict_sources=a.strict_sources,
+                                 hash_outputs=not a.no_hash)
+        if a.json:
+            _print(a, res)
+        else:
+            lines = [f"{res['verdict'].upper()}: {res['summary']}"]
+            for c in res["checks"]:
+                if c.get("match") is False:
+                    lines.append(f"  x {c['scope']} {c.get('id') or c['name']}: {c.get('expected')} -> {c.get('actual')}")
+            for m in res["mismatches"]:
+                if m.get("scope") == "finding":
+                    lines.append(f"  x finding {m['id']}: {m.get('expected')!r} -> {m.get('actual')!r}")
+            for n in res["notices"]:
+                lines.append(f"  ! {n.get('message') or n.get('name')}")
+            for i in res.get("incomplete", []):
+                lines.append(f"  ... {i}")
+            _print(a, res, "\n".join(lines))
+        if not res["ok"]:
+            sys.exit(EXIT_FAILED)
+        return
+    att = hl.build_attestation(p, ex, hash_outputs=not a.no_hash)
+    if a.record:
+        target = hl.write_text_atomic(a.record, hl.dump_attestation(att))
+        _print(a, {"ok": True, "path": str(target), "attestation_hash": att["attestation_hash"],
+                   "nodes": len(att["nodes"]), "answers": len(att.get("answers", []))},
+               f"Wrote attestation {target} ({att['attestation_hash']}, {len(att['nodes'])} step(s))")
+        return
+    if a.json:
+        _print(a, att)
+    else:
+        print(f"Attestation {att['attestation_hash']}: {len(att['nodes'])} step(s), "
+              f"{len(att.get('answers', []))} answer(s), {len(att.get('sources', []))} source(s).")
+        print("Record it with --record FILE, or check a project against one with --manifest FILE.")
+
+
+def cmd_lineage(a: argparse.Namespace) -> None:
+    """What produced a step, and what depends on it."""
+    p = _load(a.pipeline)
+    direction = "up" if a.up else ("down" if a.down else "both")
+    res = hl.build_lineage(p, a.node, direction=direction, executor=Executor(p))
+    if a.json:
+        _print(a, res)
+        return
+    lines = [res["sentence"]]
+    if res.get("up"):
+        lines.append("  up:   " + (", ".join(res["up"]["nodes"]) or "(nothing)"))
+    if res.get("down"):
+        lines.append("  down: " + (", ".join(res["down"]["nodes"]) or "(nothing)"))
+        for x in res["down"].get("answers", []):
+            lines.append(f"    answer: {x['id']} ({x['title']})")
+        for x in res["down"].get("artifacts", []):
+            lines.append(f"    file: {x['file']}")
+        for x in res["down"].get("agent_turns", []):
+            lines.append(f"    agent turn {x['turn']}: {x.get('question', '')}")
+    _print(a, res, "\n".join(lines))
+
+
+def cmd_proof(a: argparse.Namespace) -> None:
+    """A proof card for a step: the chain, the hashes, the sources and the command that re-checks it."""
+    p = _load(a.pipeline)
+    card = hl.proof_card(p, Executor(p), a.node)
+    if a.json:
+        _print(a, card)
+        return
+    lines = [f"{card['title']} [{card['node']}]"]
+    rows = card.get("rows")
+    lines.append(f"result: {rows:,} row(s)" if isinstance(rows, int) else "result: not computed")
+    if card.get("output_hash"):
+        lines.append(f"content hash: {card['output_hash']}")
+    if card.get("finding"):
+        lines.append(f"finding: {card['finding']}")
+    lines.append("steps:")
+    for s in card["steps"]:
+        lines.append(f"  {s['id']} ({s['type']})  {s.get('plan_hash')}")
+    for s in card["sources"]:
+        lines.append(f"  source: {s.get('path')}  [{s.get('sample')}]")
+    for x in card["assumptions"]:
+        lines.append(f"  assumed: {x}")
+    lines.append(f"verify: {card['verify']}")
+    _print(a, card, "\n".join(lines))
 
 
 def cmd_suggest(a: argparse.Namespace) -> None:
@@ -910,6 +1059,17 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--jsonl", action="store_true", help="one JSON object per dataset, for a search index"); s.add_argument("--output", help="write to this file instead of printing")
     s.add_argument("--changed", metavar="OLD_CONTEXT", help="only datasets whose content changed since this earlier context file (JSON or JSONL)")
     s.set_defaults(fn=cmd_context)
+    s = sub.add_parser("search", help="search the project's text index (built by a 'Build search index' step)")
+    s.add_argument("pipeline"); s.add_argument("query"); s.add_argument("--node", help="the index step (needed only if there are several)")
+    s.add_argument("--k", type=int, default=5, help="how many passages"); s.add_argument("--min-score", type=float, default=0.0, dest="min_score")
+    s.add_argument("--allow-restricted", action="store_true", dest="allow_restricted", help="include confidential/restricted passages (withheld by default)")
+    s.set_defaults(fn=cmd_search)
+    s = sub.add_parser("eval", help="score questions against the project (the engine, or the Assistant with --model)")
+    s.add_argument("pipeline"); s.add_argument("--set", required=True, help="an evaluation set file (JSON {'cases': [...]}, a JSON list, or JSON Lines)")
+    s.add_argument("--model", action="store_true", help="score the Assistant (needs a model key, or DANCR_ASSISTANT_FAKE=1)")
+    s.set_defaults(fn=cmd_eval)
+    s = sub.add_parser("trace", help="the Assistant conversation saved with the project, as an audit log")
+    s.add_argument("pipeline"); s.set_defaults(fn=cmd_trace)
     s = sub.add_parser("dataset", help="show or set the project's dataset metadata (creator, license, description…)")
     s.add_argument("pipeline"); s.add_argument("--set", action="append", metavar="KEY=VALUE", help="a field, e.g. license=CC-BY-4.0 or keywords=a,b")
     s.add_argument("--remove", metavar="FIELD", help="remove a field"); s.set_defaults(fn=cmd_dataset)
@@ -922,6 +1082,19 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--copy", default="metadata", choices=list(hl.ROCRATE_COPY), help="include the data files, the result files, both, or neither")
     s.add_argument("--dir", action="store_true", help="write a folder instead of a .zip"); s.add_argument("--force", action="store_true", help="replace an existing crate")
     s.set_defaults(fn=cmd_package)
+    s = sub.add_parser("verify", help="record an attestation of the project, or check that it still reproduces one")
+    s.add_argument("pipeline"); s.add_argument("--record", metavar="FILE", help="write an attestation to this file")
+    s.add_argument("--manifest", metavar="FILE", help="verify against this attestation or run manifest")
+    s.add_argument("--rerun", action="store_true", help="recompute every step instead of using the cache")
+    s.add_argument("--strict-sources", action="store_true", dest="strict_sources", help="treat a changed source file as a mismatch")
+    s.add_argument("--no-hash", action="store_true", dest="no_hash", help="skip the output content hashes (a faster, weaker record/check)")
+    s.set_defaults(fn=cmd_verify)
+    s = sub.add_parser("lineage", help="what produced a step, and what depends on it")
+    s.add_argument("pipeline"); s.add_argument("node")
+    g = s.add_mutually_exclusive_group(); g.add_argument("--up", action="store_true"); g.add_argument("--down", action="store_true")
+    s.set_defaults(fn=cmd_lineage)
+    s = sub.add_parser("proof", help="a proof card for a step: chain, hashes, sources and how to re-check it")
+    s.add_argument("pipeline"); s.add_argument("node"); s.set_defaults(fn=cmd_proof)
     s = sub.add_parser("watch", help="watch a project and its data files, and rerun when anything changes")
     s.add_argument("pipeline"); s.add_argument("--node", help="only this step and what it needs"); s.add_argument("--interval", type=float, default=2.0, help="seconds between checks")
     s.add_argument("--once", action="store_true", help="run once and exit instead of watching")

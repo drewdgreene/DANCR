@@ -9,6 +9,8 @@ RO_CRATE_CONTEXT = "https://w3id.org/ro/crate/1.1/context"
 RO_CRATE_CONFORMS = "https://w3id.org/ro/crate/1.1"
 MANIFEST_KIND = "dancr.manifest"
 MANIFEST_VERSION = 1
+ATTESTATION_KIND = "dancr.attestation"
+ATTESTATION_VERSION = 1
 
 
 def version() -> str:

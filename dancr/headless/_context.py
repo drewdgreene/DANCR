@@ -167,6 +167,7 @@ def package_rocrate(p: Pipeline, executor: Executor | None = None, *, out: Path 
 
     from ..core.dtypes import json_safe
     from ..core.secrets import redact_params
+    from ..core.verify import build_attestation, dump_attestation
     public = p.to_dict()
     for nd in public.get("nodes", []):                  # a crate is shared: never ship a password or token in it
         try:
@@ -179,6 +180,7 @@ def package_rocrate(p: Pipeline, executor: Executor | None = None, *, out: Path 
         "datapackage.json": fair.dump(fair.datapackage(ctx, meta)),
         "dataset.jsonld": fair.dump(fair.dataset_jsonld(ctx, meta)),
         "dancr-manifest.json": fair.dump(man),
+        "dancr-attestation.json": dump_attestation(build_attestation(p, ex, states=ex.states())),
         "context.jsonl": context_jsonl(ctx),
     }
     copies: dict[str, Path] = {}                        # arcname -> source file
@@ -246,7 +248,7 @@ def _unique_arc(folder: str, name: str, taken: dict[str, Any]) -> str:
 def _descriptor_name(name: str) -> str:
     return {"dancr-pipeline.json": "DANCR pipeline", "datapackage.json": "Frictionless data package",
             "dataset.jsonld": "schema.org dataset", "dancr-manifest.json": "DANCR run manifest",
-            "context.jsonl": "Knowledge-base context"}.get(name, name)
+            "dancr-attestation.json": "DANCR attestation", "context.jsonl": "Knowledge-base context"}.get(name, name)
 
 
 def _table_stats(ex: Executor, node_id: str) -> list[dict[str, Any]] | None:
@@ -280,6 +282,8 @@ def context_jsonl(ctx: dict[str, Any]) -> str:
                 "project": (ctx.get("project") or {}).get("name"),
                 "engine_version": ctx.get("engine_version"),
                 "generated_at": ctx.get("generated_at"), **d}
+        if ctx.get("changes") is not None:          # a --changed export: keep the marker on every line so a
+            line["changes"] = ctx["changes"]        # JSON Lines changed feed is recognisable downstream
         lines.append(json.dumps(json_safe(line), ensure_ascii=False, allow_nan=False, default=str))
     return "\n".join(lines) + ("\n" if lines else "")
 
