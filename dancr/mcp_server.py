@@ -957,6 +957,46 @@ def policy_check(root: str | None = None, principal: str = "anonymous", tool: st
     return _dump(hl.policy_check(_repo_root(root), principal, tool or "", category=category, project=project))
 
 
+@mcp.tool()
+@friendly
+def graph_suggest(root: str | None = None, allow_restricted: bool = False) -> str:
+    """The structural cross-project questions the graph can answer, best first."""
+    return _dump(hl.cross_suggest(_repo_root(root), allow_restricted=bool(allow_restricted)))
+
+
+@mcp.tool()
+@friendly
+def graph_ask(root: str | None = None, question: str = "", allow_restricted: bool = False) -> str:
+    """Answer a structural cross-project question against the graph, citing edge evidence. No cross-project
+    execution: it returns graph facts (a shared key, a join path, where a dataset comes from, what it feeds).
+    Example questions: 'what joins data/a.json#orders and data/b.json#customers?', 'which keys link projects?',
+    'where does shop.json#sales come from?', 'what relates to shop.json#orders?'."""
+    if not question:
+        raise ToolError("Give a question")
+    return _dump(hl.cross_ask(_repo_root(root), question, allow_restricted=bool(allow_restricted)))
+
+
+@mcp.tool()
+@friendly
+def run_scenarios(path: str, spec: dict[str, Any] | None = None, spec_path: str | None = None,
+                  target: str | None = None, out_dir: str = "scenarios", ext: str = "csv",
+                  jobs: int = 1, force: bool = False) -> str:
+    """Run a project across many scenarios (roadmap F2) and return a record with the per-scenario plan/output
+    hashes. Give `spec` (a scenario spec: named/sweep/monte_carlo/sensitivity) or `spec_path` (a JSON file inside
+    the server's root folder, or JSON text). One output per scenario plus a combined table land in `out_dir`
+    inside the pipeline file's folder; the project file itself is never changed."""
+    p = _load(path)
+    if spec_path:
+        sp = _from_root(spec_path)
+        src: Any = json.loads(sp.read_text(encoding="utf-8")) if sp.is_file() else json.loads(spec_path)
+    elif spec is not None:
+        src = spec if isinstance(spec, dict) else json.loads(spec)
+    else:
+        raise ToolError("Give spec (a scenario spec) or spec_path")
+    return _dump(hl.run_scenarios(p, src, target=target, out_dir=out_dir, ext=ext, jobs=int(jobs),
+                                  force=bool(force)))
+
+
 def main(root: str | None = None) -> None:
     from .logsetup import configure
     global ROOT, ROOT_REFUSED

@@ -32,9 +32,9 @@ from ..core.verify import (  # noqa: E402 - the attestation + verification surfa
 )
 from ..core.lineage import build_lineage, proof_card  # noqa: E402 - the lineage + proof surface
 from ..core.rag import search_knowledge  # noqa: E402 - retrieve from a project's own text index
-from ._graph import (  # noqa: E402 - the cross-project entity graph (A1)
-    build_graph, graph_neighbors, graph_path, graph_query, graph_shared_keys, graph_slice, graph_summary,
-    load_graph,
+from ._graph import (  # noqa: E402 - the cross-project entity graph (A1) and structural QA (C2)
+    build_graph, cross_ask, cross_suggest, graph_neighbors, graph_path, graph_query, graph_shared_keys,
+    graph_slice, graph_summary, load_graph,
 )
 from ._events import (  # noqa: E402 - the repository event log and watcher (A2)
     append_event, invalidate, read_events, watch_repo,
@@ -43,6 +43,8 @@ from ._gateway import (  # noqa: E402 - policy, approvals, audit and quotas (B1 
     audit_records, decide_approval, enforce, list_approvals, load_policy, policy_check, request_approval,
     save_policy,
 )
+from ._scenarios import run_scenarios, scenario_set  # noqa: E402 - scenario sets (F2)
+from ._scenarios import SCENARIO_EXT  # noqa: E402 - the output formats a scenario run can write
 
 
 class StepFailed(ValueError):

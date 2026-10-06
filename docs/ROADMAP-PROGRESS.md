@@ -129,4 +129,34 @@ dancr audit /path/to/repo
 
 ## Phase 3 — C2 cross-project QA + F2 scenarios
 
-Status: not started
+Status: **done**
+
+C2 (structural cross-project QA, no execution):
+
+- [x] `dancr/core/crossask.py` — a deterministic grammar over the graph: `shared_keys`, `path`, `neighbors`,
+      `upstream`, `downstream`, `find`; every answer cites edge evidence; ambiguity returns candidates.
+- [x] `headless.cross_ask` / `cross_suggest`; CLI `dancr graph ask|suggest`; MCP `graph_ask`/`graph_suggest`;
+      SDK `cross_ask`, `cross_suggest`.
+- [x] tests: `tests/test_crossask.py` (9).
+
+F2 (scenario sets + proofs):
+
+- [x] `dancr/core/scenarios.py` — deterministic `named`/`sweep`/`monte_carlo`/`sensitivity` sets.
+- [x] `dancr/headless/_scenarios.py` — `run_scenarios` (private clone per scenario, confined writes, one output
+      each + a combined table, per-scenario plan/output hashes).
+- [x] Attestation/verify extended across scenarios through the `extra` evidence block
+      (`dancr verify --record|--manifest … --scenarios spec.json`).
+- [x] CLI `dancr scenarios`; MCP `run_scenarios`; SDK `run_scenarios`, `scenario_set`.
+- [x] tests: `tests/test_scenarios.py` (9).
+
+Verification (Phase 3): `ruff check dancr tests` → **All checks passed**;
+`pytest -q` → **1486 passed, 2 warnings in 305.00 s** (Phase 2's 1468 + 18 new).
+
+Demo:
+
+```bash
+dancr graph ask /path/to/repo "which keys link projects?"
+dancr scenarios shop.json --set cases.json --out-dir results
+dancr verify shop.json --record att.json --scenarios cases.json
+dancr verify shop.json --manifest att.json --scenarios cases.json
+```

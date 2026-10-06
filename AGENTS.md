@@ -27,9 +27,10 @@ Two interfaces, same engine:
   `get_proof` (a proof card for one step), `search_knowledge` (search a project's own text index),
   `get_trace` (the Assistant conversation as an audit log), `run_eval` (score questions against the project),
   `catalog` (every project under a folder),
-  `graph_build` / `graph_query` / `graph_neighbors` / `graph_path` / `graph_shared_keys` (the cross-project
-  entity graph — see below), `get_events` (the repository event log), `policy_check` (whether a governance
-  policy would allow an action), `open_in_gui`.
+  `graph_build` / `graph_query` / `graph_neighbors` / `graph_path` / `graph_shared_keys` / `graph_ask` /
+  `graph_suggest` (the cross-project entity graph and structural QA — see below), `get_events` (the repository
+  event log), `policy_check` (whether a governance policy would allow an action), `run_scenarios` (run a step
+  across many named/sweep/monte_carlo/sensitivity scenarios), `open_in_gui`.
 - **CLI**: `dancr --json <command> …` prints JSON. `dancr ask p.json "total sales by region" --file a.csv`,
   `dancr suggest p.json [--build N]` (`--file` on a workbook adds every sheet),   `dancr answer p.json [ID] [--set stat=mean] [--choose N M] [--remove --steps]`
   and `dancr understand p.json` are the answer commands. `dancr context p.json [--samples] [--jsonl] [--changed old.jsonl]` (alias
@@ -47,7 +48,9 @@ Two interfaces, same engine:
   [--node NODE] [--k N] [--retriever lexical|bm25|hybrid]` searches the project's own text index (offline, deterministic);
   the result carries a `provenance` block (the retrievers, their scores and the embedder).
   `dancr graph build DIR [--project FILE] [--force] [--jobs N]` builds the repository's cross-project graph
-  under `<DIR>/.dancr/graph/graph.db`; `dancr graph summary|query|neighbors|path|shared-keys DIR …` reads it.
+  under `<DIR>/.dancr/graph/graph.db`; `dancr graph summary|query|neighbors|path|shared-keys DIR …` reads it,
+  and `dancr graph ask DIR "what joins A and B?"` / `dancr graph suggest DIR` answer structural cross-project
+  questions over it (no execution).
   A project whose file and source files have not changed is carried over from the stored graph without being
   read again (the build is incremental and deterministic). See `docs/GRAPH.md`.
   `dancr events DIR [--follow] [--type T] [--since N]` prints the repository event log; `dancr watch DIR --repo
@@ -56,6 +59,10 @@ Two interfaces, same engine:
   `dancr policy check DIR PRINCIPAL TOOL`, `dancr approvals DIR [--approve ID|--deny ID]` and `dancr audit DIR`
   are the governance surface; without a `<DIR>/.dancr/gateway/policy.json` nothing is enforced. See
   `docs/GATEWAY.md`.
+  `dancr scenarios p.json --set spec.json --out-dir DIR` runs one step across many scenarios (named, sweep,
+  monte_carlo, sensitivity), one output each plus a combined table with a `scenario` column; `dancr verify
+  p.json --record att.json --scenarios spec.json` (and `--manifest att.json --scenarios spec.json`) folds the
+  per-scenario plan and output hashes into the attestation and re-checks them. See `docs/SCENARIOS.md`.
   `dancr eval p.json --set cases.json [--model]` scores questions against the project (the engine, or the Assistant);
   `dancr trace p.json` prints the saved Assistant conversation as an audit log.
   `dancr assistant p.json "…" [--file …] [--build]`
@@ -375,7 +382,8 @@ The public names: `read_project`, `editing`, `project_lock`, `ProjectBusy`, `Pip
 `graph_summary`, `graph_query`, `graph_neighbors`, `graph_path`, `graph_shared_keys`, `graph_slice`), the
 repository event log (`read_events`, `append_event`, `invalidate`, `watch_repo`) and governance (`Policy`,
 `Principal`, `evaluate_policy`, `policy_category`, `load_policy`, `save_policy`, `policy_check`, `enforce`,
-`request_approval`, `list_approvals`, `decide_approval`, `audit_records`).
+`request_approval`, `list_approvals`, `decide_approval`, `audit_records`), cross-project structural QA
+(`cross_ask`, `cross_suggest`) and scenario sets (`run_scenarios`, `scenario_set`).
 
 ## The cross-project entity graph (A1)
 

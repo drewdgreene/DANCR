@@ -78,6 +78,13 @@ The app is self-contained. You don't need to install anything else first.
 - Can be governed: a repository may write a small **policy** (principals, rules, approvals, quotas), after which
   every action gets an allow/approve/deny decision and an **audit** record. It is off by default — nothing is
   enforced until a policy is configured — and there is no network service.
+- Answers structural questions across a whole repository from its graph: *what joins these two datasets*, *which
+  keys link different projects*, *where does this dataset come from*, *what does it feed* — each citing the
+  edges and their evidence, without running anything across projects.
+- Runs one analysis across many assumptions: a **scenario** is a named set of inputs, and `dancr scenarios`
+  runs a sweep (a grid), a seeded Monte Carlo sample, or a one-at-a-time sensitivity check — one output each
+  plus a combined table, with every scenario's plan and output hash recorded and foldable into an attestation
+  that `dancr verify` re-checks.
 - Stewards data: **Check data contract** (column kinds, blanks, uniqueness, range, allowed values, patterns,
   cross-column rules and keys that must exist elsewhere), **Compare two versions** (what changed), a
   data-dictionary step, **Label sensitivity**, and **Redact** columns for a shareable copy.

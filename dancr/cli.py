@@ -541,10 +541,17 @@ def cmd_verify(a: argparse.Namespace) -> None:
     """Record an attestation of the project, or verify the project still reproduces one."""
     p = _load(a.pipeline)
     ex = Executor(p)
+    extra = None
+    if getattr(a, "scenarios", None):
+        rec = hl.run_scenarios(p, _load_spec(a.scenarios), target=a.node,
+                               out_dir=a.out_dir or "scenarios", ext="parquet")
+        extra = rec["evidence"]
+        if not a.json:
+            print(f"ran {rec['count']} scenario(s); evidence folded into the record")
     if a.manifest:
         ref = Path(a.manifest).expanduser()
         res = hl.verify_pipeline(p, ref, mode="rerun" if a.rerun else "stored", strict_sources=a.strict_sources,
-                                 hash_outputs=not a.no_hash)
+                                 hash_outputs=not a.no_hash, extra=extra)
         if a.json:
             _print(a, res)
         else:
@@ -563,7 +570,7 @@ def cmd_verify(a: argparse.Namespace) -> None:
         if not res["ok"]:
             sys.exit(EXIT_FAILED)
         return
-    att = hl.build_attestation(p, ex, hash_outputs=not a.no_hash)
+    att = hl.build_attestation(p, ex, hash_outputs=not a.no_hash, extra=extra)
     if a.record:
         target = hl.write_text_atomic(a.record, hl.dump_attestation(att))
         _print(a, {"ok": True, "path": str(target), "attestation_hash": att["attestation_hash"],
@@ -747,6 +754,63 @@ def cmd_graph_shared_keys(a: argparse.Namespace) -> None:
     for k in rec["keys"]:
         lines.append(f"  {k['left_on']} = {k['right_on']}  {k['left']} ↔ {k['right']}  ({k.get('match_pct')}% match)")
     _print(a, rec, "\n".join(lines))
+
+
+def cmd_graph_ask(a: argparse.Namespace) -> None:
+    """Answer a structural cross-project question against the graph (no execution)."""
+    out = hl.cross_ask(a.root, a.question, allow_restricted=a.allow_restricted)
+    if a.json:
+        _print(a, out); return
+    lines = [out.get("answer", "")]
+    for e in out.get("evidence", []):
+        if isinstance(e, dict) and e.get("evidence"):
+            lines.append("  - " + str(e["evidence"]))
+    if not out.get("ok") and out.get("candidates"):
+        lines.append("  candidates: " + ", ".join(out["candidates"]))
+    _print(a, out, "\n".join(lines))
+
+
+def cmd_graph_suggest(a: argparse.Namespace) -> None:
+    out = hl.cross_suggest(a.root, allow_restricted=a.allow_restricted)
+    if a.json:
+        _print(a, out); return
+    lines = [f"{len(out['suggestions'])} question(s) the graph can answer"]
+    lines += [f"  {s['intent']}: {s['question']}" for s in out["suggestions"]]
+    _print(a, out, "\n".join(lines))
+
+
+def _load_spec(source: str) -> Any:
+    """A scenario spec from a file path or its JSON text."""
+    pth = Path(str(source)).expanduser()
+    text = pth.read_text(encoding="utf-8") if pth.is_file() else str(source)
+    try:
+        return json.loads(text)
+    except ValueError as e:
+        raise CliError(f"--set is not valid JSON: {e}") from e
+
+
+def cmd_scenarios(a: argparse.Namespace) -> None:
+    """Run a project across many scenarios (named, sweep, monte_carlo, sensitivity)."""
+    p = _load(a.pipeline)
+    spec = _load_spec(a.set)
+
+    def on_event(e: dict[str, Any]) -> None:
+        if not a.json and e.get("type") == "scenario":
+            print(f"  {e['status']:7} {e['id']}", flush=True)
+
+    rec = hl.run_scenarios(p, spec, target=a.node, out_dir=a.out_dir, ext=a.format, jobs=a.jobs,
+                           force=a.force, combined=not a.no_combined, manifest=a.manifest, on_event=on_event)
+    if a.json:
+        _print(a, rec)
+    else:
+        print(f"{rec['count']} scenario(s) → {rec['out_dir']}  ({'all done' if rec['ok'] else 'some failed'})")
+        if rec.get("combined"):
+            print(f"combined: {rec['combined']}")
+        if rec.get("manifest"):
+            print(f"manifest: {rec['manifest']}")
+    if not rec["ok"]:
+        sys.exit(EXIT_FAILED)
+
 
 
 def cmd_assistant(a: argparse.Namespace) -> None:
@@ -1246,6 +1310,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--rerun", action="store_true", help="recompute every step instead of using the cache")
     s.add_argument("--strict-sources", action="store_true", dest="strict_sources", help="treat a changed source file as a mismatch")
     s.add_argument("--no-hash", action="store_true", dest="no_hash", help="skip the output content hashes (a faster, weaker record/check)")
+    s.add_argument("--scenarios", help="run this scenario spec first and fold its per-scenario hashes into the record/check")
+    s.add_argument("--node", help="with --scenarios, the step to run per scenario (default: the last)")
+    s.add_argument("--out-dir", dest="out_dir", help="with --scenarios, where the per-scenario results go")
     s.set_defaults(fn=cmd_verify)
     s = sub.add_parser("lineage", help="what produced a step, and what depends on it")
     s.add_argument("pipeline"); s.add_argument("node")
@@ -1308,6 +1375,12 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--jobs", type=int, default=1, help="files to run at once (default 1)"); s.add_argument("--force", action="store_true", help="ignore the cache")
     s.add_argument("--no-combined", action="store_true", dest="no_combined", help="skip the combined table"); s.add_argument("--manifest", help="write a JSON manifest here")
     s.set_defaults(fn=cmd_batch)
+    s = sub.add_parser("scenarios", help="run one step across many scenarios (named, sweep, monte_carlo, sensitivity)")
+    s.add_argument("pipeline"); s.add_argument("--set", required=True, help="a scenario spec file (JSON) or JSON text")
+    s.add_argument("--node", help="the step to write out (default: the last step)"); s.add_argument("--out-dir", dest="out_dir", default="scenarios", help="where results go (inside the project folder)")
+    s.add_argument("--format", default="csv", choices=list(hl.SCENARIO_EXT)); s.add_argument("--jobs", type=int, default=1)
+    s.add_argument("--force", action="store_true", help="ignore the cache"); s.add_argument("--no-combined", action="store_true", dest="no_combined")
+    s.add_argument("--manifest", help="write a JSON manifest here"); s.set_defaults(fn=cmd_scenarios)
     s = sub.add_parser("status", help="step status, messages and reports"); s.add_argument("pipeline"); s.add_argument("node", nargs="?"); s.set_defaults(fn=cmd_status)
     s = sub.add_parser("schema", help="columns of a step's output"); s.add_argument("pipeline"); s.add_argument("node"); s.set_defaults(fn=cmd_schema)
     s = sub.add_parser("sample", help="print rows of a step's output"); s.add_argument("pipeline"); s.add_argument("node"); s.add_argument("--rows", type=int, default=20); s.add_argument("--offset", type=int, default=0); s.add_argument("--csv", action="store_true"); s.add_argument("--run", action="store_true", help="run first if needed"); s.set_defaults(fn=cmd_sample)
@@ -1357,6 +1430,12 @@ def build_parser() -> argparse.ArgumentParser:
     g = gs.add_parser("shared-keys", help="keys that link datasets across different projects")
     g.add_argument("root"); g.add_argument("--allow-restricted", action="store_true", dest="allow_restricted")
     g.set_defaults(fn=cmd_graph_shared_keys)
+    g = gs.add_parser("ask", help="answer a structural cross-project question (no execution)")
+    g.add_argument("root"); g.add_argument("question"); g.add_argument("--allow-restricted", action="store_true", dest="allow_restricted")
+    g.set_defaults(fn=cmd_graph_ask)
+    g = gs.add_parser("suggest", help="structural questions the graph can answer")
+    g.add_argument("root"); g.add_argument("--allow-restricted", action="store_true", dest="allow_restricted")
+    g.set_defaults(fn=cmd_graph_suggest)
     return ap
 
 

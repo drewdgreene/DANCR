@@ -115,6 +115,11 @@ _PUBLIC: dict[str, tuple[str, str]] = {
     "list_approvals": ("dancr.headless", "list_approvals"),
     "decide_approval": ("dancr.headless", "decide_approval"),
     "audit_records": ("dancr.headless", "audit_records"),
+    # cross-project structural QA (C2) and scenario sets (F2)
+    "cross_ask": ("dancr.headless", "cross_ask"),
+    "cross_suggest": ("dancr.headless", "cross_suggest"),
+    "run_scenarios": ("dancr.headless", "run_scenarios"),
+    "scenario_set": ("dancr.headless", "scenario_set"),
     # the compact profile the Assistant reads (the schema half of the context document)
     "project_profile": ("dancr.core.profile", "project_profile"),
     "table_card": ("dancr.core.profile", "table_card"),

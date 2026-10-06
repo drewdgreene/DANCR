@@ -129,5 +129,15 @@
   network transport**: the multi-client HTTP gateway is a separate, deliberately deferred decision
   (`docs/adr/0006-gateway-transport.md`), so the offline-first guarantee is preserved.
 
+- Cross-project question answering (`dancr graph ask`, `docs/adr/0005-cross-project-scope.md`) answers only
+  **structural** questions — a shared key, a join path, where a dataset comes from, what it feeds, a name lookup.
+  It does **not** execute a pipeline across projects; the natural follow-up ("build this join") materialises into
+  one project and reuses the existing engine. The grammar is small and fixed; a question it does not read is
+  refused with the dataset candidates, never guessed. Upstream/downstream follow edge orientation, except a
+  `link`, which is treated as relating both ways because a shared key does not have a direction.
+- Scenario sets (`dancr scenarios`, `docs/SCENARIOS.md`) run each scenario as a separate run — there is no
+  fan-out inside the LazyFrame executor — so a large grid costs proportionally and writes one output per
+  scenario. Monte Carlo is uniform (or a fixed choice) only, and its seed lives in the spec, not the project.
+
 Design and extension of the answer engine: `docs/ANSWERS.md`. Earlier plans and review worklists
 (all items done): `docs/history/`.

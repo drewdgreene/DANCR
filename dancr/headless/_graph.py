@@ -322,3 +322,19 @@ def graph_slice(root: Path | str, *, allow_restricted: bool = False) -> dict[str
             "meta": dict(sorted(graph.meta.items(), key=lambda kv: kv[0])),
             "projects": [p.to_dict() for p in sorted(graph.projects.values(), key=lambda x: x.id)],
             "datasets": [d.to_dict() for d in datasets], "edges": [e.to_dict() for e in edges]}
+
+
+def cross_ask(root: Path | str, question: str, *, allow_restricted: bool = False) -> dict[str, Any]:
+    """Answer a structural cross-project question against the stored graph, citing edge evidence. No execution
+    (docs/adr/0005-cross-project-scope.md)."""
+    from ..core.crossask import ask
+    repo_root, graph = _require_graph(root)
+    return {"root": str(repo_root), **ask(graph, question, allow_restricted=allow_restricted)}
+
+
+def cross_suggest(root: Path | str, *, allow_restricted: bool = False) -> dict[str, Any]:
+    """The structural questions the stored graph can answer, best first."""
+    from ..core.crossask import suggest
+    repo_root, graph = _require_graph(root)
+    return {"kind": "dancr.crossask.suggest", "root": str(repo_root),
+            "suggestions": suggest(graph, allow_restricted=allow_restricted)}
