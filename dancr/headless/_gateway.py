@@ -10,7 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from ..core.gateway import Decision, Policy, category_for, evaluate, redact_args
+from ..core.gateway import Decision, Policy, category_for, evaluate, principal_for_token, redact_args
 from ..core.repo import Repo, append_jsonl, read_json, read_jsonl, write_json_atomic
 
 
@@ -168,3 +168,54 @@ def decide_approval(root: Path | str, approval_id: str, approve: bool, *, by: st
     audit(root, {"principal": by or "approver", "tool": "decide_approval", "category": "gateway_admin",
                  "verdict": "approved" if approve else "denied", "approval": approval_id})
     return {"kind": "dancr.approvals", "id": approval_id, "status": rec["status"], "by": by}
+
+
+def principal_for_request(root: Path | str, token: str) -> tuple[str | None, Policy | None]:
+    """The principal a bearer token authenticates (constant-time), and the policy, for the gateway."""
+    policy = load_policy(root)
+    if policy is None:
+        return None, None
+    return principal_for_token(policy, token), policy
+
+
+def consume_approval(root: Path | str, principal: str, tool: str) -> bool:
+    """Take a matching approved-but-unused approval for (principal, tool), marking it consumed. True if one was
+    found. This is how an ``approve`` verdict is satisfied by a person's earlier decision."""
+    from . import repo_lock
+    records = list(read_jsonl(_approvals_file(root)))
+    consumed = {r.get("id") for r in records if r.get("event") == "consumed"}
+    items: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for r in records:
+        aid = str(r.get("id"))
+        if aid not in items:
+            items[aid] = dict(r)
+            order.append(aid)
+        if r.get("event") == "decided":
+            items[aid]["status"] = r.get("status", "pending")
+    match = next((items[a] for a in order if items[a].get("status") == "approved" and a not in consumed
+                  and items[a].get("principal") == principal and items[a].get("tool") == tool), None)
+    if match is None:
+        return False
+    with repo_lock(root):
+        append_jsonl(_approvals_file(root), {"id": match["id"], "event": "consumed"})
+    return True
+
+
+def authorize(root: Path | str, principal: str, tool: str, *, category: str | None = None,
+              project: str | None = None, args: dict[str, Any] | None = None) -> dict[str, Any]:
+    """The gateway's per-call decision: enforce the policy (audited, quota-counted); an ``approve`` verdict is
+    satisfied by a person's earlier approval, else queued and reported as ``approve``."""
+    policy = load_policy(root)
+    if policy is None:
+        return {"verdict": "allow", "category": category or category_for(tool), "principal": principal,
+                "tool": tool, "reason": "no policy configured", "rule": None}
+    dec = enforce(root, principal, tool, category=category, project=project, args=args)
+    if dec["verdict"] != "approve":
+        return dec
+    if consume_approval(root, principal, tool):
+        audit(root, {"principal": principal, "tool": tool, "category": dec["category"],
+                     "verdict": "allowed-after-approval", "project": project})
+        return {**dec, "verdict": "allow", "reason": "approved"}
+    rec = request_approval(root, principal, tool, category=dec["category"], project=project, args=args)
+    return {**dec, "verdict": "approve", "approval": rec["id"], "reason": f"queued for approval ({rec['id']})"}

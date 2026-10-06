@@ -997,8 +997,9 @@ def run_scenarios(path: str, spec: dict[str, Any] | None = None, spec_path: str 
                                   force=bool(force)))
 
 
-def main(root: str | None = None) -> None:
-    from .logsetup import configure
+def configure_root(root: str | Path | None) -> Path:
+    """Point the server at a root folder (used by ``dancr mcp --root`` and the gateway). With no root named,
+    creating or changing projects is refused when the root is the home folder or the top of a drive."""
     global ROOT, ROOT_REFUSED
     if root:
         ROOT = Path(root).expanduser().resolve()
@@ -1010,6 +1011,12 @@ def main(root: str | None = None) -> None:
         # agent launched from there): every file of the person's would be in reach, so creating or changing
         # pipelines is refused until --root names a folder. Reading and running existing ones still works.
         ROOT_REFUSED = Path.home().resolve().is_relative_to(ROOT) or ROOT.parent == ROOT
+    return ROOT
+
+
+def main(root: str | None = None) -> None:
+    from .logsetup import configure
+    configure_root(root)
     configure(stderr_level=logging.WARNING)      # stdout carries the protocol; the log file and stderr get the rest
     mcp.run(transport="stdio")
 

@@ -18,7 +18,7 @@ land. Statuses: done · in progress · not started.
 | [0003](adr/0003-lock-ordering.md) | lock ordering for cross-project work | accepted |
 | [0004](adr/0004-retrieval-embedder-policy.md) | retrieval embedder policy (C1) | accepted |
 | [0005](adr/0005-cross-project-scope.md) | cross-project QA scope (C2) | accepted |
-| [0006](adr/0006-gateway-transport.md) | gateway transport (B1) | proposed — transport deferred |
+| [0006](adr/0006-gateway-transport.md) | gateway transport (B1) | accepted — implemented |
 | [0007](adr/0007-hashing-attestation-extension.md) | hashing/attestation extension | accepted |
 
 ## Phase 0 — foundations
@@ -91,7 +91,7 @@ dancr search shop.json "drought tolerance" --retriever hybrid
 
 ## Phase 2 — B1 gateway + A2 events
 
-Status: **A2 done; B1 core done, network transport deferred (see below)**
+Status: **done**
 
 A2 (events + repository watcher):
 
@@ -110,12 +110,16 @@ B1 core (policy, approvals, audit, quotas — no socket):
 - [x] CLI `dancr policy check|show`, `dancr approvals`, `dancr audit`; MCP `policy_check`; SDK names.
 - [x] Off by default: without `<root>/.dancr/gateway/policy.json` nothing is enforced.
 - [x] tests: `tests/test_gateway.py` (11).
-- [ ] **Network transport (streamable HTTP MCP) — deferred.** This needs a security decision with production
-      consequences; `docs/adr/0006-gateway-transport.md` lists the four questions (bind address, auth, TLS,
-      threat model). Per the STOP-AND-ASK rule, no listening socket was built.
+- [x] **Network transport (`dancr gateway`) — implemented**, fail-closed: loopback-only by default (remote needs
+      `--allow-remote`), bearer tokens from the policy file compared in constant time, per-call policy
+      allow/deny/approve with audit + quotas, DNS-rebinding protection, and refusal to start without a policy and
+      a token. Uses the MCP SDK's streamable-HTTP transport (Starlette/uvicorn ship with `mcp`; no new
+      dependency). CLI `dancr gateway`; SDK `gateway_app`, `is_loopback`. Decision recorded in
+      `docs/adr/0006-gateway-transport.md`; tests `tests/test_gateway_http.py` (7).
 
 Verification (Phase 2): `ruff check dancr tests` → **All checks passed**;
-`pytest -q` → **1468 passed, 2 warnings in 311.47 s** (Phase 1's 1450 + 18 new).
+`pytest -q` → **1475 passed** (Phase 1's 1450 + 25 new: events 7, governance 11, transport 7).
+Full suite after Phase 3 (which adds 18) → **1493 passed, 2 warnings in 264.23 s**.
 
 Demo:
 

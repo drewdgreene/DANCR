@@ -123,11 +123,13 @@
   but it **does not re-run by default**: `--rerun` recomputes only the changed projects that are safe to
   recompute (never one whose step would write outside its folder or over its data — those are reported instead).
   The event log is append-only and never compacted, so a very long-running watch grows the file.
-- Governance (`dancr policy/approvals/audit`, `docs/GATEWAY.md`) is **opt-in and manual**: nothing is enforced
-  until `<root>/.dancr/gateway/policy.json` exists, and the existing tools are not wrapped by default — a caller
-  must use `enforce`/`policy_check` to be governed. The policy language is deliberately tiny. There is **no
-  network transport**: the multi-client HTTP gateway is a separate, deliberately deferred decision
-  (`docs/adr/0006-gateway-transport.md`), so the offline-first guarantee is preserved.
+- Governance (`dancr policy/approvals/audit`, `docs/GATEWAY.md`) is **opt-in and manual** on the local surfaces:
+  nothing is enforced until `<root>/.dancr/gateway/policy.json` exists, and the stdio server/CLI tools are not
+  wrapped by default — a caller must use `enforce`/`policy_check` to be governed. The policy language is
+  deliberately tiny. The **network transport** (`dancr gateway`) *does* enforce per call: it is loopback-only by
+  default (remote needs `--allow-remote` and a TLS-terminating proxy, since TLS is not built in), requires a
+  bearer token from the policy, and refuses to start without a policy and a token. It serves one repository root;
+  multi-root is out of scope.
 
 - Cross-project question answering (`dancr graph ask`, `docs/adr/0005-cross-project-scope.md`) answers only
   **structural** questions — a shared key, a join path, where a dataset comes from, what it feeds, a name lookup.

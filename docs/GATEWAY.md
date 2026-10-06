@@ -4,11 +4,10 @@ This is the **decision layer** for agents: principals, a policy file, an approva
 queue, an append-only audit log and quotas. It answers one question — *may this
 principal take this action on this project?* — with `allow`, `approve` or `deny`.
 
-It opens **no network socket**. The multi-client HTTP transport is a separate,
-deliberately deferred decision with production security consequences; see
-`docs/adr/0006-gateway-transport.md` for the four questions that must be answered
-first. Until then, the policy/audit machinery can gate the existing local surfaces
-(CLI, MCP over stdio, the SDK) and be used by an operator.
+It also has one **network transport**, `dancr gateway`, and it is opt-in and
+fail-closed: loopback only by default, bearer-token authenticated, policy-gated
+and audited. See the transport section below and
+`docs/adr/0006-gateway-transport.md`.
 
 ## Opt-in, and off by default
 
@@ -41,8 +40,8 @@ tool is safe until it is classified.
 {
   "version": 1,
   "principals": {
-    "alice": {"roles": ["analyst"], "projects": ["data/*"]},
-    "bob": {}
+    "alice": {"roles": ["analyst"], "projects": ["data/*"], "tokens": ["alice-secret-token"]},
+    "bob": {"tokens": ["bob-secret-token"]}
   },
   "rules": [
     {"principal": "bob", "category": "export", "action": "deny", "reason": "bob may not export"},
@@ -92,14 +91,47 @@ The audit log is one JSON object per line: `principal`, `tool`, `category`,
 approvals log is append-only: a `requested` record, then a `decided` record with
 the same id; `list_approvals` folds them.
 
+## The transport (`dancr gateway`)
+
+```bash
+# policy.json: each principal needs a token, or the gateway refuses to start
+dancr gateway .                 # http://127.0.0.1:8765/mcp  (loopback, token-gated)
+dancr gateway . --port 9000 --host 127.0.0.1
+dancr gateway . --allow-remote  # bind a network address (put TLS in front)
+```
+
+It serves the same MCP tools over the SDK's **streamable-HTTP** transport
+(Starlette/uvicorn ship with `mcp`; no new dependency), so an MCP client can point
+at `http://127.0.0.1:8765/mcp` with `Authorization: Bearer <token>`.
+
+Security posture (fail-closed):
+
+- **Loopback only by default.** A non-loopback `--host` is refused unless
+  `--allow-remote`; there is no built-in TLS, so remote use belongs behind a
+  reverse proxy.
+- **Bearer tokens from the policy file.** A principal lists `tokens`; the token is
+  compared in constant time and resolved to that principal. With no policy, or no
+  principal token, `build_app`/`dancr gateway` raises — it can never come up open.
+- **Every tool call is policy-gated and audited.** The decision is `allow`, `deny`
+  or `approve`; a `deny` returns a JSON-RPC `denied` error, an `approve` is
+  satisfied by a person's earlier decision (`dancr approvals --approve ap_N`) or
+  queued and returned as `approval_required`. All are written to the audit log and
+  counted against quotas.
+- **DNS-rebinding protection** is on, with the bind host/port as the only allowed
+  hosts and origins.
+
+SDK: `dancr.gateway_app(root, host=…, port=…)` builds the ASGI app (for tests or a
+custom server); `dancr.is_loopback(host)`.
+
 ## Honest limits
 
-- **No transport.** There is no listening socket; a single-client stdio MCP server
-  and the CLI remain the surfaces. The gateway transport awaits the ADR-0006
-  decision.
-- Enforcement is **opt-in and manual**: existing tools are not wrapped by default,
-  so a caller must call `enforce`/`policy_check` to be governed. Wiring it into
-  every tool is the job of the transport phase.
+- **TLS is not built in.** The default is loopback, which needs none; remote use
+  requires a reverse proxy.
+- Enforcement on the **stdio** server and CLI is still opt-in/manual (call
+  `enforce`/`policy_check`); only the `dancr gateway` transport enforces per call
+  automatically. Wiring the stdio server through the same gate is a possible
+  follow-up.
 - The policy language is deliberately tiny (principals × categories/rules ×
   approvals × quotas). Anything larger becomes an enterprise product; extend only
   on demand.
+- One gateway serves one repository root; multi-root is out of scope.

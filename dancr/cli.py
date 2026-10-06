@@ -501,6 +501,16 @@ def cmd_audit(a: argparse.Namespace) -> None:
     _print(a, out, "\n".join(lines))
 
 
+def cmd_gateway(a: argparse.Namespace) -> None:
+    """Serve the MCP tools over HTTP, policy-gated (loopback by default)."""
+    from .gateway import main as gateway_main
+    try:
+        gateway_main(a.root, host=a.host, port=a.port, path=a.path, allow_remote=a.allow_remote)
+    except KeyboardInterrupt:
+        pass
+
+
+
 
 
 def cmd_catalog(a: argparse.Namespace) -> None:
@@ -1349,6 +1359,10 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--by", default="", help="who is deciding"); s.set_defaults(fn=cmd_approvals)
     s = sub.add_parser("audit", help="print the repository audit log")
     s.add_argument("root"); s.add_argument("--limit", type=int); s.set_defaults(fn=cmd_audit)
+    s = sub.add_parser("gateway", help="serve the MCP tools over HTTP, policy-gated (loopback by default)")
+    s.add_argument("root"); s.add_argument("--host", default="127.0.0.1"); s.add_argument("--port", type=int, default=8765)
+    s.add_argument("--path", default="/mcp"); s.add_argument("--allow-remote", action="store_true", dest="allow_remote")
+    s.set_defaults(fn=cmd_gateway)
     s = sub.add_parser("catalog", help="a catalog of every DANCR project in a folder, for an index or an overview")
     s.add_argument("root", help="the folder to search"); s.add_argument("--pattern", default="*.json"); s.add_argument("--no-recursive", action="store_true", dest="no_recursive")
     s.add_argument("--samples", action="store_true"); s.add_argument("--no-stats", action="store_true", dest="no_stats"); s.add_argument("--fair", help="include a FAIR descriptor per project (schema.org, frictionless, manifest, rocrate)")

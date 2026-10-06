@@ -77,7 +77,8 @@ The app is self-contained. You don't need to install anything else first.
   changed projects that are safe to recompute; `dancr events DIR` reads the log.
 - Can be governed: a repository may write a small **policy** (principals, rules, approvals, quotas), after which
   every action gets an allow/approve/deny decision and an **audit** record. It is off by default — nothing is
-  enforced until a policy is configured — and there is no network service.
+  enforced until a policy is configured. `dancr gateway` can also serve the MCP tools over HTTP for several
+  clients at once: loopback-only and bearer-token gated, and it refuses to start without a policy and a token.
 - Answers structural questions across a whole repository from its graph: *what joins these two datasets*, *which
   keys link different projects*, *where does this dataset come from*, *what does it feed* — each citing the
   edges and their evidence, without running anything across projects.

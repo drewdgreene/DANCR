@@ -40,8 +40,8 @@ from ._events import (  # noqa: E402 - the repository event log and watcher (A2)
     append_event, invalidate, read_events, watch_repo,
 )
 from ._gateway import (  # noqa: E402 - policy, approvals, audit and quotas (B1 core)
-    audit_records, decide_approval, enforce, list_approvals, load_policy, policy_check, request_approval,
-    save_policy,
+    audit_records, authorize, consume_approval, decide_approval, enforce, gateway_dir, list_approvals,
+    load_policy, policy_check, policy_path, principal_for_request, request_approval, save_policy,
 )
 from ._scenarios import run_scenarios, scenario_set  # noqa: E402 - scenario sets (F2)
 from ._scenarios import SCENARIO_EXT  # noqa: E402 - the output formats a scenario run can write

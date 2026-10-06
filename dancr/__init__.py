@@ -115,6 +115,8 @@ _PUBLIC: dict[str, tuple[str, str]] = {
     "list_approvals": ("dancr.headless", "list_approvals"),
     "decide_approval": ("dancr.headless", "decide_approval"),
     "audit_records": ("dancr.headless", "audit_records"),
+    "gateway_app": ("dancr.gateway", "build_app"),
+    "is_loopback": ("dancr.gateway", "is_loopback"),
     # cross-project structural QA (C2) and scenario sets (F2)
     "cross_ask": ("dancr.headless", "cross_ask"),
     "cross_suggest": ("dancr.headless", "cross_suggest"),

@@ -53,6 +53,7 @@ class Principal:
     id: str
     roles: tuple[str, ...] = ()
     projects: tuple[str, ...] = ()          # fnmatch patterns this principal may touch ("*" = any)
+    tokens: tuple[str, ...] = ()            # bearer tokens that authenticate this principal
 
     def may_touch(self, project: str | None) -> bool:
         if not self.projects:
@@ -117,7 +118,8 @@ class Policy:
         for pid, spec in raw_principals.items():
             spec = spec if isinstance(spec, dict) else {}
             principals[str(pid)] = Principal(str(pid), tuple(str(r) for r in (spec.get("roles") or [])),
-                                             tuple(str(p) for p in (spec.get("projects") or [])))
+                                             tuple(str(p) for p in (spec.get("projects") or [])),
+                                             tuple(str(t) for t in (spec.get("tokens") or []) if t))
         default = dict(DEFAULT_POLICY)
         for k, v in raw_default.items():
             if k in CATEGORIES and v in ACTIONS:
@@ -133,6 +135,19 @@ class Policy:
         if "*" in self.principals:
             return self.principals["*"]
         return None
+
+
+def principal_for_token(policy: Policy, token: str) -> str | None:
+    """The principal a bearer token authenticates, compared in constant time, or None. Principals are tried in
+    sorted id order so the result is deterministic and a wrong token never short-circuits the comparison."""
+    import hmac
+    if not token:
+        return None
+    for pid in sorted(policy.principals):
+        for t in policy.principals[pid].tokens:
+            if hmac.compare_digest(t, token):
+                return pid
+    return None
 
 
 def _rule_matches(rule: dict[str, Any], principal: str, roles: tuple[str, ...], category: str, tool: str) -> bool:

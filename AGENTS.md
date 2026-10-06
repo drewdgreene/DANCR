@@ -57,8 +57,10 @@ Two interfaces, same engine:
   [--rerun]` watches every project and records `source_changed` / `dataset_invalidated` (rippling across
   projects through the graph) and, with `--rerun`, recomputes the changed projects that are safe to recompute.
   `dancr policy check DIR PRINCIPAL TOOL`, `dancr approvals DIR [--approve ID|--deny ID]` and `dancr audit DIR`
-  are the governance surface; without a `<DIR>/.dancr/gateway/policy.json` nothing is enforced. See
-  `docs/GATEWAY.md`.
+  are the governance surface; without a `<DIR>/.dancr/gateway/policy.json` nothing is enforced. `dancr gateway
+  DIR [--host H] [--port N] [--path /mcp] [--allow-remote]` serves the same MCP tools over the SDK's
+  streamable-HTTP transport, loopback-only and bearer-token gated (a principal's policy entry carries `tokens`);
+  it refuses to start without a policy and a token, and audits every call. See `docs/GATEWAY.md`.
   `dancr scenarios p.json --set spec.json --out-dir DIR` runs one step across many scenarios (named, sweep,
   monte_carlo, sensitivity), one output each plus a combined table with a `scenario` column; `dancr verify
   p.json --record att.json --scenarios spec.json` (and `--manifest att.json --scenarios spec.json`) folds the
