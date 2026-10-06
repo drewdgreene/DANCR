@@ -6,6 +6,7 @@ import pytest
 
 from dancr.core import Pipeline
 from dancr.core.executor import Executor
+from conftest import run_one
 
 
 def frame(tmp_path: Path, type_key: str, body: str, name: str, **params) -> pl.DataFrame:
@@ -293,3 +294,19 @@ def test_load_folder_diagonal_unions_mixed_bio_files(tmp_path):
     df, _ = _folder(tmp_path, "*")
     assert set(df["source_file"]) == {"a.vcf", "s.fa"}
     assert "id" in df.columns and "chrom" in df.columns     # diagonal union of the two schemas
+
+
+def test_load_sequences_reads_a_gzip_file(tmp_path):
+    import gzip
+    with gzip.open(tmp_path / "s.fa.gz", "wt") as fh:
+        fh.write(FASTA)
+    p = Pipeline("t"); p.path = tmp_path / "p.json"
+    p.add_node("load_sequences", params={"path": "s.fa.gz"}, id="n")
+    out = run_one(p, "n")
+    assert out.height == 2 and out["id"].to_list() == ["seq1", "seq2"]
+
+
+def test_load_features_limit_stops_early(tmp_path):
+    body = "".join(f"chr1\tsrc\tgene\t{i}\t{i + 10}\t.\t+\t.\tID=g{i}\n" for i in range(1, 50))
+    df = frame(tmp_path, "load_features", body, "f.gff", limit=4)
+    assert df.height == 4

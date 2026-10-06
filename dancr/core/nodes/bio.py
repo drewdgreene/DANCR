@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import gzip
 import re
+from itertools import chain
 from pathlib import Path
 from typing import Any
 
@@ -34,13 +35,13 @@ def _path(ctx: Ctx, params: dict[str, Any]) -> Path:
     return p
 
 
-def _text(path: Path) -> list[str]:
-    """The file's lines, transparently through a .gz / .bgz. The records are read matching the file's own
-    encoding, so a plain text scientific file always reads."""
-    if path.suffix.lower() in (".gz", ".bgz"):
-        with gzip.open(path, "rt", encoding="utf-8", errors="replace") as fh:
-            return fh.read().splitlines()
-    return path.read_text(encoding="utf-8", errors="replace").splitlines()
+def _lines(path: Path):
+    """The file's lines, lazily and transparently through a .gz / .bgz, without their line endings. Streaming
+    means a limited read stops early instead of loading a multi-GB FASTA/VCF/GenBank file into memory."""
+    opener = gzip.open if path.suffix.lower() in (".gz", ".bgz") else open
+    with opener(path, "rt", encoding="utf-8", errors="replace") as fh:
+        for ln in fh:
+            yield ln.rstrip("\r\n")
 
 
 def _frame(cols: dict[str, list], order: list[str]) -> pl.LazyFrame:
@@ -89,28 +90,38 @@ def bio_node_for(path: str | Path) -> str | None:
 # --------------------------------------------------------------------------- sequences
 def _load_sequences(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, Any]) -> NodeResult:
     path = _path(ctx, params)
-    lines = _text(path)
+    lines = _lines(path)
     fmt = str(params.get("format") or "auto")
+    limit = int(params.get("limit") or 0)
     if fmt == "auto":
-        first = next((ln.strip() for ln in lines if ln.strip()), "")
-        fmt = "fastq" if first.startswith("@") else "fasta"
+        first = next((ln for ln in lines if ln.strip()), "")
+        fmt = "fastq" if first.strip().startswith("@") else "fasta"
+        lines = chain([first], lines)                       # put the peeked line back, nothing is lost
     records: list[tuple[str, str, str]] = []
     if fmt == "fastq":
-        i = 0
-        while i < len(lines):
-            if not lines[i].strip():
-                i += 1
+        it = iter(lines)
+        for ln in it:
+            if not ln.strip():
                 continue
-            if not lines[i].startswith("@"):
+            if not ln.startswith("@"):
                 break
-            header = lines[i][1:].strip()
-            seq = lines[i + 1].strip() if i + 1 < len(lines) else ""
+            header = ln[1:].strip()
+            seq = (next(it, "") or "").strip()
+            next(it, None)                                  # the "+" line
+            next(it, None)                                  # the quality line
             records.append((*header.partition(" ")[::2], seq))
-            i += 4
+            if limit and len(records) >= limit:
+                break
     else:
         cur_id = cur_desc = None
         seq: list[str] = []
+        saw = False
         for ln in lines:
+            if limit and len(records) >= limit:
+                break
+            if not ln.strip():
+                continue
+            saw = True
             if ln.startswith(">"):
                 if cur_id is not None:
                     records.append((cur_id, cur_desc, "".join(seq)))
@@ -118,11 +129,10 @@ def _load_sequences(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dic
                 seq = []
             elif cur_id is not None:
                 seq.append(ln.strip())
-        if cur_id is not None:
+        if cur_id is not None and not (limit and len(records) >= limit):
             records.append((cur_id, cur_desc, "".join(seq)))
-        if not records and any(ln.strip() for ln in lines):
+        if not records and saw:
             raise ValueError(f"{path.name} does not look like FASTA (no '>' record lines)")
-    records = _trim(records, params.get("limit"))
     ids = [r[0] for r in records]
     seqs = [r[2] for r in records]
     cols = {"id": ids, "description": [r[1] for r in records],
@@ -190,7 +200,7 @@ def _dosage(gt: Any) -> int | None:
 
 def _load_variants(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, Any]) -> NodeResult:
     path = _path(ctx, params)
-    lines = _text(path)
+    lines = _lines(path)
     info_on = bool(params.get("info", True))
     layout = str(params.get("samples") or "none")          # none | genotype | full
     limit = int(params.get("limit") or 0)
@@ -287,7 +297,7 @@ def _gff_attrs(text: str) -> dict[str, str]:
 
 def _load_features(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, Any]) -> NodeResult:
     path = _path(ctx, params)
-    lines = _text(path)
+    lines = _lines(path)
     fmt = str(params.get("format") or "auto")
     if fmt == "auto":
         base = effective_ext(path)
@@ -298,11 +308,14 @@ def _load_features(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict
         else:
             first = next((ln for ln in lines if ln.strip() and not ln.startswith("#")), "")
             fmt = "gff" if len(first.split("\t")) >= 8 else "bed"
+            lines = chain([first], lines)
     lift = [str(k) for k in (params.get("attributes") or ["ID", "Name", "Parent", "gene_id", "transcript_id", "gene", "product"])]
     limit = int(params.get("limit") or 0)
     rows: list[dict[str, Any]] = []
     if fmt == "bed":
         for ln in lines:
+            if limit and len(rows) >= limit:
+                break
             if not ln.strip() or ln.startswith(("#", "track", "browser")):
                 continue
             f = re.split(r"\s+", ln.strip())
@@ -314,6 +327,8 @@ def _load_features(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict
         order = ["chrom", "chrom_start", "chrom_end", "name", "score", "strand"]
     else:
         for ln in lines:
+            if limit and len(rows) >= limit:
+                break
             if not ln.strip() or ln.startswith("#"):
                 continue
             f = ln.split("\t")
@@ -356,7 +371,8 @@ registry.register(NodeType(
 # --------------------------------------------------------------------------- GenBank
 def _load_genbank(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, Any]) -> NodeResult:
     path = _path(ctx, params)
-    lines = _text(path)
+    lines = _lines(path)
+    limit = int(params.get("limit") or 0)
     records: list[dict[str, Any]] = []
     locus: str | None = None
     locus_len: int | None = None
@@ -368,6 +384,8 @@ def _load_genbank(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[
             records.append(cur)
 
     for ln in lines:
+        if limit and len(records) >= limit:
+            break
         if ln.startswith("LOCUS"):
             flush()
             cur = None
@@ -395,10 +413,11 @@ def _load_genbank(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[
                     cur["quals"][k] = v.strip().strip('"')
                 elif s:
                     cur["loc"] = (cur["loc"] + " " + s).strip()
-    flush()
+    if not (limit and len(records) >= limit):               # don't add a record past the limit
+        flush()
     lift = [str(k) for k in (params.get("qualifiers") or ["gene", "product", "note", "locus_tag", "label"])]
     rows: list[dict[str, Any]] = []
-    for r in _trim(records, params.get("limit")):
+    for r in _trim(records, limit):
         loc = r["loc"]
         # a location may be a compound: join(10..90,200..290). Every range counts, so the span is min..max and
         # the length is the sum of the parts (a join of two 81/91 bp blocks is 172 bp, not 81).
@@ -454,14 +473,17 @@ def _load_markers(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[
         raise ValueError(f"{path.name}: expected a PLINK .map file next to it ({map_path.name})")
 
     markers = []
-    for ln in _text(map_path):
+    limit = int(params.get("limit") or 0)
+    for ln in _lines(map_path):
+        if limit and len(markers) >= limit:
+            break
         if not ln.strip() or ln.startswith("#"):
             continue
         f = re.split(r"\s+", ln.strip())
         if len(f) < 4:
             continue
         markers.append({"chrom": f[0], "marker": f[1], "cm": _num(f[2]), "pos": _int(f[3])})
-    markers = _trim(markers, params.get("limit"))
+    markers = _trim(markers, limit)
 
     cols_out = {k: [m.get(k) for m in markers] for k in ("chrom", "marker", "cm", "pos")}
     order = ["chrom", "marker", "cm", "pos"]
@@ -469,7 +491,7 @@ def _load_markers(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[
     if ped_path is not None and ped_path.exists() and bool(params.get("genotypes", True)):
         geno: list[list[str]] = [[] for _ in markers]
         seen: dict[str, int] = {}
-        for ln in _text(ped_path):
+        for ln in _lines(ped_path):
             if not ln.strip():
                 continue
             f = re.split(r"\s+", ln.strip())

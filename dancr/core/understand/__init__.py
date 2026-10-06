@@ -157,9 +157,9 @@ def _numbering(t: Table, sample: pl.DataFrame) -> None:
             continue
         if i != 0 and not set(name_words(c.name)) & NUMBERING_WORDS:
             continue
-        vc = sample[c.name].drop_nulls().value_counts()
+        vc = sample[c.name].drop_nulls().value_counts(name="_n")
         vals = sorted(vc[c.name].to_list())
-        counts = set(vc["count"].to_list())
+        counts = set(vc["_n"].to_list())
         if vals[0] in (0, 1) and vals == list(range(vals[0], vals[0] + len(vals))) and len(counts) == 1 and counts != {1}:
             c.role = ID
 
@@ -402,18 +402,18 @@ def _short_text(s: pl.Series) -> bool:
 
 
 def _category_values(s: pl.Series) -> list[Any]:
-    vc = s.value_counts(sort=False)
+    vc = s.value_counts(sort=False, name="_n")
     name = vc.columns[0]
-    vc = vc.with_columns(pl.col(name).cast(pl.Utf8).alias("_text")).sort(["count", "_text"], descending=[True, False])
+    vc = vc.with_columns(pl.col(name).cast(pl.Utf8).alias("_text")).sort(["_n", "_text"], descending=[True, False])
     return [_clean(v) for v in vc[name].to_list()]
 
 
 def _spellings(s: pl.Series) -> dict[str, str]:
     """Values that differ only in capitals or surrounding spaces (North, north, 'North '): each variant maps to
     the spelling most rows use (ties: the first in text order)."""
-    vc = s.cast(pl.Utf8).value_counts(sort=False)
+    vc = s.cast(pl.Utf8).value_counts(sort=False, name="_n")
     name = vc.columns[0]
-    vc = vc.with_columns(pl.col(name).str.strip_chars().str.to_lowercase().alias("_k")).sort(["count", name], descending=[True, False])
+    vc = vc.with_columns(pl.col(name).str.strip_chars().str.to_lowercase().alias("_k")).sort(["_n", name], descending=[True, False])
     out: dict[str, str] = {}
     for key in vc["_k"].unique(maintain_order=True).to_list():
         variants = vc.filter(pl.col("_k") == key)[name].to_list()

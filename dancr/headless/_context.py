@@ -4,27 +4,18 @@ from __future__ import annotations
 from ._atomic import write_text_atomic
 from ._safety import source_files
 
-"""What the command line and the MCP server share: finding steps, adding them, reporting them, charting and
-reading results. Both front ends call these, so a step is reported the same way wherever it is asked for."""
-
 import json
-import logging
 import os
-import sys
-import threading
-import time
-import uuid
-from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 import polars as pl
 
-from ..core import Pipeline, PipelineError, registry
+from ..core import Pipeline, registry
 from ..core.registry import in_dancr_folder
 from ..core.dtypes import json_safe
-from ..core.executor import Executor, NodeState, CODE_FINGERPRINT
-from ..core.model import Node, FORMAT_VERSION
+from ..core.executor import Executor, CODE_FINGERPRINT
+from ..core.model import FORMAT_VERSION
 CONTEXT_VERSION = 2          # the context document's own format, independent of the pipeline format
 CONTEXT_MAX_SAMPLE_ROWS = 100
 CONTEXT_DOC = "dancr.table"
@@ -63,9 +54,10 @@ def build_context(p: Pipeline, executor: Executor | None = None, *, nodes: list[
     do_run = bool(stats or samples) if run is None else bool(run)
     node = nodes[0] if nodes and len(nodes) == 1 else None
     held: dict[str, str | None] = {}
+    memo: dict[str, str] = {}           # one memo for the whole loop: a shared node is hashed once, not per table
     for nid in model.tables:
         try:
-            held[nid] = ex.safe_hash(nid)
+            held[nid] = ex.safe_hash(nid, memo)
         except Exception:  # noqa: BLE001 - a step whose hash cannot be worked out simply holds nothing
             held[nid] = None
     ex.hold(held)                       # before looking for results, so a cache sweep elsewhere keeps them

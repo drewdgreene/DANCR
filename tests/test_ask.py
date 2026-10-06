@@ -394,3 +394,46 @@ def test_an_average_per_unique_id_is_the_plain_average(shop, question, stat):
 def test_a_column_named_twice_is_refused(shop, question):
     _, m, _ = shop
     assert "is named twice" in _refused(m, question)
+
+
+# --------------------------------------------------- shares, bare readings and "biggest <period> by <measure>"
+def _frame_model(tmp_path, df: pl.DataFrame, title: str = "sales"):
+    p = Pipeline(title); p.path = tmp_path / "p.json"
+    df.write_csv(tmp_path / f"{title}.csv")
+    p.add_node("load_file", title=title, params={"path": f"{title}.csv"}, id=title)
+    ex = Executor(p)
+    return p, deepen(p, ex, understand(p, ex))
+
+
+def test_a_share_of_a_reading_is_the_part_of_the_total(tmp_path):
+    p, m = _frame_model(tmp_path, pl.DataFrame({"region": ["North", "South", "South", "South"],
+                                                "price": [100.0, 10.0, 10.0, 10.0]}))
+    spec, df = answer(p, m, "share of price by region")
+    assert df["share (%)"].sum() == pytest.approx(100.0)                 # a share of the whole, not of the sum of averages
+    north = df.filter(pl.col("region") == "North")["share (%)"][0]
+    assert north == pytest.approx(100 * 100 / 130)
+
+
+def test_a_share_of_an_average_is_refused_not_silently_wrong(tmp_path):
+    _, m = _frame_model(tmp_path, pl.DataFrame({"region": ["North", "South", "South", "South"],
+                                                "price": [100.0, 10.0, 10.0, 10.0]}))
+    assert "only defined for totals" in _refused(m, "share of average price by region")
+
+
+def test_a_bare_reading_is_averaged_not_summed(tmp_path):
+    p, m = _frame_model(tmp_path, pl.DataFrame({"site": ["A", "B", "C"], "temperature": [10.0, 3.0, 50.0]}), "sensors")
+    spec, df = answer(p, m, "temperature")
+    assert spec["recipe"] == "single" and spec["stat"] == "mean"
+    assert df["temperature"][0] == pytest.approx(21.0)                 # mean of 10, 3, 50 — not the sum 63
+
+
+def test_biggest_period_by_a_measure_is_the_top_period(tmp_path):
+    when = pl.datetime_range(datetime(2024, 1, 1), datetime(2024, 3, 31), "1d", eager=True)
+    df = pl.DataFrame({"when": when, "quantity": [1] * len(when)}).with_columns(
+        pl.when(pl.col("when").dt.month() == 2).then(100).otherwise(pl.col("quantity")).alias("quantity"))
+    p, m = _frame_model(tmp_path, df, "orders")
+    spec, _ = answer(p, m, "biggest month by quantity")
+    assert spec["recipe"] == "top" and spec["every"] == "1mo" and spec.get("n") == 1
+    # "highest quantity per month" is a line of monthly maxima, not the single biggest month
+    spec2, _ = answer(p, m, "highest quantity per month")
+    assert spec2["recipe"] == "trend"

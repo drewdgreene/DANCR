@@ -480,3 +480,22 @@ def test_distance_needs_numeric_columns(tmp_path):
     st = Executor(p).run(targets=[nid])[nid]
     assert st.status == "failed"
     assert "number" in (st.error or "").lower()
+
+
+def test_points_grid_count_name_collision_is_renamed_not_crashed(tmp_path):
+    # the default count column is "points"; an input that already has a "points" value column must not make the
+    # step raise a duplicate-column error (a single default statistic keeps the summarised column's own name).
+    df = pl.DataFrame({"lat": [0.01, 0.02, 0.11], "lon": [0.01, 0.05, 0.11], "points": [1.0, 3.0, 5.0]})
+    p = _pipe(tmp_path, df)
+    nid = p.add_node("points_grid", params={"lat": "lat", "lon": "lon", "size": "0.1", "count_column": "points"}).id
+    p.connect("src", nid)
+    out = run_one(p, nid)
+    assert "points" in out.columns and "points_2" in out.columns
+
+
+def test_geojson_multipolygon_keeps_holes_with_their_polygon():
+    from dancr.core.nodes.outputs import _wkt_geometry
+    g = _wkt_geometry("MULTIPOLYGON (((0 0, 2 0, 2 2, 0 2, 0 0)), "
+                      "((10 10, 12 10, 12 12, 10 12, 10 10), (11 11, 11.5 11, 11.5 11.5, 11 11)))")
+    assert g["type"] == "MultiPolygon" and len(g["coordinates"]) == 2
+    assert len(g["coordinates"][1]) == 2                     # the second polygon keeps its hole as a second ring

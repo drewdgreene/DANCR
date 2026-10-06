@@ -131,7 +131,7 @@ def query_map(lf: pl.LazyFrame, schema: dict[str, pl.DataType], params: dict[str
             md.color = col.cast(pl.Float64).to_numpy()
         else:
             vals = col.cast(pl.Utf8).fill_null("(blank)")
-            counts = vals.value_counts(sort=True)
+            counts = vals.value_counts(sort=True, name="_n")
             top = [row[0] for row in counts.head(MAX_CATEGORIES).iter_rows()]
             lookup = {v: i for i, v in enumerate(top)}
             md.codes = np.array([lookup.get(v, -1) for v in vals.to_list()], dtype=np.int64)

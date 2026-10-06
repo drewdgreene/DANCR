@@ -42,10 +42,11 @@ def test_the_fingerprint_follows_what_steps_import():
     # must follow the modules a run executes, into packages (expr, geo) and the node packages (inquiry)
     for must in ("core/executor.py", "core/expr/__init__.py", "core/expr/_parse.py", "core/fits.py",
                  "core/geo/__init__.py", "core/geo/_world.py", "views/render.py", "views/stats.py",
-                 "nodes/combine.py", "nodes/inquiry/quality.py", "views/lod.py"):
+                 "nodes/combine.py", "nodes/inquiry/quality.py", "views/lod.py",
+                 "nodes/load/__init__.py", "nodes/load/_tidy.py", "nodes/load/_formats.py"):
         assert any(p.endswith(must) for p in paths), must
     for never in ("understand.py", "recipes.py", "ask.py", "answers.py", "planner.py", "samples.py", "examples.py",
-                  "mainwindow.py", "cli.py", "mcp_server.py", "headless.py"):
+                  "mainwindow.py", "cli.py", "mcp_server.py", "headless.py", "nodes/load.py"):
         assert not any(p.endswith("/" + never) for p in paths), never
     assert not any("/ui/" in f.as_posix() for f in engine_files())
 
@@ -278,7 +279,7 @@ def test_every_engine_module_is_fingerprinted(monkeypatch):
     _code_fingerprint()
     for name in ("fits.py", "executor.py", "render.py", "combine.py", "timeutil.py"):
         assert name in read
-    for name in ("examples.py", "understand.py", "recipes.py", "ask.py", "answers.py", "planner.py", "samples.py"):     # never shape a step's output
+    for name in ("examples.py", "understand.py", "recipes.py", "ask.py", "answers.py", "planner.py", "samples.py", "load.py"):     # never shape a step's output
         assert name not in read
 
 
@@ -439,11 +440,11 @@ def test_gc_survives_missing_files(pipe):
 
 
 def test_a_frozen_app_uses_the_fingerprint_its_build_baked_in(monkeypatch, tmp_path):
-    from dancr.core import executor
+    from dancr.core import engine_hash
     baked = tmp_path / "fingerprint.txt"
     baked.write_text("abc123def456\n")
-    monkeypatch.setattr(executor.sys, "frozen", True, raising=False)
-    monkeypatch.setattr(executor, "BAKED_FINGERPRINT", baked)
+    monkeypatch.setattr(engine_hash.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(engine_hash, "BAKED_FINGERPRINT", baked)
     assert _code_fingerprint() == "abc123def456"
     baked.unlink()
     with pytest.raises(RuntimeError, match="incomplete"):

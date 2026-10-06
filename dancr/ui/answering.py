@@ -6,7 +6,7 @@
   tables (or for the step selected). Each card shows a small live preview.
 - :class:`AnswerPanel` shows the selected answer's choices as chips and what it assumed, each changeable.
 
-Nothing here decides what an answer is: that is ``core/recipes.py`` and ``core/ask.py``.
+Nothing here decides what an answer is: that is ``core/recipes/`` and ``core/ask/``.
 """
 from __future__ import annotations
 
@@ -159,6 +159,8 @@ class Understanding:
             fn(self.model)
         else:
             self._waiters.append(fn)
+            if len(self._waiters) > 32:              # a read that never completes must not pin the window forever
+                del self._waiters[:-32]
 
     @property
     def waiting(self) -> bool:

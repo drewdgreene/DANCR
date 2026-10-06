@@ -90,7 +90,7 @@ class Answer:
     """A question and the steps that answer it.
 
     An Answer is a bookmark, not a pipeline step: it is *not* connected to the dataflow and the executor
-    ignores it entirely. It keeps the question as a spec (see ``recipes.py``), what was assumed on the
+    ignores it entirely. It keeps the question as a spec (see the ``recipes`` package), what was assumed on the
     person's behalf, and which steps it built, so the question can be changed later without disturbing
     steps the person edited by hand. The canvas draws it as an unconnected card; the rail lists it.
     """
@@ -605,12 +605,6 @@ class Pipeline:
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
             text = self.dumps()
-            if target.exists():
-                try:
-                    if target.read_text(encoding="utf-8") != text:
-                        self._keep_version(target)
-                except OSError:
-                    pass
             tmp = target.with_name(f".{target.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp")   # unique per writer
             try:
                 tmp.write_text(text, encoding="utf-8")
@@ -622,6 +616,14 @@ class Pipeline:
                     if current != expected_text:            # a program that ignores the lock changed it meanwhile
                         raise PipelineError(f"{target.name} was changed by another program while this was running, "
                                             "so nothing was saved. Try again.")
+                # keep the previous version only now the save is certain to go through: an aborted save
+                # (a concurrent change) must not archive someone else's content as a version of this project
+                if target.exists():
+                    try:
+                        if target.read_text(encoding="utf-8") != text:
+                            self._keep_version(target)
+                    except OSError:
+                        pass
                 os.replace(tmp, target)
             finally:
                 tmp.unlink(missing_ok=True)

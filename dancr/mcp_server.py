@@ -29,6 +29,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from . import __version__
 from . import headless as hl
 from .core import Pipeline, PipelineError, registry
+from .core.model import FORMAT_VERSION
 from .core.executor import Executor
 from .core.registry import in_dancr_folder
 
@@ -213,7 +214,9 @@ def _is_pipeline(p: Path) -> bool:
         data = json.loads(p.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return False
-    return isinstance(data, dict) and "dancr" in data
+    # the same strict test find_pipelines uses: a file that merely mentions "dancr" is not a project, and must
+    # never be clobbered by overwrite=True
+    return isinstance(data, dict) and data.get("dancr") == FORMAT_VERSION
 
 
 @mcp.tool()
@@ -764,6 +767,11 @@ def read_document(file_path: str, what: str = "blocks", tier: str | None = None,
     (doc, page, block, type, text, locator) with what='blocks', or a catalog of the tables found with
     what='tables' (each written to a CSV next to the document). A relative path is taken from the server's root
     folder. Needs MinerU installed, or a folder MinerU already produced, or a configured endpoint."""
+    if what == "tables" and ROOT_REFUSED:
+        # no --root was given (started in or above home): writing table CSVs would scatter files through the
+        # person's home folder, so refuse rather than do that
+        raise ValueError("Reading tables writes CSV files, so the server needs a folder to write in: "
+                         "start it with `dancr mcp --root DIR`. (what='blocks' writes nothing and still works.)")
     # extracted table CSVs are confined to the server's root folder, never written next to an arbitrary document
     return _dump(hl.read_document(_from_root(file_path), what=what, tier=tier, pages=pages,
                                   allow_remote=allow_remote, rows=rows, output_root=ROOT))

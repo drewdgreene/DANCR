@@ -6,11 +6,10 @@ from typing import Any
 
 import polars as pl
 
-from ...params import Param
-from ...registry import NodeType, Ctx, NodeResult, registry
+from ...registry import Ctx
 from ...timeutil import detect_datetime_format, settle_day_month, offset_time_zone, has_offset
 from ...dtypes import LEADING_ZERO
-from ._formats import EXCEL_EXT, NULLS, PARQUET_EXT, effective_ext, list_sheets  # noqa: E402
+from ._formats import EXCEL_EXT, NULLS, PARQUET_EXT, list_sheets  # noqa: E402
 
 
 def _tidy_frame(ctx: Ctx, lf: pl.LazyFrame, params: dict[str, Any], messages: list[str], ext: str, path: Path) -> pl.LazyFrame:
@@ -95,7 +94,7 @@ def _leading_zero_columns(path: Path, sep: str, has_header: bool, skip_rows: int
         v = raw[c].drop_nulls().str.strip_chars()
         v = v.filter(v != "")
         if len(v) and v.str.contains(r"^\d+$").all() and v.str.contains(LEADING_ZERO).any():
-            out.append(c.strip() or c)
+            out.append(c)                                  # the raw header: a schema override must match it exactly
     return out
 
 

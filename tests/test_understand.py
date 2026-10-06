@@ -109,3 +109,10 @@ def test_a_perfect_link_between_a_sorted_and_a_shuffled_table_is_found(tmp_path)
                                       ("number", False)])
 def test_key_names_are_whole_words(name, key):
     assert looks_like_key(name) is key
+
+
+def test_a_column_named_count_does_not_hide_the_table(tmp_path):
+    # Polars names value_counts' count column "count"; a user column with that name must not raise (and, if it
+    # did, understand() would swallow the table into `skipped`, hiding a perfectly good table from every answer).
+    _, _, m = model_of(tmp_path, t=pl.DataFrame({"count": ["a", "b", "a"], "v": [1.0, 2.0, 3.0]}))
+    assert "t" in m.tables and "t" not in m.skipped

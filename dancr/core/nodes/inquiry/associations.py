@@ -57,7 +57,7 @@ def _eta_squared(df: pl.DataFrame, cat: str, num: str) -> float | None:
 
 
 def _top_categories(df: pl.DataFrame, col: str) -> list[str]:
-    vc = df[col].cast(pl.Utf8).value_counts(sort=True)
+    vc = df[col].cast(pl.Utf8).value_counts(sort=True, name="_n")
     name = vc.columns[0]
     return [v for v in vc[name].head(CATEGORY_CAP).to_list() if v is not None]
 

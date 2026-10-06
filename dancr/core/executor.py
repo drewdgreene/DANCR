@@ -14,7 +14,6 @@ import json
 import logging
 import os
 import shutil
-import sys
 import threading
 import time
 import traceback
@@ -30,99 +29,14 @@ from .model import Pipeline, PipelineError
 from .registry import registry, Ctx, NodeResult, NodeType, resolve_path
 from .params import inputs_named
 from .dtypes import json_safe
+from .secrets import redact
+from .engine_hash import (  # noqa: F401  (re-exported: many modules import these from .executor)
+    BAKED_FINGERPRINT, CODE_FINGERPRINT, IMPL_VERSION, LIBRARIES, _code_fingerprint, _version_of,
+    engine_files, engine_versions,
+)
 
 log = logging.getLogger("dancr.executor")
 
-IMPL_VERSION = "4"     # bump to invalidate every cache
-
-
-def _version_of(package: str) -> str:
-    from importlib.metadata import version, PackageNotFoundError
-    try:
-        return version(package)
-    except PackageNotFoundError:
-        return "none"
-
-
-LIBRARIES = ("polars", "numpy", "fastexcel", "scipy", "matplotlib", "xlsxwriter")
-
-
-def engine_versions() -> dict[str, str]:
-    """The version of DANCR's compute and read libraries, as a run manifest records them (a build has them
-    pinned, but a manifest should say so explicitly)."""
-    return {m: (pl.__version__ if m == "polars" else _version_of(m)) for m in LIBRARIES}
-
-
-def engine_files() -> list[Path]:
-    """The DANCR modules a run executes: this module, every step module, and every DANCR module they import,
-    read from their import statements (imports inside functions too). Nothing is listed by hand, so a module
-    can be neither forgotten nor included for no reason (the window, the answer engine)."""
-    import ast
-    package = Path(__file__).resolve().parent.parent          # dancr/
-    top = package.parent
-
-    def file_of(module: str) -> Path | None:
-        base = top.joinpath(*module.split("."))
-        return next((f for f in (base.with_suffix(".py"), base / "__init__.py") if f.is_file()), None)
-
-    todo = [Path(__file__).resolve(), *sorted((Path(__file__).resolve().parent / "nodes").glob("*.py"))]
-    seen: set[Path] = set()
-    while todo:
-        f = todo.pop()
-        if f in seen:
-            continue
-        seen.add(f)
-        parts = list(f.relative_to(top).with_suffix("").parts)
-        if parts[-1] == "__init__":
-            parts.pop()
-        else:
-            todo += [p / "__init__.py" for p in f.parents if top in p.parents]      # its packages run first
-        here = parts if f.name == "__init__.py" else parts[:-1]         # the package relative imports start from
-        try:
-            tree = ast.parse(f.read_bytes())
-        except (OSError, SyntaxError):
-            continue
-        for node in ast.walk(tree):
-            names: list[str] = []
-            if isinstance(node, ast.Import):
-                names = [a.name for a in node.names]
-            elif isinstance(node, ast.ImportFrom):
-                base = ".".join(here[:len(here) - node.level + 1]) if node.level else ""
-                mod = ".".join(x for x in (base, node.module or "") if x)
-                names = [mod] + [f"{mod}.{a.name}" for a in node.names]     # "from . import nodes" names a module
-            for name in names:
-                if name.split(".")[0] == package.name and (g := file_of(name)) is not None:
-                    todo += [g] + [top.joinpath(*name.split(".")[:i]) / "__init__.py" for i in range(1, name.count(".") + 1)]
-    return sorted(f for f in seen if f.is_file())
-
-
-BAKED_FINGERPRINT = Path(__file__).resolve().parent.parent / "fingerprint.txt"     # written by packaging/dancr.spec
-
-
-def _code_fingerprint() -> str:
-    """Hash of the code that can shape a step's output, so cached outputs are invalidated when it changes:
-    the modules a run executes (see ``engine_files``) and the versions of the libraries that compute and read.
-    A frozen app has no source to read, so the build computes this from the source and bakes it in."""
-    if getattr(sys, "frozen", False):
-        try:
-            return BAKED_FINGERPRINT.read_text().strip()
-        except OSError as e:
-            raise RuntimeError(f"this build of DANCR is incomplete: {BAKED_FINGERPRINT} is missing") from e
-    import numpy
-    top = Path(__file__).resolve().parent.parent.parent
-    h = hashlib.sha1(IMPL_VERSION.encode())
-    for lib in (pl.__version__, numpy.__version__, *(_version_of(m) for m in ("fastexcel", "scipy", "matplotlib", "xlsxwriter"))):
-        h.update(lib.encode())
-    for f in engine_files():
-        try:
-            h.update(f.relative_to(top).as_posix().encode())
-            h.update(f.read_bytes())
-        except OSError:
-            pass
-    return h.hexdigest()[:12]
-
-
-CODE_FINGERPRINT = _code_fingerprint()
 _PROCESS_ID = uuid.uuid4().hex[:8]
 
 
@@ -214,6 +128,18 @@ def _pid_alive_windows(pid: int) -> bool:
         k32.CloseHandle(h)
 
 
+def _temp_owner_alive(name: str) -> bool:
+    """Whether a temp file name embeds the pid of a live process (a writer still holding it)."""
+    for part in name.split("."):
+        if part.isdigit():
+            try:
+                if _pid_alive(int(part)):
+                    return True
+            except (OSError, ValueError):
+                pass
+    return False
+
+
 def sweep_untitled_caches() -> int:
     """Delete result folders of unsaved projects whose DANCR process is gone. Returns how many were removed."""
     from ..logsetup import untitled_cache_root
@@ -225,6 +151,11 @@ def sweep_untitled_caches() -> int:
         if not d.is_dir():
             continue
         try:
+            host = (d / "owner.host").read_text().strip()
+            if host and host != _HOST:
+                # a live cache on another machine (a shared home folder): this process's pid table says nothing
+                # about it, so never delete it here
+                continue
             pid = int((d / "owner.pid").read_text().strip())
             alive = _pid_alive(pid)
         except (OSError, ValueError):
@@ -330,7 +261,9 @@ class Executor:
     def _resolved_paths(self, node_type: NodeType, params: dict[str, Any]) -> dict[str, str]:
         out: dict[str, str] = {}
         for p in node_type.params:
-            if p.kind == "path" and isinstance(params.get(p.name), str) and params[p.name].strip():
+            # both a file ("path") and a folder/glob ("dir", e.g. load_folder/load_document): resolve so the same
+            # target after Save As hashes the same, and a differently-spelled one is not a spurious cache miss
+            if p.kind in ("path", "dir") and isinstance(params.get(p.name), str) and params[p.name].strip():
                 try:
                     out[p.name] = str(resolve_path(self.pipeline.directory, params[p.name]).resolve())
                 except (OSError, ValueError, RuntimeError):
@@ -647,7 +580,7 @@ class Executor:
                 st.rows = int(scan.select(pl.len()).collect(engine="streaming")[0, 0])
                 st.columns = [{"name": n, "dtype": str(d)} for n, d in scan.collect_schema().items()]
                 st.column_stats = column_stats(scan)
-            st.messages = list(res.messages)
+            st.messages = [str(redact(m)) for m in res.messages]   # a connector message may carry a token in a URL
             if nt.kind == "source" and st.output:
                 st.messages += self._blank_report(st.output, st.column_stats)
             st.report = json_safe(dict(res.report))
@@ -667,7 +600,7 @@ class Executor:
             raise
         except Exception as e:
             st.status = "failed"
-            st.error = friendly_error(e)
+            st.error = str(redact(friendly_error(e)))         # a driver/HTTP error may embed a DSN or endpoint secret
             st.elapsed = time.perf_counter() - t0
             st.finished_at = datetime.now().isoformat(timespec="seconds")
             log.debug("node %s failed:\n%s", nid, traceback.format_exc())
@@ -691,6 +624,7 @@ class Executor:
                 try:
                     tmp.mkdir(parents=True)
                     (tmp / "owner.pid").write_text(str(os.getpid()))
+                    (tmp / "owner.host").write_text(_HOST)   # so a sweep on another host never reaps this cache
                     try:
                         os.replace(tmp, self.cache_dir)      # atomic: the folder never exists without its owner
                     except OSError:
@@ -701,6 +635,7 @@ class Executor:
             if not owner.exists():                              # a fallback if the rename did not happen
                 try:
                     owner.write_text(str(os.getpid()))
+                    (self.cache_dir / "owner.host").write_text(_HOST)
                 except OSError:
                     pass
             return
@@ -871,11 +806,22 @@ class Executor:
                 for f in nd.iterdir():
                     name, mtime = f.name, f.stat().st_mtime
                     if ".tmp." in name:
-                        if now - mtime > 3600:          # left by a writer (or a sweep) that died
+                        # left by a writer (or a sweep) that died — but a live writer may hold a very large
+                        # result's temp for more than an hour, so never reap a temp whose embedded pid is alive
+                        if now - mtime > 3600 and not _temp_owner_alive(name):
                             f.unlink(missing_ok=True)
                     elif name.endswith((".parquet", ".json")) and not name.endswith(".failed.json"):
                         stem = name.split(".")[0]
                         results[stem] = max(results.get(stem, 0.0), mtime)
+                    elif name == ".downloads" and f.is_dir():
+                        # a URL source writes a new file each time the remote content changes; the old ones are
+                        # never a result, so nothing else reclaims them. Keep the recent ones, drop the rest.
+                        for dl in f.iterdir():
+                            try:
+                                if now - dl.stat().st_mtime > grace_seconds:
+                                    dl.unlink(missing_ok=True)
+                            except OSError:
+                                pass
             except OSError:
                 continue
             kept = 0

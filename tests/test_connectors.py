@@ -78,10 +78,10 @@ def test_load_url_digest_tracks_the_file(tmp_path):
         p = Pipeline("p"); p.path = tmp_path / "p.json"
         p.add_node("load_url", params={"url": url}, id="src")
         ex = Executor(p)
-        connectors._MEMO.clear()
+        connectors._memo.clear()
         h1 = ex.plan_hash("src")
         f.write_text("a\n1\n2\n")
-        connectors._MEMO.clear()                # the short HEAD memo is a cache, not a wrong answer
+        connectors._memo.clear()                # the short HEAD memo is a cache, not a wrong answer
         assert ex.plan_hash("src") != h1
     finally:
         srv.shutdown()
@@ -150,3 +150,38 @@ def test_load_hdf5(tmp_path):
     assert st.status == "done", st.error
     df = pl.read_parquet(st.output)
     assert df.height == 5 and df["value"].to_list() == [0.0, 1.0, 2.0, 3.0, 4.0]
+
+
+# ---------------------------------------------------------------- S8: SQLite reads are read-only
+def test_sqlite_read_only_and_side_effects_refused(tmp_path):
+    db = tmp_path / "data.db"
+    con = sqlite3.connect(db); con.execute("create table t (a int)"); con.execute("insert into t values (1)")
+    con.commit(); con.close()
+    p = Pipeline("p"); p.path = tmp_path / "p.json"
+    p.add_node("load_sql", params={"connection": str(db), "query": "ATTACH DATABASE '/tmp/dancr-evil.db' AS evil"}, id="src")
+    p.save()
+    st = _run(p)
+    assert st.status == "failed" and "Only a SELECT" in st.error
+
+
+def test_load_url_refuses_a_non_http_scheme(tmp_path):
+    p = Pipeline("p"); p.path = tmp_path / "p.json"
+    p.add_node("load_url", params={"url": "file:///etc/passwd"}, id="src")
+    p.save()
+    st = _run(p)
+    assert st.status == "failed" and "http" in st.error.lower()
+
+
+def test_a_token_in_a_url_is_redacted_everywhere(tmp_path):
+    assert secrets.redact("https://api.example.com/export.csv?token=SECRET123") == \
+        "https://api.example.com/export.csv?token=****"
+    assert connectors._short("https://api.example.com/export.csv?token=SECRET123&x=1") == \
+        "https://api.example.com/export.csv?token=****&x=1"
+
+
+def test_header_tokens_are_redacted_in_settings():
+    from dancr.core import registry
+    nt = registry.get("load_url")
+    out = secrets.redact_params(nt, {"url": "https://x", "headers": {"Authorization": "Bearer SECRET",
+                                                                    "X-Api-Key": "KEY"}})
+    assert out["headers"] == {"Authorization": "****", "X-Api-Key": "****"}

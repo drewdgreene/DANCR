@@ -450,12 +450,14 @@ class WindowAnswers:
         project. Shown in the insight bar above the canvas; clicking it jumps to the step that produced it."""
         nid = self._current if self._current in self.doc.pipeline.nodes else None
         if nid:
-            fnd = ((self.doc.state(nid).report or {}).get("finding") or {}).get("statement")
+            st = self.doc.cached_state(nid)
+            fnd = ((st.report or {}).get("finding") or {}).get("statement") if st else None
             if fnd:
                 self.insight.set_insight(fnd, nid); return
         best = None
         for k in self.doc.pipeline.nodes:
-            fnd = ((self.doc.state(k).report or {}).get("finding") or {}).get("statement")
+            st = self.doc.cached_state(k)
+            fnd = ((st.report or {}).get("finding") or {}).get("statement") if st else None
             if fnd:
                 best = (fnd, k)
         if best:

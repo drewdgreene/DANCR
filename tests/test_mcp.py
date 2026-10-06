@@ -430,3 +430,18 @@ def test_a_second_name_for_a_data_file_is_still_refused(mcp_root):
     with pytest.raises(ToolError, match="reads its data"):
         srv.export_node(str(pj), "src", "DATA-link.csv")
     assert data.read_text() == "a\n1\n2\n"
+
+
+def test_overwrite_refuses_a_json_that_merely_mentions_dancr(tmp_path, mcp_root):
+    f = tmp_path / "config.json"
+    f.write_text('{"dancr": 1, "other": true}')             # has the key, but is not a DANCR project
+    with pytest.raises(ToolError, match="not a DANCR project"):
+        srv.create_pipeline(str(f), overwrite=True)
+    assert f.read_text() == '{"dancr": 1, "other": true}'
+
+
+def test_read_document_tables_needs_a_root_to_write_in(tmp_path, monkeypatch):
+    monkeypatch.setattr(srv, "ROOT", tmp_path.resolve())
+    monkeypatch.setattr(srv, "ROOT_REFUSED", True)
+    with pytest.raises(ToolError, match="--root"):
+        srv.read_document("some.pdf", what="tables")

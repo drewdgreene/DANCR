@@ -96,7 +96,10 @@ def configure(level: int = logging.INFO, stderr_level: int = logging.INFO) -> Pa
                                              exc_info=(args.exc_type, args.exc_value, args.exc_traceback))
     import threading
     threading.excepthook = thread_hook
-    logging.getLogger("dancr").info("started %s", " ".join(sys.argv))
+    # Only the program and the command word: a value on the command line may be a password, a token or a DSN,
+    # and the log file is plain text, so it must never see the full argument list.
+    from .core.secrets import redact
+    logging.getLogger("dancr").info("started %s", str(redact(" ".join(sys.argv[:2]))))
     return path
 
 

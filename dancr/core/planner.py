@@ -4,7 +4,7 @@ A :class:`Plan` names steps and wires them; ``apply_plan`` maps each step to a n
 one that already computes the same thing (so two answers over the same files share their links) and
 creating the rest, or updating an answer's own steps in place. A step of type ``"@"`` is an existing node,
 named by ``params["node"]``.
-No execution happens here, and nothing touches Qt. The plans themselves come from ``recipes.py``.
+No execution happens here, and nothing touches Qt. The plans themselves come from the ``recipes`` package.
 """
 from __future__ import annotations
 

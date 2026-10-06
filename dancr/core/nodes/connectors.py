@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import os
-import threading
+import re
 import time
 import uuid
 from pathlib import Path
@@ -25,32 +25,17 @@ import polars as pl
 from ..params import Param
 from ..registry import NodeType, Ctx, NodeResult, registry
 from ..secrets import expand_env, redact
+from ._memo import make_memo
 from .load import scan_file
 from .load_folder import SHARED
 
 # ---------------------------------------------------------------- small caches
-_MEMO: dict[str, tuple[float, Any]] = {}
-_MEMO_LOCK = threading.Lock()
-
-
-def _memo(key: str, ttl: float, fn) -> Any:
-    """A value remembered for a short time (a HEAD request, a max() probe), so hashing a source does not reach
-    the network or the database on every poll."""
-    now = time.time()
-    with _MEMO_LOCK:
-        hit = _MEMO.get(key)
-        if hit is not None and now - hit[0] < ttl:
-            return hit[1]
-    value = fn()
-    with _MEMO_LOCK:
-        if len(_MEMO) > 256:
-            _MEMO.clear()
-        _MEMO[key] = (now, value)
-    return value
+_memo = make_memo()
 
 
 def _short(url: str) -> str:
-    return url if len(url) <= 80 else url[:77] + "…"
+    u = str(redact(url))
+    return u if len(u) <= 80 else u[:77] + "…"
 
 
 # =================================================================== load_url
@@ -109,10 +94,19 @@ def _download(ctx: Ctx, url: str, headers: dict[str, str], timeout: int, ext: st
 
 def _head(url: str, headers: dict[str, str], timeout: int) -> dict[str, Any]:
     import urllib.request
+    _require_http(url)
     req = urllib.request.Request(url, headers=headers or {}, method="HEAD")
     with urllib.request.urlopen(req, timeout=timeout) as r:  # noqa: S310
         return {"etag": r.headers.get("ETag"), "last_modified": r.headers.get("Last-Modified"),
                 "length": r.headers.get("Content-Length")}
+
+
+def _require_http(url: str) -> None:
+    """Only http(s): urllib would otherwise read file://, ftp:// or data: URLs, letting a project read the local
+    filesystem or an arbitrary scheme through what looks like a web request."""
+    scheme = url.split(":", 1)[0].strip().lower() if ":" in url else ""
+    if scheme not in ("http", "https"):
+        raise ValueError(f"Only http and https URLs can be read, not {scheme or url!r}")
 
 
 def _url_headers(params: dict[str, Any]) -> dict[str, str]:
@@ -149,6 +143,7 @@ def _load_url(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str,
     url = expand_env(params.get("url"))
     if not url:
         raise ValueError("Give a URL to read")
+    _require_http(url)
     headers = _url_headers(params)
     fmt = str(params.get("format") or "auto").lower()
     ext = _url_ext(url, fmt)
@@ -228,11 +223,28 @@ def _sql_text(params: dict[str, Any]) -> str:
     return "SELECT * FROM " + ((_quote(schema) + ".") if schema else "") + _quote(table)
 
 
+_READ_SQL = re.compile(r"^\s*(?:(?:--[^\n]*\n)|(?:/\*.*?\*/)|(?:\s))*\b(select|with)\b", re.IGNORECASE | re.DOTALL)
+
+
+def _require_read_only_sql(sql: str) -> None:
+    """A SQLite read must be a SELECT/WITH. A connection is read-only, but seeing the statement here also stops
+    side-effecting ones (ATTACH DATABASE, PRAGMA) that Polars' read_database would otherwise execute."""
+    if not _READ_SQL.match(sql or ""):
+        raise ValueError("Only a SELECT (or WITH … SELECT) query can be read")
+
+
+def _sqlite_connect(path: str):
+    """A read-only SQLite connection (``mode=ro``), so reading a database cannot write to it or create files."""
+    import sqlite3
+    import pathlib
+    uri = pathlib.Path(path).resolve().as_uri() + "?mode=ro"
+    return sqlite3.connect(uri, uri=True)
+
+
 def _connect_read(conn: str, sql: str) -> pl.DataFrame:
     if _is_sqlite(conn):
-        import sqlite3
-        path = _sqlite_path(conn)
-        con = sqlite3.connect(path)
+        _require_read_only_sql(sql)
+        con = _sqlite_connect(_sqlite_path(conn))
         try:
             return pl.read_database(sql, con)
         finally:
@@ -247,8 +259,8 @@ def _connect_read(conn: str, sql: str) -> pl.DataFrame:
 
 def _max_value(conn: str, sql: str) -> Any:
     if _is_sqlite(conn):
-        import sqlite3
-        con = sqlite3.connect(_sqlite_path(conn))
+        _require_read_only_sql(sql)
+        con = _sqlite_connect(_sqlite_path(conn))
         try:
             row = con.execute(sql).fetchone()
             return None if row is None else row[0]

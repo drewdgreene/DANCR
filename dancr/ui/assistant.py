@@ -612,6 +612,7 @@ class AssistantPanel(QFrame):
             w = item.widget()
             if w is not None:
                 w.setParent(None)
+                w.deleteLater()          # not just detached: a chip holds signal closures, so let Qt free it
         if self._focus and self._focus in self.doc.pipeline.nodes:
             node = self.doc.pipeline.nodes[self._focus]
             self.chip_layout.addWidget(Chip(node.title, on_remove=lambda: self.set_focus(None),
@@ -675,7 +676,7 @@ class AssistantPanel(QFrame):
     def _project_replaced(self) -> None:
         self._pending_card = None
         self._pending_edits_card = None
-        self._working = None
+        self._finish_working()
         self._busy = False
         self._announced = set()
         self._focus = None
@@ -712,15 +713,19 @@ class AssistantPanel(QFrame):
         QTimer.singleShot(0, self._scroll_bottom)
 
     def _clear_thread(self) -> None:
+        self._finish_working()             # stop the "Thinking" card's timer and drop it, not just detach it
         while self.thread_layout.count():
             item = self.thread_layout.takeAt(0)
             w = item.widget()
             if w is not None:
                 w.setParent(None)
+                w.deleteLater()            # threads carry signal closures and child layouts: free them now
             else:
                 self.thread_layout.removeItem(item)
         self.thread_layout.addStretch(1)
         self._right_cards = []
+        self._pending_card = None
+        self._pending_edits_card = None
 
     def _thread_key(self) -> str:
         return json.dumps(self._thread.to_dict(), sort_keys=True, default=str)
@@ -928,6 +933,8 @@ class AssistantPanel(QFrame):
             return
         self._last_text = text
         self._history.append(text); self._hist = -1
+        if len(self._history) > 100:                     # a long session must not grow the input history forever
+            del self._history[:-100]
         self.edit.clear(); self._grow()
         self._add_user(text)
         self._set_busy(True, "Reading the tables first" if not self.understanding.full else "Thinking")
@@ -947,9 +954,11 @@ class AssistantPanel(QFrame):
         self._add_widget(self._working)
         task = Task(self._run_turn, text)
         task.waits_for_run = True
-        task.signals.done.connect(lambda reply: self._got_reply(text, reply))
-        task.signals.failed.connect(lambda msg: self._failed(msg))
-        task.signals.finished.connect(lambda: self._set_busy(False, ""))
+        # Capture the task and drop a reply that arrives after Stop or after a newer turn: a queued delivery can
+        # outlive a cancel, and must not record the turn or add a proposal card.
+        task.signals.done.connect(lambda reply, t=task: self._got_reply(text, reply) if t is self._task and not t.cancelled else None)
+        task.signals.failed.connect(lambda msg, t=task: self._failed(msg) if t is self._task and not t.cancelled else None)
+        task.signals.finished.connect(lambda t=task: self._set_busy(False, "") if t is self._task else None)
         self._task = task
         view_pool().start(task)
 

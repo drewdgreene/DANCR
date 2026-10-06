@@ -20,3 +20,6 @@ testdata/run/report/
 .dancr-scratch/
 
 .dancr-mineru/
+.mypy_cache/
+.ruff_cache/
+build-dir/

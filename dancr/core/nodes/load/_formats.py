@@ -2,14 +2,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
-
-import polars as pl
-
-from ...params import Param
-from ...registry import NodeType, Ctx, NodeResult, registry
-from ...timeutil import detect_datetime_format, settle_day_month, offset_time_zone, has_offset
-from ...dtypes import LEADING_ZERO
 
 
 CSV_EXT = {".csv", ".tsv", ".txt", ".dat", ".tab", ".log"}
@@ -95,8 +87,16 @@ def _refuse_non_table(path: Path, ext: str) -> None:
                          "Parquet or Excel, or read it with the tool that writes it.")
 
 
+def _open_text(path: Path, encoding: str):
+    """A text handle that decompresses .gz/.bgz, so a compressed file is sniffed as the text it holds."""
+    if path.suffix.lower() in _COMPRESS_SUFFIXES:
+        import gzip
+        return gzip.open(path, "rt", encoding=encoding, errors="replace", newline="")
+    return open(path, "r", encoding=encoding, errors="replace", newline="")
+
+
 def sniff_separator(path: Path, encoding: str = "utf8") -> str:
-    with open(path, "r", encoding=encoding, errors="replace", newline="") as f:
+    with _open_text(path, encoding) as f:
         head = f.read(64 * 1024)
     lines = [ln for ln in head.splitlines() if ln.strip()][:50]
     if not lines:

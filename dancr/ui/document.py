@@ -98,6 +98,7 @@ class Document(DocWatch, DocAutosave, DocState, QObject):
         self.undo.indexChanged.connect(lambda _: self.schedule_auto_run())
         self._run: RunThread | None = None
         self._run_settled = True
+        self._stopping = False              # a stop(wait=True) is spinning a nested loop: defer other work
         self.last_run_outcome = "done"     # how the last run ended: done | stopped | crashed
         self._watcher = QFileSystemWatcher(self)
         self._watcher.fileChanged.connect(self._on_file_changed)
@@ -174,6 +175,11 @@ class Document(DocWatch, DocAutosave, DocState, QObject):
 
     def _maybe_reload(self) -> None:
         self._rewatch()
+        if self._stopping:
+            # inside stop(wait=True)'s nested event loop: reloading a different project now would re-enter
+            # replace_pipeline and stop(); try again once the wait is over
+            QTimer.singleShot(1000, self._maybe_reload)
+            return
         if not self.pipeline.path or not self.pipeline.path.exists():
             return
         if QApplication.activeModalWidget() is not None or self.running:
@@ -629,7 +635,7 @@ class Document(DocWatch, DocAutosave, DocState, QObject):
         minutes on a big table, so the window is never frozen meanwhile: events keep flowing and ``busy`` tells
         the window why it must wait (it accepts no other command until ``busy(None)``)."""
         t = self._run
-        if t is None:
+        if t is None or self._stopping:                    # not while another stop(wait=True) is already waiting
             return
         t.cancel.set()
         if not wait or self._run_settled:
@@ -637,16 +643,21 @@ class Document(DocWatch, DocAutosave, DocState, QObject):
         if t.isRunning():
             loop = QEventLoop()
             t.finished.connect(loop.quit)
-            check = QTimer(); check.setInterval(100)        # also covers a finish signalled just before connecting
+            check = QTimer(self); check.setInterval(100)    # also covers a finish signalled just before connecting
             check.timeout.connect(lambda: loop.quit() if not t.isRunning() else None)
             check.start()
             self.busy.emit(why)
+            self._stopping = True
             try:
                 if t.isRunning():
                     loop.exec()
             finally:
+                self._stopping = False
                 check.stop()
-                t.finished.disconnect(loop.quit)
+                try:
+                    t.finished.disconnect(loop.quit)      # the thread may already be gone if it finished mid-loop
+                except (RuntimeError, TypeError):
+                    pass
                 self.busy.emit(None)
         t.wait()                                            # it has ended: this only joins the thread
         self._on_run_done(t)

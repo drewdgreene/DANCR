@@ -38,7 +38,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8,<10", "pytest-qt>=4.4,<5"]
+dev = ["pytest>=8,<10", "pytest-qt>=4.4,<5", "ruff>=0.6,<1", "mypy>=1.10,<2"]
 build = ["pyinstaller>=6.10,<7", "pillow>=10,<13"]
 # Reading PDF/Office/EPUB/HTML documents (Load document). Not a core dependency: MinerU is large (native
 # engines and ~0.35-2 GB models) and its wheels may lag the newest Python. The packaged DANCR bundles MinerU

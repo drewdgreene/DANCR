@@ -288,6 +288,7 @@ class WindowActions:
         listen(self, d.runStarted, self._on_run_started)
         listen(self, d.runProgress, self._run_progress)
         listen(self, d.runFinished, self._on_run_finished)
+        listen(self, d.statesChanged, self._refresh_insight)      # findings update when the poll refreshes states
         listen(self, d.nodeAdded, lambda _: self._show_page())
         listen(self, d.nodeRemoved, self._on_node_removed)
         listen(self, d.autoRunChanged, lambda _: self._refresh_mode())

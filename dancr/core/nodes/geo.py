@@ -212,11 +212,18 @@ def _points_grid(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[s
                               default_stats=tuple(params.get("default_stats") or ["mean"]), only=only or None)
     if not aggs and not count_col:
         raise ValueError("There are no number columns to summarise. Choose at least one, or add a count column")
-    if count_col and count_col in schema and count_col not in {a.meta.output_name() for a in aggs}:
-        raise ValueError(f"There is already a column called {count_col!r}. Choose another name for the point count")
 
     cell_lat = (pl.col(latc) / size_deg).floor() * size_deg
     cell_lon = (pl.col(lonc) / size_deg).floor() * size_deg
+    msgs: list[str] = []
+    # The count column must not clash with a summarised column's output or the cell-centre columns. A single
+    # default statistic keeps the summarised column's own name, so a 'points' value column would collide with
+    # the default count of 'points'; give the count a free name and say so rather than raise a duplicate-column error.
+    reserved = {a.meta.output_name() for a in aggs} | {"cell_lat", "cell_lon"}
+    if count_col and count_col in reserved:
+        renamed = _free_name(count_col, reserved)
+        msgs.append(f"The point count is called {renamed!r} because {count_col!r} is already a column in the output")
+        count_col = renamed
     dropped = 0
     if not ctx.preview:
         dropped = int(lf.select((pl.col(latc).is_null() | pl.col(lonc).is_null()).sum())
@@ -242,7 +249,6 @@ def _points_grid(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[s
         report = {"cells": cells, "points": pts, "size_degrees": size_deg,
                   "finding": finding("summary", f"{pts:,} point{'s' if pts != 1 else ''} in {cells:,} "
                                      f"cell{'s' if cells != 1 else ''} (about {med:.0f} per cell)", magnitude=cells, exact=True)}
-    msgs: list[str] = []
     if dropped:
         msgs.append(f"{dropped:,} row{'s' if dropped != 1 else ''} without coordinates were left out")
     msgs.append(f"Grouped points into cells of {size_deg:g}° by {size_deg:g}°")

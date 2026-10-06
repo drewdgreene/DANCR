@@ -8,8 +8,6 @@ import polars as pl
 
 from ...params import Param
 from ...registry import NodeType, Ctx, NodeResult, registry
-from ...timeutil import detect_datetime_format, settle_day_month, offset_time_zone, has_offset
-from ...dtypes import LEADING_ZERO
 from ._formats import (  # noqa: E402,F401
     BIO_EXT, CSV_EXT, DOC_EXT, EXCEL_EXT, GEOJSON_EXT, H5_EXT, IMAGE_EXT, NC_EXT, NON_TABLE_EXT,
     NULLS, PARQUET_EXT, VECTOR_EXT, _refuse_non_table, effective_ext, list_sheets, sniff_separator,
@@ -125,7 +123,7 @@ def scan_file(ctx: Ctx, params: dict[str, Any]) -> tuple[pl.LazyFrame, list[str]
         keep_text = _leading_zero_columns(path, sep, has_header, skip_rows, "utf8" if encoding == "utf8" else "latin-1")
         if keep_text:
             common["schema_overrides"] = {**(common.get("schema_overrides") or {}), **{c: pl.Utf8 for c in keep_text}}
-            messages.append("Kept as text, so their leading zeros stay: " + ", ".join(keep_text))
+            messages.append("Kept as text, so their leading zeros stay: " + ", ".join(c.strip() for c in keep_text))
         try:
             if encoding == "utf8":
                 lf = pl.scan_csv(path, encoding="utf8", **common)

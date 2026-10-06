@@ -36,6 +36,11 @@ class DocState:
             self._states_cache[nid] = st
         return st
 
+    def cached_state(self, nid: str) -> NodeState | None:
+        """A step's state only if it is already known, never touching the disk: safe to call on the GUI thread
+        in a hot path (the background poll keeps the cache fresh and emits ``statesChanged``)."""
+        return self._states_cache.get(nid)
+
     def refresh_states(self) -> None:
         """Re-read every step's state (after an edit, a reload, a run). Any answer read before this call is
         dropped; see ``_read_states``."""

@@ -611,6 +611,14 @@ def _plan_breakdown(b: _Builder, top: int | None = None):
     stat = spec.get("stat") or ("count" if not measure else default_stat(m, t.node, measure))
     if not measure:
         stat = "count"
+    if spec.get("share") and stat not in ("sum", "count"):
+        # A share of the whole is only meaningful for an additive statistic. With no statistic asked for
+        # ("share of price by region") take the total; an explicit average/median share is refused rather than
+        # silently dividing the sum of the averages.
+        if spec.get("stat"):
+            raise PlanError("A share of the whole is only defined for totals, not for averages or medians. "
+                            "Ask for the total instead")
+        stat = "sum"
     b.base()
     b.need(by, measure)
     b.filters()

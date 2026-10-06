@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import csv
+from collections import deque
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
@@ -13,6 +14,7 @@ TAIL_ROWS = 60             # rows read from the bottom of a big sheet, for summa
 GRID_ROWS = 20_000         # a sheet up to this many rows is read whole, so every layout can be found
 GRID_CELLS = 2_000_000     # ... and up to this many cells (a wide sheet is read from its top and bottom instead)
 TAIL_BYTES = 64 * 1024     # bytes read from the end of a big CSV file
+COMPRESS_SUFFIXES = (".gz", ".bgz")     # a compressed CSV is decompressed to read its grid
 
 
 # =================================================================== the grid
@@ -91,11 +93,21 @@ def csv_grid(path: Path, sep: str, encoding: str) -> Grid | None:
     return _csv_grid(_stamp(path), sep, encoding)
 
 
+def _open_grid_text(path: Path, enc: str):
+    """A text handle to a CSV file, decompressing ``.gz``/``.bgz`` so its layout is read, not its compressed bytes."""
+    if path.suffix.lower() in COMPRESS_SUFFIXES:
+        import gzip
+        return gzip.open(path, "rt", encoding=enc, errors="replace", newline="")
+    return open(path, encoding=enc, errors="replace", newline="")
+
+
 @lru_cache(maxsize=8)
 def _csv_grid(stamp: tuple, sep: str, encoding: str) -> Grid | None:
     path = Path(stamp[0])
     enc = "utf-8-sig" if encoding == "utf8" else "latin-1"      # a byte-order mark is not part of the first name
     try:
+        if path.suffix.lower() in COMPRESS_SUFFIXES:
+            return _csv_grid_compressed(path, sep, enc)
         rows: list[list[str]] = []
         with open(path, encoding=enc, errors="replace", newline="") as f:
             for r in csv.reader(f, delimiter=sep):
@@ -119,3 +131,26 @@ def _csv_grid(stamp: tuple, sep: str, encoding: str) -> Grid | None:
         return None
     width = max((len(r) for r in rows + tail), default=0)
     return Grid(_pad(rows, width), _pad(tail, width), len(rows) if complete else 0, width, complete=complete)
+
+
+def _csv_grid_compressed(path: Path, sep: str, enc: str) -> Grid:
+    """The grid of a compressed CSV: decompressed to the same top/bottom shape as a plain file (a gzip stream
+    cannot be seeked to its tail, so the whole file is read, keeping only its head and a rolling tail)."""
+    head: list[list[str]] = []
+    tail: deque[list[str]] = deque(maxlen=TAIL_ROWS)
+    total = 0
+    with _open_grid_text(path, enc) as f:
+        for r in csv.reader(f, delimiter=sep):
+            total += 1
+            if len(head) < GRID_ROWS:
+                head.append(r)
+            else:
+                tail.append(r)
+    complete = total <= GRID_ROWS
+    if complete:
+        width = max((len(r) for r in head), default=0)
+        if total * max(width, 1) > GRID_CELLS:               # all of it is here, but too many cells to keep
+            return Grid(_pad(head[:HEAD_ROWS], width), _pad(head[-TAIL_ROWS:], width), total, width, complete=False)
+        return Grid(_pad(head, width), [], total, width, complete=True)
+    width = max((len(r) for r in head + list(tail)), default=0)
+    return Grid(_pad(head, width), _pad(list(tail), width), 0, width, complete=False)

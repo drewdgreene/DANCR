@@ -158,9 +158,10 @@ class Rail(QWidget):
         self.tree.itemClicked.connect(lambda *_: self._on_select())   # re-clicking the current step re-focuses it
         self.tree.itemExpanded.connect(lambda it: self._on_expanded(it, True))
         self.tree.itemCollapsed.connect(lambda it: self._on_expanded(it, False))
-        for sig in (doc.nodeAdded, doc.nodeRemoved, doc.nodeChanged, doc.reloaded, doc.inputsChanged,
+        for sig in (doc.nodeAdded, doc.nodeRemoved, doc.reloaded, doc.inputsChanged,
                     doc.edgeAdded, doc.edgeRemoved, doc.answerAdded, doc.answerRemoved, doc.answerChanged):
             listen(self, sig, lambda *_: self.refill())
+        listen(self, doc.nodeChanged, lambda nid: self._refresh_node_item(nid))
         listen(self, doc.statesChanged, self.refill_status)
         listen(self, doc.nodeState, lambda *_: self.refill_status())
         self._update_mode_btn()
@@ -194,12 +195,12 @@ class Rail(QWidget):
     def _node_item(self, parent_item: QTreeWidgetItem | None, nid: str, total_inputs: int) -> QTreeWidgetItem:
         node = self.doc.pipeline.nodes[nid]
         nt = registry.get(node.type)
-        st = self.doc.state(nid)
+        st = self.doc.cached_state(nid)              # never doc.state(): it may stat/sample sources on the GUI thread
         it = QTreeWidgetItem(parent_item) if parent_item is not None else QTreeWidgetItem(self.tree)
         it.setText(0, node.title)
         it.setIcon(0, icon(node_icon_name(node.type), category_color(nt.category).name(), 16))
         it.setData(0, KIND_ROLE, "node"); it.setData(0, ID_ROLE, nid)
-        it.setData(0, STATUS_ROLE, st.status); it.setData(0, INPUTS_ROLE, total_inputs)
+        it.setData(0, STATUS_ROLE, st.status if st is not None else "idle"); it.setData(0, INPUTS_ROLE, total_inputs)
         it.setToolTip(0, f"{nt.label}: {nt.summarize(node.params)}")
         it.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
         self._items[nid] = it
@@ -309,8 +310,25 @@ class Rail(QWidget):
 
     def refill_status(self) -> None:
         for nid, it in self._items.items():
-            it.setData(0, STATUS_ROLE, self.doc.state(nid).status)
+            st = self.doc.cached_state(nid)
+            if st is not None:
+                it.setData(0, STATUS_ROLE, st.status)
         self.tree.viewport().update()
+
+    def _refresh_node_item(self, nid: str) -> None:
+        """Update one step's rail row (title, icon, tooltip, status) instead of rebuilding the whole tree: this
+        runs on every committed setting change, so a full rebuild per keystroke would be wasteful."""
+        it = self._items.get(nid)
+        if it is None or nid not in self.doc.pipeline.nodes:
+            return
+        node = self.doc.pipeline.nodes[nid]
+        nt = registry.get(node.type)
+        it.setText(0, node.title)
+        it.setIcon(0, icon(node_icon_name(node.type), category_color(nt.category).name(), 16))
+        it.setToolTip(0, f"{nt.label}: {nt.summarize(node.params)}")
+        st = self.doc.cached_state(nid)
+        if st is not None:
+            it.setData(0, STATUS_ROLE, st.status)
 
     # ------------------------------------------------------------ selection
     def current(self) -> tuple[str, object] | None:

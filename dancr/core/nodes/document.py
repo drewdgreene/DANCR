@@ -23,7 +23,6 @@ import re
 import shutil
 import subprocess
 import tempfile
-import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -32,7 +31,8 @@ import polars as pl
 
 from ..params import Param
 from ..registry import NodeType, Ctx, NodeResult, registry
-from ..secrets import expand_env
+from ..secrets import expand_env, redact
+from ._memo import make_memo
 from .load import DOC_EXT, IMAGE_EXT, effective_ext
 
 OUTPUT_EXTS = {".json", ".md", ".markdown", ".txt"}
@@ -41,22 +41,7 @@ TABLE_COLUMNS = ["doc", "doc_id", "page", "table_index", "caption", "n_rows", "n
 
 
 # --------------------------------------------------------------------------- MinerU presence
-_MEMO: dict[str, tuple[float, Any]] = {}
-_MEMO_LOCK = threading.Lock()
-
-
-def _memo(key: str, ttl: float, fn) -> Any:
-    now = time.time()
-    with _MEMO_LOCK:
-        hit = _MEMO.get(key)
-        if hit is not None and now - hit[0] < ttl:
-            return hit[1]
-    value = fn()
-    with _MEMO_LOCK:
-        if len(_MEMO) > 256:                 # bounded, as the connector's memo is: never grow without limit
-            _MEMO.clear()
-        _MEMO[key] = (now, value)
-    return value
+_memo = make_memo()
 
 
 def _app_dirs() -> list[Path]:
@@ -73,12 +58,32 @@ def _app_dirs() -> list[Path]:
     return dirs
 
 
+_MINERU_NAMES = {"mineru", "mineru.exe", "mineru-kit", "mineru-kit.exe"}
+
+
+def _safe_mineru_cmd(value: str) -> str:
+    """A project's ``mineru_cmd`` setting must name a MinerU program (``mineru``/``mineru-kit``, on PATH or a
+    path to one), never an arbitrary executable: a project file or an agent could otherwise point it at any
+    program to run on the next run. ``$DANCR_MINERU_CMD`` (which the person sets) may name any path."""
+    v = value.strip()
+    if Path(v).name.lower() not in _MINERU_NAMES:
+        raise ValueError(f"The MinerU command must be a mineru program (mineru or mineru-kit), not {value!r}. "
+                         "Set DANCR_MINERU_CMD to use a different executable")
+    if os.sep in v or (os.altsep and os.altsep in v):
+        return v
+    return shutil.which(v) or v
+
+
 def mineru_tool(params: dict[str, Any] | None = None) -> str | None:
-    """The MinerU CLI to use: the step's setting, ``$DANCR_MINERU_CMD``, a bundled env, else PATH."""
+    """The MinerU CLI to use: the step's setting (a PATH program), ``$DANCR_MINERU_CMD`` (any path), a bundled
+    env, else PATH."""
     params = params or {}
-    cmd = str(params.get("mineru_cmd") or "").strip() or os.environ.get("DANCR_MINERU_CMD", "").strip()
+    cmd = str(params.get("mineru_cmd") or "").strip()
     if cmd:
-        return cmd
+        return _safe_mineru_cmd(cmd)
+    env_cmd = os.environ.get("DANCR_MINERU_CMD", "").strip()
+    if env_cmd:
+        return env_cmd
     for d in _app_dirs():
         for sub in ("bin", "Scripts"):                    # POSIX venvs use bin/, Windows uses Scripts/ + .exe
             for name in ("mineru-kit", "mineru"):
@@ -266,9 +271,9 @@ _TYPE_MAP = {"title": "heading", "doc_title": "heading", "interline_equation": "
              "image": "figure", "figure": "figure", "table_body": "table", "table": "table", "list": "list"}
 
 
-def _block(kind: Any, text: str, index: int, bbox: Any = None) -> dict[str, Any]:
+def _block(kind: Any, text: str, index: int, bbox: Any = None, doc_id: Any = None) -> dict[str, Any]:
     return {"type": _TYPE_MAP.get(str(kind or "text").lower(), str(kind or "text").lower()),
-            "text": text, "index": index, "bbox": bbox}
+            "text": text, "index": index, "bbox": bbox, "doc_id": doc_id}
 
 
 def _pages_from_content_list(items: list, pages_out: list[dict[str, Any]]) -> None:
@@ -326,7 +331,7 @@ def _blocks_from_items(items: Any) -> list[dict[str, Any]]:
             text = caption or "[table]"
         if not text and kind in ("table", "table_body") and it.get("table_body"):
             text = "[table]"
-        blk = _block(kind, "" if text is None else str(text), i, it.get("bbox"))
+        blk = _block(kind, "" if text is None else str(text), i, it.get("bbox"), it.get("doc_id"))
         if body:
             blk["html"] = body
         if caption:
@@ -489,7 +494,7 @@ def _endpoint_pages(file: Path, params: dict[str, Any], tier: str, pages: str, t
         with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 - the user named this endpoint
             data = json.loads(resp.read().decode("utf-8", "replace"))
     except Exception as e:  # noqa: BLE001 - reported as a plain error below
-        raise ValueError(f"Could not parse {file.name} at {endpoint}: {e}") from None
+        raise ValueError(f"Could not parse {file.name} at {redact(endpoint)}: {redact(str(e))}") from None
     try:
         return _normalize(data)
     except ValueError:
@@ -560,10 +565,10 @@ def _load_document(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict
         if preview and not doc_pages and effective_ext(f) == ".pdf":
             doc_pages = "1"                                 # a preview reads the first page only
         found = _parse_one(f, engine, params, tier, doc_pages, timeout, preview)
-        doc_id = None
+        doc_id = f.stem                                   # a stable id even when the MinerU payload carries none
         for pg in found:
             for blk in pg.get("blocks", []):
-                doc_id = doc_id or blk.get("doc_id")
+                doc_id = blk.get("doc_id") or doc_id       # the payload's own id wins when it has one
                 locator = blk.get("locator") or _locator(f.name, pg.get("page"), blk.get("index"))
                 if what == "blocks":
                     if include and blk["type"] not in include:
@@ -598,10 +603,14 @@ def _load_document(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict
     if preview:
         tables = tables[:20]
     for i, t in enumerate(tables, start=1):
+        rows = t.pop("rows")
+        if preview:                                        # a preview shows a sample: it writes nothing
+            t["csv"] = None
+            continue
         rel = f"{out_dir}/{_safe(t['doc'])}/table_{i:03d}.csv"
         out = ctx.resolve_output(rel)
         out.parent.mkdir(parents=True, exist_ok=True)
-        _write_csv(out, t.pop("rows"))
+        _write_csv(out, rows)
         t["csv"] = rel
         written.append(out)
     cols = {c: [t.get(c) for t in tables] for c in TABLE_COLUMNS}

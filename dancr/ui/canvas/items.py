@@ -466,14 +466,17 @@ class AnswerItem(QGraphicsObject):
         f2 = _font(8.5); painter.setFont(f2); painter.setPen(QColor(T.muted))
         painter.drawText(QRectF(40, 32, ANSWER_W - 50, 15), Qt.AlignLeft | Qt.AlignVCenter, "Answer. Click to see or change it")
         p = self.canvas.doc.pipeline
-        st = self.canvas.doc.state(a.terminal) if a.terminal in p.nodes else None
-        status = st.status if st else "idle"
+        # read the terminal step's status from the canvas item, never doc.state() here: a paint handler must not
+        # stat and content-sample a source file on the GUI thread (the scene keeps the state fresh off-thread)
+        it = self.canvas.nodes.get(a.terminal) if a.terminal in p.nodes else None
+        status = getattr(it, "status", "idle") or "idle"
+        rows = getattr(it, "rows", None)
         if status == "failed":
             color, txt = T.danger, "failed"
         elif status == "running":
             color, txt = T.accent, "running…"
-        elif status == "done" and st is not None and st.rows is not None:
-            color, txt = T.ok, f"{st.rows:,} rows"
+        elif status == "done" and rows is not None:
+            color, txt = T.ok, f"{rows:,} rows"
         elif status == "stale":
             color, txt = T.warn, "changed, run again"
         else:

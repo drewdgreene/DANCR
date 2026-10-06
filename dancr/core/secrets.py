@@ -15,33 +15,65 @@ _ENV = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
 # a password inside scheme://user:password@host
 _CRED = re.compile(r"(?P<scheme>[a-zA-Z][\w+.-]*://)(?P<user>[^:/@\s]+):(?P<pw>[^@/\s]+)@")
 _PW_PARAM = re.compile(r"(?i)(password|passwd|pwd|secret|token|api[_-]?key)=([^&;\s]+)")
+# an Authorization header written as text ("Authorization: Bearer xyz", "authorization=xyz")
+_AUTH = re.compile(r"(?i)(authorization\s*[:=]\s*)(?:bearer\s+)?[^\s,;\"']+")
+# the key of a header/credential mapping whose value should always be blanked
+_SENSITIVE_KEY = re.compile(r"(?i)(password|passwd|pwd|secret|token|api[-_]?key|authorization|proxy-authorization|"
+                            r"auth|cookie|credential|bearer)")
 
 
 def expand_env(text: Any) -> str:
     """``${VAR}`` and ``$VAR`` replaced by the environment's value; a variable that is not set is left as written,
-    so the failure names it rather than becoming an empty password."""
+    so the failure names it rather than becoming an empty password. Setting ``DANCR_ALLOW_ENV`` to a comma list of
+    names restricts expansion to those, so an untrusted project cannot read an unrelated secret out of the
+    environment and send it to a connector."""
     s = "" if text is None else str(text)
-    return _ENV.sub(lambda m: os.environ.get(m.group(1) or m.group(2), m.group(0)), s)
+    allowed_raw = os.environ.get("DANCR_ALLOW_ENV")
+    allow = {n.strip() for n in allowed_raw.split(",") if n.strip()} if allowed_raw else None
+
+    def sub(m: re.Match) -> str:
+        name = m.group(1) or m.group(2)
+        if allow is not None and name not in allow:
+            return m.group(0)                       # not allowlisted: leave it as written, never expand
+        return os.environ.get(name, m.group(0))
+    return _ENV.sub(sub, s)
 
 
 def redact(text: Any) -> Any:
-    """A connection string or URL with its password blanked (``user:****@host``, ``password=****``)."""
+    """A connection string, URL or header text with its secret blanked (``user:****@host``, ``password=****``,
+    ``Authorization: ****``)."""
     if not isinstance(text, str):
         return text
     s = _CRED.sub(lambda m: f"{m.group('scheme')}{m.group('user')}:****@", text)
-    return _PW_PARAM.sub(lambda m: f"{m.group(1)}=****", s)
+    s = _PW_PARAM.sub(lambda m: f"{m.group(1)}=****", s)
+    return _AUTH.sub(lambda m: f"{m.group(1)}****", s)
+
+
+def _redact_value(v: Any) -> Any:
+    """A setting value safe to show: strings are redacted, and mappings (headers) blank a sensitive key's value."""
+    if isinstance(v, dict):
+        out: dict[Any, Any] = {}
+        for k, val in v.items():
+            if isinstance(k, str) and _SENSITIVE_KEY.search(k) and val not in (None, ""):
+                out[k] = "****"
+            else:
+                out[k] = _redact_value(val)
+        return out
+    if isinstance(v, (list, tuple)):
+        return [_redact_value(x) for x in v]
+    if isinstance(v, str):
+        return redact(v)
+    return v
 
 
 def redact_params(node_type: Any, params: dict[str, Any]) -> dict[str, Any]:
-    """A step's settings safe to show: a param marked ``secret`` becomes ``****`` (when set), and any other text
-    value has a password in it redacted."""
+    """A step's settings safe to show: a param marked ``secret`` becomes ``****`` (when set), and any other value
+    has a password, header token or other credential in it redacted (including inside header mappings)."""
     out: dict[str, Any] = {}
     for p in node_type.params:
         v = params.get(p.name)
         if p.secret and v:
             out[p.name] = "****"
-        elif isinstance(v, str):
-            out[p.name] = redact(v)
         else:
-            out[p.name] = v
+            out[p.name] = _redact_value(v)
     return out

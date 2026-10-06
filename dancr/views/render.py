@@ -58,7 +58,10 @@ def render_chart(lf: pl.LazyFrame, params: dict[str, Any], out: Path | str, widt
         axes[0].set_title(sub, fontsize=11)
     fig.tight_layout()
     out.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out)
+    try:
+        fig.savefig(out)
+    finally:
+        fig.clear()          # break the Figure<->canvas cycle: the GUI collects garbage rarely (gc is off)
     return out
 
 
@@ -195,5 +198,8 @@ def render_map(lf: pl.LazyFrame, params: dict[str, Any], out: Path | str, width:
         ax.set_title(sub, fontsize=10)
     fig.tight_layout()
     out.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out)
+    try:
+        fig.savefig(out)
+    finally:
+        fig.clear()          # break the Figure<->canvas cycle: the GUI collects garbage rarely (gc is off)
     return out

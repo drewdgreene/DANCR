@@ -221,13 +221,37 @@ def _wkt_geometry(text: Any) -> dict[str, Any] | None:
     return None
 
 
+def _split_top_level(text: str) -> list[str]:
+    """Split on commas that sit at parenthesis depth 0, keeping nested parenthesised groups together."""
+    parts: list[str] = []
+    depth = start = 0
+    for i, ch in enumerate(text):
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            parts.append(text[start:i]); start = i + 1
+    parts.append(text[start:])
+    return [p.strip() for p in parts]
+
+
+def _unparen(text: str) -> str:
+    text = text.strip()
+    return text[1:-1] if text.startswith("(") and text.endswith(")") else text
+
+
+def _parse_ring(text: str) -> list[list[float]]:
+    return [[float(t) for t in pt.split()[:2]] for pt in _split_top_level(_unparen(text)) if pt]
+
+
 def _wkt_polygon(kind: str, body: str) -> dict[str, Any] | None:
-    import re
-    rings = re.findall(r"\(([^()]*)\)", body)
-    parsed = [[[float(t) for t in pt.split()[:2]] for pt in ring.split(",")] for ring in rings]
+    """A Polygon/MultiPolygon as GeoJSON geometry, keeping rings grouped under their own polygon (so holes and
+    overlapping polygons are not flattened into unrelated single-ring polygons)."""
     if kind == "POLYGON":
-        return {"type": "Polygon", "coordinates": parsed}
-    return {"type": "MultiPolygon", "coordinates": [[r] for r in parsed]}
+        return {"type": "Polygon", "coordinates": [_parse_ring(r) for r in _split_top_level(_unparen(body))]}
+    coords = [[_parse_ring(r) for r in _split_top_level(_unparen(poly))] for poly in _split_top_level(_unparen(body))]
+    return {"type": "MultiPolygon", "coordinates": coords}
 
 
 registry.register(NodeType(

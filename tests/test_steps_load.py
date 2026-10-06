@@ -195,3 +195,13 @@ def test_times_at_several_offsets_stay_in_utc_unless_a_zone_is_chosen(tmp_path):
     assert days == [(30, 1), (31, 2), (1, 4)]
     st, _ = _daily(tmp_path, rows, time_zone="Mars/Olympus")
     assert st["src"].status == "failed" and "not a time zone name" in st["src"].error
+
+
+def test_a_compressed_csv_is_read_by_auto_layout(tmp_path):
+    import gzip
+    with gzip.open(tmp_path / "t.csv.gz", "wt") as fh:
+        fh.write("a,b\n1,2\n3,4\n")
+    p = Pipeline("t"); p.path = tmp_path / "p.json"
+    p.add_node("load_file", params={"path": "t.csv.gz"}, id="src")
+    out = run_one(p, "src")
+    assert out.shape == (2, 2) and out.columns == ["a", "b"]      # default layout="auto", not just as_is

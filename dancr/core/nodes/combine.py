@@ -187,21 +187,25 @@ def _nearest_feature(ctx: Ctx, left: pl.LazyFrame, right: pl.LazyFrame, ls: dict
     left_i = left.with_row_index("__lrow")
     right_i = right.rename({c: f"{c}{suffix}" for c in clash}).with_row_index("__rrow")
 
-    cond: pl.Expr = pl.lit(True)
+    # Candidate pairs are found with a latitude-band non-equi join (a plain comparison, which every Polars
+    # engine compiles the same way). The great-circle distance is computed afterwards, as a column on the
+    # joined frame — computing it inside the join predicate crashes the default collect engine and only works
+    # under streaming, so it is kept out of the join.
     if max_m is not None:
         band = max_m / METRES_PER_DEGREE_LAT + 1e-6
-        cond = ((pl.col(rl) - pl.col(llat)).abs() <= band) & (distance_m_expr(llat, llon, rl, ro) <= max_m)
+        cond: pl.Expr = (pl.col(rl) - pl.col(llat)).abs() <= band
+        pairs = left_i.join_where(right_i, cond)
     else:
         # no limit: guard against a cross join nobody meant (a big feature table with no distance)
-        n_right = int(right.select(pl.len()).collect(engine="streaming")[0, 0])
-        if n_right > 200_000:
-            raise ValueError(f"The second table has {n_right:,} rows and no distance limit was set. "
-                             "Set 'Only match within' so every row is not compared with every feature")
-    pairs = left_i.join_where(right_i, cond)
-    if max_m is None:
-        pairs = pairs.with_columns((distance_m_expr(llat, llon, rl, ro) / factor).alias(dist_col))
-    else:
-        pairs = pairs.with_columns((distance_m_expr(llat, llon, rl, ro) / factor).alias(dist_col))
+        n_left = int(left.select(pl.len()).collect(engine="streaming")[0, 0] or 0)
+        n_right = int(right.select(pl.len()).collect(engine="streaming")[0, 0] or 0)
+        if n_left * n_right > 50_000_000:
+            raise ValueError(f"With no distance limit every row would be compared with every feature "
+                             f"({n_left:,} × {n_right:,}). Set 'Only match within' to prune the search")
+        pairs = left_i.join(right_i, how="cross")
+    pairs = pairs.with_columns((distance_m_expr(llat, llon, rl, ro) / factor).alias(dist_col))
+    if max_m is not None:
+        pairs = pairs.filter(pl.col(dist_col) <= max_m / factor)
     nearest = pairs.sort([dist_col, "__rrow"]).unique(subset=["__lrow"], keep="first", maintain_order=True)
     # keep only the pairing, the distance and the second table's own columns: the row index it carries would
     # otherwise be rejoined onto the first table and appear a second time, suffixed by Polars

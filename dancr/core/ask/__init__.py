@@ -598,7 +598,10 @@ def _assemble(model: DataModel, items: list[Item], out: Asked) -> dict[str, Any]
             used.add(i); i += 1; continue
         if m.kind == "unit":
             rest = {x.kind for _, x in items[i + 1:]} - {"stop", "and", "table", "value", "when"}
-            if (q.big is not None or sup_later(i)) and not q.every and not rest - {"stat", "col"}:
+            # "hottest day", "biggest month", also "biggest month by quantity": the period itself is ranked, not
+            # stepped over — a bare unit after the superlative. A unit after "per" has already set every, so
+            # "highest quantity per month" (a monthly maximum) is not caught here.
+            if (q.big is not None or sup_later(i)) and not q.every and not rest - {"stat", "col", "by"}:
                 used.add(i); q.noun_unit = words; i += 1; continue    # "hottest day (in site A)": the day itself, not a step
             q.every = _one_step(q.every, f"1{m.value}"); used.add(i); i += 1; continue
         if m.kind == "col":
@@ -1051,7 +1054,8 @@ def _choose_recipe(model, spec, recipe, numbers, by_ref, stat, every, top, botto
         _time_bits(spec, every, stat, time_ref)
         return _tidy(spec)
     if numbers or stat:                               # "how many employees", "average salary"
-        spec.update({"recipe": "single", "measure": numbers[0] if numbers else None, "stat": stat or "sum"})
+        spec.update({"recipe": "single", "measure": numbers[0] if numbers else None,
+                     "stat": stat or ("count" if not numbers else default_stat(model, base, numbers[0]))})
         return _tidy(spec)
     if spec.get("filters"):
         spec["recipe"] = "rows"
