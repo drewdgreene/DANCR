@@ -105,13 +105,17 @@ def _finding(report: dict[str, Any] | None) -> str:
 
 # ----------------------------------------------------------------- attestation
 def build_attestation(pipe, executor: Executor | None = None, *, states: dict[str, Any] | None = None,
-                      hash_outputs: bool = True, run: bool = True) -> dict[str, Any]:
+                      hash_outputs: bool = True, run: bool = True, extra: dict[str, Any] | None = None) -> dict[str, Any]:
     """A complete, self-contained record of the project's current state (see the module docstring).
 
     A materialised step that has not been computed is run first (so its content can be hashed), exactly as the
     knowledge-base export computes a table when statistics are asked for. ``states`` lets a caller that just ran
     the project reuse its ``NodeState`` map (and skips that run). ``hash_outputs=False`` skips the content hash
-    of each result (a cheaper record that still checks plan hashes and findings)."""
+    of each result (a cheaper record that still checks plan hashes and findings).
+
+    ``extra`` is an optional evidence block (a scenario set's per-item hashes, a retrieval configuration) folded
+    into ``attestation_hash``. It is additive: an older DANCR ignores the key and an old attestation without it
+    still verifies (docs/adr/0007)."""
     ex = executor if executor is not None else Executor(pipe)
     if states is None:
         if run:
@@ -141,6 +145,8 @@ def build_attestation(pipe, executor: Executor | None = None, *, states: dict[st
                         "spec": a.spec, "spec_hash": _hash12(a.spec)})
 
     att: dict[str, Any] = {**man, "kind": ATTESTATION_KIND, "version": ATTESTATION_VERSION, "answers": answers}
+    if extra is not None:
+        att["extra"] = json_safe(extra)
     att["attestation_hash"] = _hash12({k: v for k, v in att.items() if k not in ("attestation_hash", "generated_at")})
     return json_safe(att)
 
@@ -200,13 +206,15 @@ def _diff_reports(expected: dict[str, Any], actual: dict[str, Any], tol: float) 
 
 
 def verify_pipeline(pipe, reference: Any, *, mode: str = "stored", strict_sources: bool = False,
-                    tol: float = 1e-9, hash_outputs: bool = True, executor: Executor | None = None) -> dict[str, Any]:
+                    tol: float = 1e-9, hash_outputs: bool = True, executor: Executor | None = None,
+                    extra: dict[str, Any] | None = None) -> dict[str, Any]:
     """Re-run a project and compare it to an attestation (or run manifest).
 
     ``mode`` ``stored`` computes only steps not in the cache; ``rerun`` recomputes everything (the strong
-    claim). ``strict_sources`` turns a changed source file into a mismatch rather than a notice. Returns the
-    verify report: a list of checks, the mismatches, notices, and a verdict
-    (``verified`` | ``mismatch`` | ``incomplete`` | ``engine-changed``)."""
+    claim). ``strict_sources`` turns a changed source file into a mismatch rather than a notice. ``extra``
+    supplies the evidence block to compare against a reference that carries one (docs/adr/0007); a reference
+    without ``extra`` verifies exactly as before. Returns the verify report: a list of checks, the mismatches,
+    notices, and a verdict (``verified`` | ``mismatch`` | ``incomplete`` | ``engine-changed``)."""
     if mode not in ("stored", "rerun"):
         raise ValueError("mode must be 'stored' or 'rerun'")
     ref = load_attestation(reference)
@@ -239,7 +247,7 @@ def verify_pipeline(pipe, reference: Any, *, mode: str = "stored", strict_source
         notices.append({"scope": "run", "message": str(e)})
     states = ex.states()
 
-    cur = build_attestation(pipe, ex, states=states, hash_outputs=hash_outputs)
+    cur = build_attestation(pipe, ex, states=states, hash_outputs=hash_outputs, extra=extra)
     checks.append(_check("engine", "engine_version", ref_engine.get("version"), _version(), None))
     cur_nodes = {n["id"]: n for n in cur["nodes"]}
     cur_sources: dict[str, dict[str, Any]] = {}
@@ -315,6 +323,23 @@ def verify_pipeline(pipe, reference: Any, *, mode: str = "stored", strict_source
         if not same:
             mismatches.append({"scope": "answer", "name": "spec_hash", "id": aid,
                                "expected": ra.get("spec_hash"), "actual": (ca or {}).get("spec_hash")})
+
+    # ---- optional evidence block (a scenario set, a retrieval configuration). Additive: an old attestation
+    # without it verifies exactly as before; a reference that carries one is compared when this call supplied
+    # one, else reported as a notice rather than a false mismatch (docs/adr/0007).
+    ref_extra = ref.get("extra")
+    if ref_extra is not None:
+        cur_extra = cur.get("extra")
+        if cur_extra is None:
+            notices.append({"scope": "extra", "message": "the attestation carries an evidence block that this "
+                            "verification did not recompute"})
+            checks.append(_check("extra", "evidence", ref_extra, None, None))
+        else:
+            same_extra = ref_extra == cur_extra
+            checks.append(_check("extra", "evidence", ref_extra, cur_extra, same_extra))
+            if not same_extra:
+                mismatches.append({"scope": "extra", "name": "evidence",
+                                   "expected": ref_extra, "actual": cur_extra})
 
     if incomplete:
         verdict = "incomplete"

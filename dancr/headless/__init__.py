@@ -536,7 +536,7 @@ def lock_file(path: Path) -> Path:
     return path.parent / ".dancr" / "locks" / f"{path.name}.lock"
 
 
-_mine = threading.local()          # the project files whose lock this thread holds, so taking one again nests
+_mine = threading.local()          # the locks this thread holds, so taking one again nests
 
 
 @contextmanager
@@ -552,23 +552,22 @@ def project_lock(path: Path | str, wait: float | None = None) -> Iterator[None]:
         return
     held.add(path)
     try:
-        with _os_lock(path, wait):
+        with _lock_path(lock_file(path), wait, f"{path.name} is being changed by another program"):
             yield
     finally:
         held.discard(path)
 
 
 @contextmanager
-def _os_lock(path: Path, wait: float | None) -> Iterator[None]:
-    lock = lock_file(path)
+def _lock_path(lock: Path, wait: float | None, message: str) -> Iterator[None]:
+    """The raw operating-system lock on ``lock``, waiting up to ``wait`` seconds. ``message`` shapes the error."""
     lock.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o644)
     try:
         deadline = time.monotonic() + (LOCK_WAIT if wait is None else wait)
         while not _try_lock(fd):
             if time.monotonic() >= deadline:
-                raise ProjectBusy(f"{path.name} is being changed by another program (the DANCR window, the command "
-                                  "line or an agent). Try again in a moment.")
+                raise ProjectBusy(f"{message} (the DANCR window, the command line or an agent). Try again in a moment.")
             time.sleep(0.05)
         try:
             yield
@@ -576,6 +575,37 @@ def _os_lock(path: Path, wait: float | None) -> Iterator[None]:
             _unlock(fd)
     finally:
         os.close(fd)
+
+
+@contextmanager
+def repo_lock(root: Path | str, wait: float | None = None) -> Iterator[None]:
+    """Hold a repository's lock (``<root>/.dancr/locks/repo.lock``) while writing its derived state — the graph
+    or the event log. At most one writer per repository. Reentrant within a thread; see docs/adr/0003."""
+    from ..core.repo import Repo
+    repo = Repo(root)
+    key = str(repo.lock_file("repo"))
+    held = _mine.__dict__.setdefault("locks", set())
+    if key in held:
+        yield
+        return
+    held.add(key)
+    try:
+        with _lock_path(repo.lock_file("repo"), wait, f"The repository {repo.root} is being written"):
+            yield
+    finally:
+        held.discard(key)
+
+
+@contextmanager
+def project_locks(paths: "list[Path | str]", wait: float | None = None) -> Iterator[None]:
+    """Hold several project files' locks at once, acquired in sorted canonical order so two callers can never
+    deadlock (docs/adr/0003). A thread that already holds one of them just carries on."""
+    from contextlib import ExitStack
+    ordered = sorted({Path(p).expanduser().resolve() for p in paths}, key=str)
+    with ExitStack() as stack:
+        for p in ordered:
+            stack.enter_context(project_lock(p, wait))
+        yield
 
 
 def read_project(path: Path) -> tuple[Pipeline, str]:
