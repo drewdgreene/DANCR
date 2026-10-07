@@ -193,3 +193,27 @@ A review pass fixed several real bugs and rough edges, each locked with a test:
   advisory ruff selection; the repo's configured `ruff check dancr tests` stays clean.
 
 Final suite: **1499 passed, 2 warnings in 269.91 s**.
+
+## Follow-up closures
+
+### 1. Scenario representation (F2) — done
+
+**Decision: a headless primitive, not registry node types** (`docs/adr/0008-scenario-representation.md`).
+A scenario overrides a global Input, which `NodeType.apply` cannot do; a scenario node would have to be
+a control node inside the executor, a large change to the hardened single-run core. The primitive already
+delivers the product (CLI `dancr scenarios`, MCP `run_scenarios`, SDK `run_scenarios`/`scenario_set`,
+per-scenario hashes, attestation evidence) and keeps every invariant. `docs/SCENARIOS.md` and the F2
+section of `docs/ROADMAP-context-and-gateway.md` now state this, so docs and code agree.
+
+### 2. Cross-project graph in the context/KB export — pending
+
+### 3. mypy gate — done
+
+`uv run mypy dancr` now runs and passes: the target is 3.12 (the numpy stubs use 3.12 syntax), heavy
+third-party stubs are not analyzed, and the pre-existing findings are a per-module `ignore_errors`
+allowance recorded in `docs/OPEN.md`. Real errors in the touched modules were fixed (no inline
+`# type: ignore`), and mypy is now a CI step alongside ruff and pytest. `uv.lock` regenerated so the dev
+extra carries mypy/ruff; the no-dev Flatpak requirements are unchanged.
+
+Verification: ruff **All checks passed**; mypy **Success: no issues found in 173 source files**;
+pytest **1499 passed, 2 warnings in 296.68 s**.

@@ -1,5 +1,13 @@
 # Scenario sets (F2): running a project across many assumptions
 
+**Representation.** Scenarios are a **headless primitive**, not registry node
+types. A scenario overrides a project Input, and Inputs are global to a run;
+`NodeType.apply` sees only its input frames and cannot re-run the upstream subgraph
+with different Inputs, so a scenario node would have to be a control node inside the
+executor — a large change to the engine's single-run model. The primitive already
+delivers the product and keeps every invariant; the decision is recorded in
+`docs/adr/0008-scenario-representation.md`.
+
 A **scenario** is a named set of Input values. A **scenario set** is one of:
 
 - **named** — an explicit list of `{"id", "inputs"}`;

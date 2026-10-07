@@ -305,7 +305,12 @@ the graph edges and their evidence, so a reader can trace the claim.
 combined model deterministic and affordable; scope and permissions (a question must not leak another
 project's restricted data).
 
-### F2. Scenario and sweep nodes
+### F2. Scenarios and sweeps
+
+Status: **implemented** as a headless primitive — see
+`docs/adr/0008-scenario-representation.md` and `docs/SCENARIOS.md`. The wording
+below is kept for the design record; items 1–2 were resolved to the primitive
+rather than registry node types.
 
 **Goal.** Make "run this analysis across many assumptions" a first-class, provable thing.
 
@@ -315,15 +320,15 @@ machinery, and `findings`.
 
 **Work.**
 
-1. New node types in `dancr/core/nodes/` (e.g. `scenarios.py`): `scenario` (named input sets),
-   `sweep` (grid over input ranges), `monte_carlo` (sampled distributions), `sensitivity`
-   (one-at-a-time/tornado). Register through `registry.register`; declare params with `Param`.
-2. **Execution model.** Because `run_batch` already demonstrates "clone the pipeline, change one
-   input, run, aggregate", the scenario machinery can be a headless `run_scenarios()` that enumerates
-   input combinations, runs the downstream subgraph per combination with the existing
-   cache/lease/confinement, and aggregates. Decide whether the node is a control node handled by the
-   executor or a headless primitive surfaced by a node; the former is cleaner but touches the core
-   execution model.
+1. Scenario-set builders in `dancr/core/scenarios.py`: `named` (named input sets), `sweep` (grid over
+   input ranges), `monte_carlo` (sampled distributions, seeded), `sensitivity` (one-at-a-time). They
+   build deterministic `{id, inputs}` lists; they are not node types (a scenario overrides global
+   Inputs, which a `NodeType.apply` cannot do — it sees only its input frames).
+2. **Execution model.** A headless `run_scenarios()` (in `dancr/headless/_scenarios.py`) enumerates the
+   scenarios, runs the target on a private clone per scenario with the existing
+   cache/lease/confinement, and aggregates (one output each plus a combined table). It is surfaced by
+   the CLI (`dancr scenarios`), the MCP tool `run_scenarios` and the SDK (`run_scenarios`,
+   `scenario_set`), not by a control node, so the executor's single-run model is untouched.
 3. Per-scenario caching: key a scenario's cached result by the base plan hash plus the scenario's
    input values (already part of `plan_hash`), so changing one scenario recomputes only that one.
 4. Inputs gain ranges, distributions and sets with units; the random seed is explicit and stored in
@@ -337,8 +342,9 @@ machinery, and `findings`.
 7. Performance: sampling, parallelism (reuse `jobs`), streaming aggregation, and disk management for
    many runs.
 
-**New surface.** New node types in the registry (so GUI/CLI/MCP see them automatically); headless
-`run_scenarios`; SDK `run_scenarios`; attestation/verify extensions.
+**New surface.** Headless `run_scenarios` (CLI `dancr scenarios`, MCP `run_scenarios`, SDK
+`run_scenarios`/`scenario_set`); the attestation/verify extension (`dancr verify … --scenarios`). No
+registry node type (see the Status note above).
 
 **Effect on determinism/provenance.** Determinism holds because inputs are already hashed; the seed
 and scenario definition are recorded, so a scenario set is reproducible and provable.
