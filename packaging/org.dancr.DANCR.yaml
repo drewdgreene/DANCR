@@ -8,12 +8,16 @@ runtime-version: "24.08"
 sdk: org.freedesktop.Sdk
 command: dancr-gui
 finish-args:
+  # Sandboxing is intentionally loosened. The Flatpak ships for compatibility across Linux distributions,
+  # not for isolation, so the app gets the whole host filesystem, all devices, and the session bus and
+  # behaves like a native install (file pickers reach anywhere the user can).
   - --share=ipc
+  - --share=network
   - --socket=fallback-x11
   - --socket=wayland
-  - --device=dri
-  - --filesystem=home
-  - --share=network
+  - --socket=session-bus
+  - --device=all
+  - --filesystem=host
 modules:
   - name: dancr
     buildsystem: simple
