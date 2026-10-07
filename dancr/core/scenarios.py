@@ -33,7 +33,8 @@ def named(base: dict[str, Any], items: list[dict[str, Any]]) -> list[dict[str, A
         if not isinstance(item, dict):
             continue
         inputs = dict(base)
-        inputs.update(item.get("inputs") if isinstance(item.get("inputs"), dict) else
+        extra = item.get("inputs")
+        inputs.update(extra if isinstance(extra, dict) else
                       {k: v for k, v in item.items() if k not in ("id", "name")})
         out.append(_scenario(item.get("id") or item.get("name") or f"scenario_{i + 1}", inputs))
     return out

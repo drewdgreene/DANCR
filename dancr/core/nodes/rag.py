@@ -85,7 +85,7 @@ def _build_index(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[s
         rows_seen += df.height
 
     # merge only the included datasets, so a skipped one is not seen as removed; then carry its passages over
-    included = {m.get("node") for m in upstream if m.get("node")} - skip
+    included = {str(m["node"]) for m in upstream if m.get("node")} - skip
     if existing is not None and "dataset" in existing.columns and any(m.get("node") for m in upstream):
         existing_included = existing.filter(pl.col("dataset").is_in(sorted(included)))
     else:
@@ -149,7 +149,8 @@ def _retrieve(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str,
     if not query:
         raise ValueError("Type what to search for")
     k = int(params.get("k") or 5)
-    min_score = float(params.get("min_score") if params.get("min_score") is not None else 0.0)
+    ms = params.get("min_score")
+    min_score = float(ms) if ms is not None else 0.0
     retriever = str(params.get("retriever") or "lexical")
     df = lf.collect(engine="streaming")
     if df.height == 0:

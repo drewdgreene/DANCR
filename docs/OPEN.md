@@ -141,5 +141,17 @@
   fan-out inside the LazyFrame executor — so a large grid costs proportionally and writes one output per
   scenario. Monte Carlo is uniform (or a fixed choice) only, and its seed lives in the spec, not the project.
 
+- Static typing (`uv run mypy dancr`, now in CI alongside ruff and pytest). The target is **Python 3.12**
+  because the installed numpy stubs use 3.12 syntax (PEP 695) that mypy cannot parse with a 3.11 target;
+  runtime support stays 3.11 and the pytest matrix tests 3.11 and 3.14, so 3.11 compatibility is covered
+  behaviourally. Heavy third-party stubs (polars, numpy, scipy, matplotlib, pyproj, shapely, pyogrio, xarray,
+  h5py, fastexcel) are not analyzed — their types are stricter/newer than this code's usage — while DANCR's own
+  annotations are checked. The **remaining allowance** is a per-module `ignore_errors` list in
+  `pyproject.toml`: the pre-existing modules not yet typed to mypy's satisfaction (the Qt UI against PySide6's
+  stubs, the answer engine's dynamic dicts, and a handful of older modules; ~440 findings, concentrated in
+  `core/recipes/_plan.py`). New modules (identity, repo, graph, events, scenarios, crossask, gateway, rag,
+  verify) are checked and clean. Burn the list down by fixing the modules it names; do not add to it without a
+  note here.
+
 Design and extension of the answer engine: `docs/ANSWERS.md`. Earlier plans and review worklists
 (all items done): `docs/history/`.

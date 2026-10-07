@@ -38,7 +38,7 @@ def _features(text: Any) -> list[str]:
 
 def embed(text: Any, dim: int = DEFAULT_DIM) -> np.ndarray:
     """A unit-norm float32 vector for a passage. Deterministic: the same text always gives the same vector."""
-    v = np.zeros(int(dim), dtype=np.float32)
+    v: np.ndarray = np.zeros(int(dim), dtype=np.float32)
     for tok in _features(text):
         h = int.from_bytes(hashlib.blake2b(tok.encode("utf-8"), digest_size=8).digest(), "big")
         v[h % dim] += 1.0 if (h >> 63) & 1 else -1.0
@@ -108,7 +108,7 @@ def bm25_scores(texts: list[Any], query: str, *, k1: float = 1.5, b: float = 0.7
     for d in docs:
         for w in set(d):
             df_count[w] = df_count.get(w, 0) + 1
-    scores = np.zeros(n, dtype=np.float32)
+    scores: np.ndarray = np.zeros(n, dtype=np.float32)
     for term in q:
         df = df_count.get(term, 0)
         if df == 0:
@@ -236,7 +236,7 @@ def merge_index(existing: Any, documents: list[dict[str, Any]], *, dim: int, chu
     import polars as pl
     want = pl.Array(pl.Float32, dim)
     stored: dict[str, Any] = {}
-    if existing is not None and getattr(existing, "height", 0) and "doc_key" in existing.columns \
+    if existing is not None and existing.height and "doc_key" in existing.columns \
             and "content_hash" in existing.columns:
         for grp in existing.partition_by("doc_key", maintain_order=True):
             stored[str(grp["doc_key"][0])] = grp

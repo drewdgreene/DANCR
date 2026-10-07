@@ -105,10 +105,10 @@ def _project_graph(root: Path, path: Path, pipe: Pipeline) -> tuple[Project, lis
     col_by_dataset = {d.id: {c.name: c for c in d.columns} for d in datasets}
     for e in edges:
         if e.kind == "link":
-            if (c := col_by_dataset.get(e.left, {}).get(e.left_on)) is not None:
-                c.is_entity = True
-            if (c := col_by_dataset.get(e.right, {}).get(e.right_on)) is not None:
-                c.is_entity = True
+            if (col := col_by_dataset.get(e.left, {}).get(e.left_on)) is not None:
+                col.is_entity = True
+            if (col := col_by_dataset.get(e.right, {}).get(e.right_on)) is not None:
+                col.is_entity = True
     return proj, datasets, edges
 
 
@@ -203,7 +203,7 @@ def build_graph(root: Path | str, *, projects: list[str] | None = None, force: b
                 pipe = Pipeline.load(path)
             except Exception as e:  # noqa: BLE001 - a broken project is skipped, not fatal
                 return "error", (pid, str(e))
-            old = existing.projects.get(pid) if reusable else None
+            old = existing.projects.get(pid) if (reusable and existing is not None) else None
             if old is not None and old.content_hash == change_key(path, pipe):
                 return "reuse", pid
             try:
@@ -221,6 +221,7 @@ def build_graph(root: Path | str, *, projects: list[str] | None = None, force: b
 
         for kind, payload in outcomes:
             if kind == "reuse":
+                assert existing is not None          # only produced when an existing graph was reused
                 _carry_over(existing, graph, payload)
                 reused.append(payload)
             elif kind == "built":

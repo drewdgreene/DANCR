@@ -46,6 +46,9 @@ jobs:
       - name: Lint
         if: matrix.python == '3.11'
         run: uvx ruff check dancr tests
+      - name: Types
+        if: matrix.python == '3.11'
+        run: uv run --no-sync mypy dancr
       - name: Tests
         shell: bash
         env:

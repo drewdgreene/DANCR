@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -49,7 +50,7 @@ def append_event(root: Path | str, kind: str, **fields: Any) -> dict[str, Any]:
         return _event_log(root).append(kind, **fields)
 
 
-def invalidate(root: Path | str, projects: list[str], *, files: tuple[str, ...] | list[str] = (),
+def invalidate(root: Path | str, projects: list[str], *, files: Iterable[str] = (),
                graph: Any = None) -> list[dict[str, Any]]:
     """The events a change to ``projects`` (absolute project file paths) produces, without writing them.
 
@@ -145,12 +146,12 @@ def watch_repo(root: Path | str, *, interval: float = 2.0, once: bool = False, r
                     events.append(make_event("project_recomputed", project=project_id(root, Path(f)), ok=False, error=str(e)))
         with repo_lock(root):
             event_log = _event_log(root)
-            for e in events:
-                event_log.append(e["type"], **{k: v for k, v in e.items() if k not in ("kind", "version", "type")})
+            for ev in events:
+                event_log.append(ev["type"], **{k: v for k, v in ev.items() if k not in ("kind", "version", "type")})
         record["cycles"] += 1
         record["changed"] = changed
-        for e in events:
-            emit(e)
+        for ev in events:
+            emit(ev)
         return changed
 
     emit({"type": "watch_started", "root": str(root)})

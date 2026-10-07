@@ -88,10 +88,39 @@ select = ["E9", "F"]
 # F401/F841 are unused imports/variables to be tidied; they do not change behaviour
 ignore = ["F401", "F841"]
 
-# Type checking is advisory for now (a baseline of ~460 findings, concentrated in the answer engine); it does
-# not fail the build. Run: uv run mypy dancr
+# Type checking. The target is 3.12 because the installed numpy stubs use 3.12 syntax (PEP 695) that
+# mypy cannot parse with a 3.11 target; runtime support stays 3.11 and the pytest matrix tests 3.11 and
+# 3.14, so 3.11 compatibility is covered behaviourally. Heavy third-party stubs are not analyzed (their
+# types are stricter/newer than this code's usage); DANCR's own annotations are checked. The remaining
+# pre-existing findings are allow-listed per module below and recorded in docs/OPEN.md. Run: uv run mypy dancr
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.12"
 ignore_missing_imports = true
 follow_imports = "normal"
 warn_unused_ignores = false
+
+[[tool.mypy.overrides]]
+module = ["polars.*", "numpy.*", "scipy.*", "matplotlib.*", "pyproj.*", "shapely.*", "pyogrio.*",
+          "xarray.*", "h5py.*", "fastexcel.*"]
+follow_imports = "skip"
+
+# The remaining allowance: pre-existing modules not yet typed to mypy's satisfaction. New modules
+# (identity, repo, graph, events, scenarios, crossask, gateway, rag, verify, ...) are checked. Burn this
+# list down by fixing the modules it names; do not add to it without a note in docs/OPEN.md.
+[[tool.mypy.overrides]]
+module = [
+    "dancr.ui.*",
+    "dancr.cli", "dancr.mcp_server", "dancr.synth",
+    "dancr.headless", "dancr.headless._context",
+    "dancr.core.answers", "dancr.core.ask", "dancr.core.ask.vocab", "dancr.core.conditions",
+    "dancr.core.executor", "dancr.core.fair.schemaorg", "dancr.core.geo", "dancr.core.layout",
+    "dancr.core.model", "dancr.core.planner", "dancr.core.samples", "dancr.core.understand",
+    "dancr.core.nodes.basic", "dancr.core.nodes.bio", "dancr.core.nodes.combine",
+    "dancr.core.nodes.contract", "dancr.core.nodes.entry", "dancr.core.nodes.geo",
+    "dancr.core.nodes.groups", "dancr.core.nodes.groups_stats", "dancr.core.nodes.inquiry.quality",
+    "dancr.core.nodes.load", "dancr.core.nodes.load_folder", "dancr.core.nodes.model",
+    "dancr.core.recipes._common", "dancr.core.recipes._plan",
+    "dancr.views.chartquery", "dancr.views.geo_draw", "dancr.views.lod", "dancr.views.pdf",
+    "dancr.views.render",
+]
+ignore_errors = true

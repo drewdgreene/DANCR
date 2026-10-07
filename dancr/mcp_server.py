@@ -120,7 +120,7 @@ def _editing_deferred(path: str, compute: Any) -> Any:
 
 
 def _folder(p: Pipeline) -> Path:
-    return p.path.resolve().parent
+    return p.directory.resolve()
 
 
 def _executor(p: Pipeline) -> Executor:

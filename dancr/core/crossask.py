@@ -123,8 +123,8 @@ def ask(graph: Graph, question: str, *, allow_restricted: bool = False) -> dict[
         if da is None or db is None:
             return _ambiguous(out, (a_needle, ca), (b_needle, cb))
         p = graph.path(da.id, db.id, allow_restricted=allow_restricted)
-        edges = [graph.edges[e].to_dict() for e in p["edges"] if e in graph.edges]
-        out.update({"ok": p["found"], "datasets": p["datasets"], "edges": edges, "evidence": edges, "hops": p["hops"],
+        edge_dicts = [graph.edges[e].to_dict() for e in p["edges"] if e in graph.edges]
+        out.update({"ok": p["found"], "datasets": p["datasets"], "edges": edge_dicts, "evidence": edge_dicts, "hops": p["hops"],
                     "answer": (f"{da.id} and {db.id} are joined by {p['hops']} relation(s): "
                                + " → ".join(p["datasets"])) if p["found"] else f"No relation joins {da.id} and {db.id}"})
         return out
