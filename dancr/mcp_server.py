@@ -293,16 +293,21 @@ def connections(path: str, recompute: bool = False) -> str:
 @mcp.tool()
 @friendly
 def profile(path: str, files: list[str] | None = None, node: str | None = None, samples: bool = False,
-            sample_rows: int = 10, stats: bool = True, deep: bool = True, changed: str | None = None) -> str:
+            sample_rows: int = 10, stats: bool = True, deep: bool = True, changed: str | None = None,
+            root: str | None = None, allow_restricted: bool = False) -> str:
     """A knowledge-base document for the project's datasets: each table's schema (columns with roles, types,
     units and ranges), how tables relate, per-column statistics, and a prose doc card per table. With samples=true,
     up to `sample_rows` example rows (max 100) are included too. One call to index DANCR's metadata for a RAG;
     DANCR still computes exact figures with run_pipeline/get_stats. `files` adds data files first; `node` limits it
     to one step. With stats or samples, a table that has not run yet is computed first. Each document carries a
-    `content_hash`; pass `changed` = an earlier context file (JSON or JSONL) to return only what changed since."""
+    `content_hash`; pass `changed` = an earlier context file (JSON or JSONL) to return only what changed since.
+    When a cross-project graph exists near the project (or `root` names it), the document also carries a `graph`
+    block of the edges incident to this project's datasets; restricted datasets are withheld unless
+    `allow_restricted`."""
     p = _with_files(path, files)
     ctx = hl.build_context(p, _executor(p), nodes=[node] if node else None, deep=deep,
-                           stats=stats, samples=samples, sample_rows=sample_rows)
+                           stats=stats, samples=samples, sample_rows=sample_rows, root=root,
+                           allow_restricted=bool(allow_restricted))
     if changed:
         cp = _from_root(changed)
         text = cp.read_text(encoding="utf-8") if cp.is_file() else changed

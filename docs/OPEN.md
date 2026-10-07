@@ -153,5 +153,13 @@
   verify) are checked and clean. Burn the list down by fixing the modules it names; do not add to it without a
   note here.
 
+- The context/KB export's **graph block** (`dancr context`, MCP `profile`, FAIR descriptors) is derived from a
+  graph built near the project; the repository is inferred from the nearest ancestor with `.dancr/graph/graph.db`
+  (or `--root`). If no graph exists, or the project has no datasets in it, the block is absent rather than empty.
+  It lists edges incident to the project's datasets and their neighbours (id/title/shape/project) — not a full
+  repository graph, and not measured joins. `--changed` reports a single project-level `graph_changed` flag, not
+  per-edge changes. Restricted datasets and their edges are withheld unless `--allow-restricted`; a project that
+  declares no sensitivity is public.
+
 Design and extension of the answer engine: `docs/ANSWERS.md`. Earlier plans and review worklists
 (all items done): `docs/history/`.

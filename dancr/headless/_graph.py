@@ -19,7 +19,7 @@ from typing import Any
 from ..core import Pipeline, registry
 from ..core.executor import CODE_FINGERPRINT, Executor
 from ..core.graph import (GRAPH_VERSION, SENSITIVITY_LEVELS, Column, Dataset, Edge, Graph, Project,
-                          Source, load_graph)
+                          Source, is_restricted, load_graph)
 from ..core.events import EventLog
 from ..core.identity import (IDENTITY_VERSION, dataset_column_id, dataset_id, digest, file_digest, project_id,
                              source_id)
@@ -340,3 +340,60 @@ def cross_suggest(root: Path | str, *, allow_restricted: bool = False) -> dict[s
     repo_root, graph = _require_graph(root)
     return {"kind": "dancr.crossask.suggest", "root": str(repo_root),
             "suggestions": suggest(graph, allow_restricted=allow_restricted)}
+
+
+def infer_repo_root(project_path: Path | str) -> Path | None:
+    """The repository a project belongs to, from a graph already built near it: the nearest ancestor folder
+    (the project's own folder first) that holds ``.dancr/graph/graph.db``, or None when there is no graph."""
+    p = Path(project_path).expanduser().resolve()
+    for base in [p.parent, *p.parent.parents]:
+        if (base / ".dancr" / "graph" / "graph.db").is_file():
+            return base
+    return None
+
+
+def graph_context_for(pipe: Pipeline, *, root: Path | str | None = None,
+                      allow_restricted: bool = False) -> dict[str, Any] | None:
+    """The cross-project graph block for a project's knowledge-base context: the edges incident to this
+    project's datasets (with their evidence) plus the neighbouring datasets (id, title, shape, project), and a
+    per-dataset slice for each document. Deterministic (edges and neighbours by id). None when there is no
+    graph, or the project has no datasets in it — the context export then simply omits the block.
+
+    A dataset's ``meta["sensitivity"]`` (or a Label-sensitivity step) marks it restricted; restricted datasets
+    and the edges touching them are withheld unless ``allow_restricted``."""
+    if pipe.path is None:
+        return None
+    base = Path(root).expanduser().resolve() if root else infer_repo_root(pipe.path)
+    if base is None:
+        return None
+    graph = load_graph(base)
+    if graph is None:
+        return None
+    pid = project_id(base, pipe.path)
+    own = {d.id for d in graph.datasets.values() if d.project == pid}
+    if not own:
+        return None
+    edges = sorted((e for e in graph.all_edges(allow_restricted=allow_restricted)
+                    if e.left in own or e.right in own), key=lambda e: e.id)
+    if not edges:
+        return None
+    neighbour_ids = sorted({(e.right if e.left in own else e.left) for e in edges})
+    neighbours = []
+    for nid in neighbour_ids:
+        d = graph.datasets.get(nid)
+        if d is None or (is_restricted(d.sensitivity) and not allow_restricted):
+            continue
+        neighbours.append({"id": d.id, "title": d.title, "shape": d.shape, "project": d.project})
+    per: dict[str, dict[str, Any]] = {}
+    for d in sorted((x for x in graph.datasets.values() if x.project == pid), key=lambda x: x.node):
+        mine = [e for e in edges if e.left == d.id or e.right == d.id]
+        if not mine:
+            continue
+        nbr_ids = sorted({(e.right if e.left == d.id else e.left) for e in mine})
+        per[d.node] = {"edges": [e.to_dict() for e in mine],
+                       "neighbours": [graph.datasets[x].to_dict() for x in nbr_ids
+                                      if x in graph.datasets and (allow_restricted or not is_restricted(graph.datasets[x].sensitivity))]}
+    block = {"kind": "dancr.graph.context", "version": GRAPH_VERSION, "root": str(base), "project": pid,
+             "edges": [e.to_dict() for e in edges], "neighbours": neighbours, "per_dataset": per}
+    block["content_hash"] = digest({"edges": block["edges"], "neighbours": block["neighbours"]})
+    return block

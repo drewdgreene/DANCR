@@ -34,6 +34,8 @@ def ro_crate_graph(ctx: dict[str, Any], meta: dict[str, Any], files: list[dict[s
             graph.append(node)
     if ctx.get("generated_at"):
         root["datePublished"] = ctx["generated_at"]
+    if ctx.get("graph"):
+        root["dancrGraph"] = ctx["graph"]         # DANCR extension: cross-project relations (plain JSON)
     parts: list[dict[str, Any]] = []
     seen: set[str] = set()
     for f in files:

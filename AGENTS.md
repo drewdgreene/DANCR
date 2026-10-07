@@ -344,6 +344,15 @@ re-indexes what moved, never a stale document. Statistics and samples need a tab
 yet is computed first (samples alone may fall back to a preview of its first rows). This shares its schema layer
 with the Assistant's own profile (`dancr/core/profile.py`).
 
+When a cross-project graph exists near the project (or `--root DIR` / `profile(root=…)` names the repository),
+the document also carries a **`graph` block**: the edges incident to this project's datasets, each with its
+evidence, plus the neighbouring datasets (`{id, title, shape, project}`), and a per-dataset slice on each
+`documents[]` entry (so a JSONL line carries its own relations). It is deterministically ordered (by id), and
+restricted datasets and the edges touching them are withheld unless `--allow-restricted` / `allow_restricted`.
+`--changed` keeps the block and adds `graph_changed` to the `changes` block. The same block reaches the FAIR
+descriptors (`dancr fair`, `export_fair`): `dancrGraph` in schema.org/Frictionless, `graph` in the run manifest,
+and `dancrGraph` on the RO-Crate root dataset. When there is no graph, the block is simply absent.
+
 ```bash
 dancr context shop.json                         # human summary: a doc card per dataset
 dancr --json context shop.json                   # the whole document (schema + stats), for a script

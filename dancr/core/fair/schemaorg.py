@@ -81,6 +81,10 @@ def dataset_jsonld(ctx: dict[str, Any], meta: dict[str, Any] | None = None) -> d
     spatial = _spatial(tables)
     if spatial:
         doc["spatialCoverage"] = spatial
+    if ctx.get("graph"):
+        # DANCR extension: the cross-project relations incident to this project's datasets (a schema.org
+        # consumer ignores an unknown property; the graph block is plain JSON)
+        doc["dancrGraph"] = ctx["graph"]
     return doc
 
 

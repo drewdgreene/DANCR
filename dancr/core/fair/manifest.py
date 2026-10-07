@@ -30,7 +30,7 @@ def _source_fingerprint(pipe, node_id: str) -> list[dict[str, Any]]:
 
 
 def run_manifest(pipe, executor=None, states: dict[str, Any] | None = None,
-                 meta: dict[str, Any] | None = None) -> dict[str, Any]:
+                 meta: dict[str, Any] | None = None, graph: dict[str, Any] | None = None) -> dict[str, Any]:
     """Exactly what produced the project's results: the engine and library versions, the code fingerprint, the
     source files (with the stamp they are fingerprinted by), and every step's plan hash, row count and elapsed
     time. This is the provenance half of a FAIR record, and it is already what the cache keys on."""
@@ -78,4 +78,5 @@ def run_manifest(pipe, executor=None, states: dict[str, Any] | None = None,
         "dataset": dataset_meta,
         "sources": sources,
         "nodes": nodes,
+        **({"graph": graph} if graph else {}),
     }

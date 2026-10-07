@@ -86,6 +86,26 @@ Confidential and restricted datasets are marked from a project's
 touching them** unless `allow_restricted` is passed — the same rule
 `search_knowledge` uses.
 
+## In the knowledge-base export and FAIR records
+
+`dancr context` (and MCP `profile`, and `dancr.build_context`) folds the graph into
+the knowledge-base document: a **`graph` block** with the edges incident to this
+project's datasets (each with its evidence), the neighbouring datasets
+(`{id, title, shape, project}`), and a per-dataset slice on each `documents[]`
+entry, so a `--jsonl` line carries its own relations. The repository is inferred
+from the nearest ancestor folder with a built graph (`.dancr/graph/graph.db`); pass
+`--root DIR` (CLI) or `root=…` (SDK/MCP) to name it. Ordering is deterministic (by
+id). Restricted datasets and the edges touching them are withheld unless
+`--allow-restricted`. `--changed` keeps the block and reports `graph_changed` in its
+`changes` block. When there is no graph, the block is absent — the export is
+unchanged.
+
+The same block reaches the FAIR descriptors (`dancr fair`, `export_fair`):
+`dancrGraph` in the schema.org and Frictionless documents, `graph` in the run
+manifest, and `dancrGraph` on the RO-Crate root dataset. So a catalogue, a
+repository index or a downstream consumer sees how a dataset connects to the rest
+of the repository, not just its own schema.
+
 ## Locking
 
 The build takes the repository lock (`<root>/.dancr/locks/repo.lock`) while it

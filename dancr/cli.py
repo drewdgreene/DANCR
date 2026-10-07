@@ -288,7 +288,8 @@ def cmd_context(a: argparse.Namespace) -> None:
     from .core.dtypes import json_safe
     p = _with_files(a.pipeline, a.file)
     ctx = hl.build_context(p, nodes=[a.node] if a.node else None, deep=not a.quick,
-                           stats=not a.no_stats, samples=a.samples, sample_rows=a.sample_rows)
+                           stats=not a.no_stats, samples=a.samples, sample_rows=a.sample_rows,
+                           root=a.root, allow_restricted=a.allow_restricted)
     if a.changed:
         ctx = hl.context_changes(ctx, a.changed)
     if a.jsonl:
@@ -324,7 +325,7 @@ def cmd_fair(a: argparse.Namespace) -> None:
     p = _load(a.pipeline)
     ex = Executor(p)
     out = Path(a.out) if a.out else None
-    doc = hl.export_fair(p, ex, fmt=a.format, samples=a.samples, out=out)
+    doc = hl.export_fair(p, ex, fmt=a.format, samples=a.samples, out=out, allow_restricted=a.allow_restricted)
     if out is not None:
         _print(a, {"path": str(out), "format": a.format}, f"Wrote {out}")
     else:
@@ -517,7 +518,8 @@ def cmd_catalog(a: argparse.Namespace) -> None:
     """A catalog of every DANCR project in a folder: each project's datasets, for an index or an overview."""
     from .core.dtypes import json_safe
     cat = hl.build_catalog(a.root, pattern=a.pattern, recursive=not a.no_recursive,
-                           stats=not a.no_stats, samples=a.samples, fair_format=a.fair, jobs=a.jobs)
+                           stats=not a.no_stats, samples=a.samples, fair_format=a.fair, jobs=a.jobs,
+                           allow_restricted=a.allow_restricted)
     if a.changed:
         cat = hl.catalog_changes(cat, a.changed)
     if a.jsonl:
@@ -1288,6 +1290,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--no-stats", action="store_true", help="skip per-column statistics"); s.add_argument("--quick", action="store_true", help="from a sample only, without reading every row")
     s.add_argument("--jsonl", action="store_true", help="one JSON object per dataset, for a search index"); s.add_argument("--output", help="write to this file instead of printing")
     s.add_argument("--changed", metavar="OLD_CONTEXT", help="only datasets whose content changed since this earlier context file (JSON or JSONL)")
+    s.add_argument("--root", help="the repository root holding the graph (default: the nearest folder with a built graph)")
+    s.add_argument("--allow-restricted", action="store_true", dest="allow_restricted", help="include restricted datasets and their graph edges")
     s.set_defaults(fn=cmd_context)
     s = sub.add_parser("search", help="search the project's text index (built by a 'Build search index' step)")
     s.add_argument("pipeline"); s.add_argument("query"); s.add_argument("--node", help="the index step (needed only if there are several)")
@@ -1307,6 +1311,7 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("fair", help="export a FAIR descriptor (schema.org, frictionless, manifest or rocrate)")
     s.add_argument("pipeline"); s.add_argument("--format", default="schema.org", choices=["schema.org", "frictionless", "manifest", "rocrate"])
     s.add_argument("--out", help="write to this file instead of printing"); s.add_argument("--samples", action="store_true", help="include example rows")
+    s.add_argument("--allow-restricted", action="store_true", dest="allow_restricted", help="include restricted datasets and their graph edges")
     s.set_defaults(fn=cmd_fair)
     s = sub.add_parser("package", help="write a self-contained RO-Crate (FAIR descriptors + pipeline + manifest)")
     s.add_argument("pipeline"); s.add_argument("--out", required=True, help="a .zip file, or a folder with --dir")
@@ -1367,6 +1372,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--samples", action="store_true"); s.add_argument("--no-stats", action="store_true", dest="no_stats"); s.add_argument("--fair", help="include a FAIR descriptor per project (schema.org, frictionless, manifest, rocrate)")
     s.add_argument("--jsonl", action="store_true", help="one JSON object per dataset"); s.add_argument("--by-project", action="store_true", dest="by_project", help="with --jsonl, one line per project")
     s.add_argument("--changed", metavar="OLD", help="only what changed since an earlier catalog (JSON or JSONL)"); s.add_argument("--output", help="write to this file"); s.add_argument("--jobs", type=int, default=1)
+    s.add_argument("--allow-restricted", action="store_true", dest="allow_restricted", help="include restricted datasets and their graph edges")
     s.set_defaults(fn=cmd_catalog)
     s = sub.add_parser("suggest", help="answers DANCR can give for the project's tables, best first"); s.add_argument("pipeline"); s.add_argument("--file", action="append", help="add a data file first (repeatable)"); s.add_argument("--focus", help="only answers about this step's output"); s.add_argument("--build", type=int, metavar="N", help="build suggestion N"); s.set_defaults(fn=cmd_suggest)
     s = sub.add_parser("ask", help="answer a question typed in plain words (for example \"total sales by region\")"); s.add_argument("pipeline"); s.add_argument("question"); s.add_argument("--file", action="append", help="add a data file first (repeatable)"); s.add_argument("--dry-run", action="store_true", help="show how the question is read without building it"); s.set_defaults(fn=cmd_ask)

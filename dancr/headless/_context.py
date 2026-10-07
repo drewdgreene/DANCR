@@ -36,7 +36,8 @@ def _dataset_meta(p: Pipeline) -> dict[str, Any]:
 
 def build_context(p: Pipeline, executor: Executor | None = None, *, nodes: list[str] | None = None,
                   deep: bool = True, stats: bool = False, samples: bool = False, sample_rows: int = 10,
-                  run: bool | None = None) -> dict[str, Any]:
+                  run: bool | None = None, root: Path | str | None = None,
+                  allow_restricted: bool = False) -> dict[str, Any]:
     """One document describing the project's datasets for a knowledge base to index: the compact profile
     (schemas, roles, relations) plus, optionally, per-column statistics and capped sample rows, and a prose
     *doc card* per table that a search index can match on. Nothing is changed; only the cache may be written
@@ -110,6 +111,22 @@ def build_context(p: Pipeline, executor: Executor | None = None, *, nodes: list[
             "skipped": prof.get("tables_that_could_not_be_read", {}),
             "documents": documents,
         }
+        # The cross-project graph block: the edges incident to this project's datasets and their neighbours,
+        # inferred from a graph built near the project (or an explicit root). Absent when there is no graph.
+        try:
+            from ._graph import graph_context_for
+            block = graph_context_for(p, root=root, allow_restricted=allow_restricted)
+        except Exception:  # noqa: BLE001 - a graph problem must never break the context export
+            block = None
+        if block:
+            out["graph"] = block
+            per = block.get("per_dataset") or {}
+            for doc in out["documents"]:
+                if (slice_ := per.get(doc["node"])):
+                    doc["graph"] = slice_
+            for table in out["tables"]:
+                if (slice_ := per.get(table.get("node"))):
+                    table["graph"] = slice_
         return json_safe(out)
     finally:
         ex.release()
@@ -118,16 +135,18 @@ def build_context(p: Pipeline, executor: Executor | None = None, *, nodes: list[
 def export_fair(p: Pipeline, executor: Executor | None = None, *, fmt: str = "schema.org",
                 nodes: list[str] | None = None, deep: bool = True, samples: bool = False,
                 sample_rows: int = 10, out: Path | str | None = None, path_root: str = "",
-                run: bool | None = None) -> dict[str, Any]:
+                run: bool | None = None, root: Path | str | None = None,
+                allow_restricted: bool = False) -> dict[str, Any]:
     """A FAIR descriptor for the project's datasets: ``schema.org`` (JSON-LD), ``frictionless`` (Data Package),
     ``manifest`` (what produced the results) or ``rocrate`` (a metadata graph). Built from the context document
     and the project's dataset metadata; ``out`` writes it atomically. Nothing is changed but the cache."""
     from ..core import fair
     ex = executor if executor is not None else Executor(p)
     ctx = build_context(p, ex, nodes=nodes, deep=deep, stats=fmt in ("manifest", "rocrate"),
-                        samples=samples, sample_rows=sample_rows, run=run)
+                        samples=samples, sample_rows=sample_rows, run=run, root=root,
+                        allow_restricted=allow_restricted)
     meta = p.dataset_meta()
-    manifest = fair.run_manifest(p, ex, meta=meta) if fmt.strip().lower().replace("_", ".") in (
+    manifest = fair.run_manifest(p, ex, meta=meta, graph=ctx.get("graph")) if fmt.strip().lower().replace("_", ".") in (
         "manifest", "provenance", "run", "rocrate", "ro-crate") else None
     doc = fair.fair_document(ctx, fmt, pipe=p, executor=ex, manifest=manifest, meta=meta,
                              pipeline_file=p.path.name if p.path else None)
@@ -156,7 +175,7 @@ def package_rocrate(p: Pipeline, executor: Executor | None = None, *, out: Path 
     if mode not in ROCRATE_COPY:
         raise ValueError(f"copy must be one of: {', '.join(ROCRATE_COPY)}")
     ctx = build_context(p, ex, stats=False, samples=samples)
-    man = manifest if manifest is not None else fair.run_manifest(p, ex, meta=meta)
+    man = manifest if manifest is not None else fair.run_manifest(p, ex, meta=meta, graph=ctx.get("graph"))
 
     destination = Path(out).expanduser()
     destination = (destination if destination.is_absolute() else folder / destination).resolve()
@@ -366,6 +385,8 @@ def context_changes(ctx: dict[str, Any], previous: Any) -> dict[str, Any]:
     out["tables"] = [t for t in ctx.get("tables", []) if str(t.get("node")) in keep]
     out["changes"] = {"engine_changed": engine_changed, "added": added, "changed": changed,
                       "unchanged": unchanged, "removed": removed,
+                      "graph_changed": (prev.get("graph") or {}).get("content_hash")
+                      != (ctx.get("graph") or {}).get("content_hash"),
                       "previous": prev_engine}
     return json_safe(out)
 
@@ -393,7 +414,8 @@ def find_pipelines(root: Path | str, pattern: str = "*.json", recursive: bool = 
 
 
 def build_catalog(root: Path | str, *, pattern: str = "*.json", recursive: bool = True, stats: bool = False,
-                  samples: bool = False, fair_format: str | None = None, jobs: int = 1) -> dict[str, Any]:
+                  samples: bool = False, fair_format: str | None = None, jobs: int = 1,
+                  allow_restricted: bool = False) -> dict[str, Any]:
     """One document describing every DANCR project under ``root``: each project's datasets (the context export)
     and, optionally, a FAIR descriptor each. A broken project is listed under ``skipped`` with the reason, never
     raised. Statistics and samples need a table's result and compute it (each project's own cache)."""
@@ -409,7 +431,7 @@ def build_catalog(root: Path | str, *, pattern: str = "*.json", recursive: bool 
             return None, str(f), f"cannot read: {e}"
         try:
             ex = Executor(p)
-            ctx = build_context(p, ex, stats=stats, samples=samples)
+            ctx = build_context(p, ex, stats=stats, samples=samples, root=root, allow_restricted=allow_restricted)
         except Exception as e:  # noqa: BLE001
             return None, str(f), str(e)
         entry: dict[str, Any] = {"file": str(f), "name": p.name,
@@ -534,6 +556,19 @@ def context_text(ctx: dict[str, Any]) -> str:
             lines.append("  " + " ↔ ".join(r.get("tables", [])) + "  (" + ", ".join(str(b) for b in bits if b) + ")")
     for nid, why in (ctx.get("skipped") or {}).items():
         lines.append(f"  could not read {nid}: {why}")
+    if ctx.get("graph"):
+        g = ctx["graph"]
+        edges = g.get("edges", [])
+        lines += ["", f"Cross-project relations ({len(edges)}):"]
+        for e in edges:
+            bits = [str(e.get("kind") or "")]
+            if e.get("left_on"):
+                bits.append(f"{e['left_on']} = {e.get('right_on')}")
+            if e.get("match_pct"):
+                bits.append(f"{e['match_pct']}% match")
+            lines.append(f"  {e.get('left')} → {e.get('right')}  ({', '.join(b for b in bits if b)})")
+        if g.get("neighbours"):
+            lines.append("  neighbours: " + ", ".join(str(n.get("id")) for n in g["neighbours"]))
     if ctx.get("inputs"):
         lines += ["", "Inputs: " + ", ".join(f"{i['name']}={i['value']}" for i in ctx["inputs"])]
     return "\n".join(lines)

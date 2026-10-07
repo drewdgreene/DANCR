@@ -102,4 +102,6 @@ def datapackage(ctx: dict[str, Any], meta: dict[str, Any] | None = None, *, path
             resource["description"] = t["summary"]
         resources.append(resource)
     package["resources"] = resources
+    if ctx.get("graph"):
+        package["dancrGraph"] = ctx["graph"]      # DANCR extension: cross-project relations (ignored by consumers)
     return package

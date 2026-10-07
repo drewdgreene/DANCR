@@ -205,7 +205,17 @@ delivers the product (CLI `dancr scenarios`, MCP `run_scenarios`, SDK `run_scena
 per-scenario hashes, attestation evidence) and keeps every invariant. `docs/SCENARIOS.md` and the F2
 section of `docs/ROADMAP-context-and-gateway.md` now state this, so docs and code agree.
 
-### 2. Cross-project graph in the context/KB export — pending
+### 2. Cross-project graph in the context/KB export — done
+
+`dancr context` (human, `--json`, `--jsonl`), MCP `profile` and the SDK now carry a **`graph` block**: the edges
+incident to this project's datasets (with evidence), the neighbouring datasets (id/title/shape/project), and a
+per-dataset slice on each document (so a JSONL line has its own relations). The repository root is inferred from
+the nearest ancestor with `.dancr/graph/graph.db`, or named with `--root` / `root=…`. It is deterministically
+ordered (by id), withholds restricted datasets and their edges unless `allow_restricted`, degrades gracefully
+when no graph exists (the block is absent), and reaches the FAIR descriptors (`dancrGraph` in schema.org and
+Frictionless, `graph` in the manifest, `dancrGraph` on the RO-Crate root). `--changed` keeps the block and adds
+`graph_changed` to its `changes` block. New `tests/test_context_graph.py` (9 tests). Docs: `docs/GRAPH.md`,
+`AGENTS.md`, `docs/OPEN.md`.
 
 ### 3. mypy gate — done
 
