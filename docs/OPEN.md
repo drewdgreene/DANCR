@@ -161,5 +161,4 @@
   per-edge changes. Restricted datasets and their edges are withheld unless `--allow-restricted`; a project that
   declares no sensitivity is public.
 
-Design and extension of the answer engine: `docs/ANSWERS.md`. Earlier plans and review worklists
-(all items done): `docs/history/`.
+Design and extension of the answer engine: `docs/ANSWERS.md`.

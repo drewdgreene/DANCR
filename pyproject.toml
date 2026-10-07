@@ -4,7 +4,7 @@ dynamic = ["version"]
 description = "DANCR: Data Analysis Node-based Canvas for Research. Visual pipelines over very large tabular and time-series data, with a headless CLI and MCP server for AI agents."
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "Proprietary" }
+license = { text = "Source-Available" }
 authors = [{ name = "Drew Greene", email = "drewdgreene@gmail.com" }]
 # Upper bounds at the next major version: DANCR uses APIs a major release may change (the mcp 2 module
 # layout, Polars' streaming engine). uv.lock pins what CI builds and tests with.

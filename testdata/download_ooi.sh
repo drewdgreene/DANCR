@@ -3,7 +3,7 @@
 # for two co-located OOI Axial Seamount BOTPT instruments.
 set -u
 B=https://rawdata.oceanobservatories.org/files
-OUT=/home/drew/DANCR/testdata/raw
+OUT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/raw"
 declare -A INSTR=( [MJ03F]="RS03CCAL/MJ03F/BOTPTA301|BOTPTA301_10.31.6.5_9338" [MJ03E]="RS03ECAL/MJ03E/BOTPTA302|BOTPTA302_10.31.10.6_9338" )
 for site in MJ03F MJ03E; do
   IFS='|' read -r path prefix <<< "${INSTR[$site]}"

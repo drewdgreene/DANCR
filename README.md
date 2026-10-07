@@ -1,114 +1,87 @@
 # DANCR
 
-DANCR (Data Analysis Node-based Canvas for Research) is a desktop app for
-tables that are too large for Excel. It opens CSV, text, Excel and Parquet
-files, and you build the analysis as a chain of steps: filter rows, calculate
-columns, join tables, resample time series, fit curves, chart and report.
+DANCR was built for the spreadsheet problem.
 
-A project is a small JSON file. Run it on next month's data and it repeats the
-same steps.
+Picture forty spreadsheets from six people. Between them is the answer to one question you need. Every file is laid out a little differently. Combining them is a job for someone who writes SQL, and if you do not have that person, the question goes unanswered, or somebody merges the files by hand and the result is out of date by the next batch.
 
-## Download and install
+DANCR lets the person closest to the data do it themselves. Read the spreadsheets as they are, combine and clean them with steps instead of queries, get an answer, and run the same thing again on next month's files.
 
-Get the latest installer from the [Releases](../../releases/latest) page.
+![version](https://img.shields.io/badge/version-2.2.0-blue) ![license](https://img.shields.io/badge/license-source--available-blue)
 
-On Windows 10 or 11 (64-bit), download `DANCR-Setup-<version>.exe`, run it and
-follow the wizard. It installs for the current user, so you don't need
-administrator rights, and adds a Start Menu shortcut. Linux and macOS packages
-are on the same Releases page.
+## What it solves
 
-The app is self-contained. You don't need to install anything else first.
+### Too many spreadsheets, and no SQL
+The files are laid out for people. A title row. Two tables sharing a sheet. A label written once and left blank below it. A total row at the bottom. DANCR reads that as a table anyway, with nothing to reformat first.
 
-## What it does
+Then you build what you need from steps: pick the columns, filter rows, add a calculated column, join two sheets, stack a folder of workbooks into one table. There is no query language to learn. You can also type "total sales by region" and it builds the steps for you. The same question on the same files always builds the same pipeline, because it runs on rules, not a model.
 
-- Opens large CSV, text, Excel, Parquet, GeoJSON, GeoPackage or shapefile data
-  as a table you can sort, filter and search, with statistics for each column.
-- Reads spreadsheets laid out for people, not machines: title lines, tables side
-  by side under banners, blocks under their own titles, labels written once per
-  run, AVERAGE and Total rows under the data (checked against the data, then left
-  out), and several tables on one sheet.
-- Works out how a pile of spreadsheets fits together when you drop them on the
-  window: which files link on a key, which are one table split up, and which
-  logs record the same thing. It then offers answers it can build right away.
-- Knows a small study when it sees one (treated and control plots, before and after)
-  plots, before and after) and compares the groups: averages, spreads, standard
-  errors, the right test and why, how big the difference is, values unusual for
-  their group, and when a difference is only down to size. A calculated column
-  with a mistyped value is pointed out, and fixed with one click.
-- Answers questions typed in your own words, like "total sales by region" or
-  "average pressure per hour". It builds the steps, tells you what it assumed,
-  and lets you change any choice. The same files and the same question always
-  build the same steps.
-- An optional **Assistant** you talk to: it proposes the same kind of steps and
-  answers, you approve them, and the engine does every calculation. It sends your
-  tables' shape and statistics to a model you configure — never your rows, unless
-  you allow sample rows. Every reply shows how to trust it.
-- Builds an analysis as steps on a map. You can filter rows, make columns with
-  formulas, average over time, smooth, find gaps, fit a curve, predict, check
-  against limits, chart, and put together a one-page report.
-- Works with places: measures great-circle distances, counts points into grid
-  cells for a density, matches each row to its nearest place by coordinates, and
-  draws it all on a map with offline country outlines — no internet, no tile
-  server, nothing leaving the machine.
-- Reads a whole folder or glob of files as one table (with a column naming each row's file, and every sheet, table
-  or layer inside a workbook or GeoPackage), and runs one project over many files at once — an output each plus a
-  combined table — so this month's exports or a directory of trials is one command.
-- Pulls data in from a URL (CSV, Parquet, JSON), a database (SQLite built in; PostgreSQL and others with an extra),
-  or a NetCDF/HDF5 file, alongside local files, keeping credentials in the environment and out of logs.
-- Watches a project and its data and reruns when a file arrives or changes, and catalogs a whole folder of projects
-  with each dataset's content hash — so a team can find everything and re-index only what moved.
-- Searches a project's own text: a **Build search index** step turns tables and documents into offline,
-  deterministic vectors; **Search index** (and `dancr search` / the `search_knowledge` MCP tool) returns the
-  closest passages with their source rows — withholding confidential/restricted ones unless you ask for them.
-  Ranking can be the offline embedding (default), keyword BM25, or a deterministic hybrid of both, and every
-  result says which retrievers and embedder were used.
-  With a persistent index file, re-indexing is **incremental**: each document is hashed and only the ones whose
-  content changed are embedded again (the step reports added / changed / unchanged / removed). Point it at a
-  `dancr context --changed` feed and whole datasets that did not move are skipped and carried over from the
-  index without being read again.
-- Indexes a whole folder of projects into a **cross-project graph** — one vertex per project, dataset, column
-  and source, one edge per relation the engine found (links, stacks, time alignments, nearest place,
-  containment), each with its evidence. Build it with `dancr graph build`, then ask what relates to what, the
-  shortest chain joining two datasets, or which keys link projects (`dancr graph shared-keys`). It is rebuilt
-  incrementally and deterministically, and confidential datasets stay withheld unless you ask.
-- Watches a whole repository and records what changed in an **append-only event log**: a source file changed,
-  a dataset was invalidated (rippling to the datasets that depend on it, across projects), a project was
-  recomputed, an index went stale. `dancr watch DIR --repo` records the events and, when asked, recomputes the
-  changed projects that are safe to recompute; `dancr events DIR` reads the log.
-- Can be governed: a repository may write a small **policy** (principals, rules, approvals, quotas), after which
-  every action gets an allow/approve/deny decision and an **audit** record. It is off by default — nothing is
-  enforced until a policy is configured. `dancr gateway` can also serve the MCP tools over HTTP for several
-  clients at once: loopback-only and bearer-token gated, and it refuses to start without a policy and a token.
-- Answers structural questions across a whole repository from its graph: *what joins these two datasets*, *which
-  keys link different projects*, *where does this dataset come from*, *what does it feed* — each citing the
-  edges and their evidence, without running anything across projects.
-- Runs one analysis across many assumptions: a **scenario** is a named set of inputs, and `dancr scenarios`
-  runs a sweep (a grid), a seeded Monte Carlo sample, or a one-at-a-time sensitivity check — one output each
-  plus a combined table, with every scenario's plan and output hash recorded and foldable into an attestation
-  that `dancr verify` re-checks.
-- Stewards data: **Check data contract** (column kinds, blanks, uniqueness, range, allowed values, patterns,
-  cross-column rules and keys that must exist elsewhere), **Compare two versions** (what changed), a
-  data-dictionary step, **Label sensitivity**, and **Redact** columns for a shareable copy.
-- Trusts its AI: `dancr eval` scores a question set against the engine or the Assistant, and `dancr trace`
-  prints the saved Assistant conversation — the tools it called, the step it built, and any figure no tool backed.
-- Also adds **Rows into columns** (pivot) and **fuzzy text-key matching** (join keys that are almost the same).
-- Records every step, so the same project reruns on a new file.
-- Proves a result: writes an **attestation** (the engine, each source file's content sample, and every step's
-  plan hash, output content hash and the numbers it found), **verifies** the project still reproduces it, and
-  shows a step's **lineage** (what produced it, what depends on it) and a one-node **proof card**. A result can
-  be re-checked by someone else, and the CLI exits non-zero when a claim no longer holds.
-- Writes FAIR metadata for your datasets: set who made it, the license and how to cite it, then export a
-  schema.org/Dataset record (Google Dataset Search), a Frictionless data package, or a run manifest that records
-  exactly what produced the results — or package the whole thing as a self-contained RO-Crate. Units are written as
-  UCUM codes, and the knowledge-base export stamps each dataset with a content hash and a `--changed` mode, so a
-  search index or agent refreshes only what moved.
-- Tells you, in a sentence, what changed, what drives it, what relates to what, whether the data is
-  trustworthy, and where it is heading — with the chart underneath as evidence.
-- Saves results to CSV, Excel, Parquet or GeoJSON, and exports reports as HTML or PDF.
-- Comes with a command line, a Python API and an MCP server for scripts and AI agents. `dancr context`
-  exports a project's datasets as a knowledge base (schema, statistics, sample rows and a written summary
-  per table) for a search index or an agent to read. See `AGENTS.md`.
+### An AI that makes up your numbers
+Point a chatbot at a spreadsheet and it will answer confidently and invent the figures. In DANCR the AI never does the arithmetic. It can suggest which steps to take; the engine runs them. An answer cannot contain a number that no calculation produced. That is what makes it safe to put an AI near your data at all.
+
+### Hundreds of millions of rows
+Excel gives up around a million rows, and slows down long before that. DANCR handles hundreds of millions. Results are kept on disk rather than held in memory, so the size of the data is not the wall, and running the project again only recomputes the steps whose data changed.
+
+### Giving an AI agent the run of your data
+Handing an agent a folder of your files is a hard thing to feel good about. It does not know how the files relate to each other, and it can touch anything. DANCR gives it a map and a gate.
+
+The map is a description of the data the agent can read: what each table is, its columns, how the tables join, and a hash of each one so it knows what changed.
+
+Linking datasets across separate projects is a newer and thinner feature. It works for keys a project is already joining on, and it does not yet measure how well the values match across projects, so do not lean on it yet. Everything inside a single project is finished and tested.
+
+The gate is a policy that decides which tools the agent may run against which project. Anything consequential needs approval, and every call is logged. You decide what it can reach.
+
+## What that looks like
+
+```bash
+dancr ask trials.json "compare rainfed and drought_stress grain yield" --file phenotype_measurements.csv
+dancr run trials.json
+```
+
+```
+rainfed has 19% more grain_yield_q_ha than drought_stress (77.29 vs 65.07; p < 0.001)
+```
+
+It picked the right test on its own and said, in one sentence, what the difference was.
+
+## What you get out the other end
+
+Clean tables you can export to Excel, CSV or Parquet. Group comparisons with the test chosen for you. Outliers and gaps. A chart, a map, or a one-page report you can send. And a record of exactly how each number was produced, so somebody else can re-run it later and check it still comes out the same.
+
+## What it does well
+
+- Reads spreadsheets the way people actually make them: a title row, two tables on one sheet, a total row at the bottom, and a folder of files that are each a little different.
+- Handles hundreds of millions of rows, holding results on disk instead of in memory.
+- Builds the whole pipeline by connecting steps, with no SQL and nothing hidden behind code.
+- Answers a question typed in plain words by building those steps, and does it without a model, so the same question on the same files always builds the same pipeline.
+- Keeps the AI away from the arithmetic. It can suggest, but every number has to come from a calculation the engine actually ran.
+- Runs again on next month's files, recomputing only the steps whose data changed.
+- Records what produced a result, so anyone can re-run it later and confirm it still comes out the same.
+- Catches the defects a spreadsheet hides: a duplicated ID, a value outside its range, free text where a controlled code is expected, a reference that points nowhere.
+- Marks rows sensitive through restricted, keeps the restricted ones out of searches and shared exports, and can redact a copy you hand to someone else.
+- Searches your own files offline, and re-indexes only the documents that changed.
+- Exports FAIR metadata (schema.org, Frictionless, RO-Crate) so the data can be found and cited.
+- Runs from a desktop window, the command line, Python, or an AI agent, where the agent gets a fixed set of tools and a policy over what it may touch, with every call logged.
+
+## For the technical reader
+
+The same engine runs as a command line, a Python library, and an MCP server for AI agents. There is a desktop app too, for when you would rather click than type.
+
+## Install
+
+Download an installer from the [Releases](../../releases/latest) page for Windows, Linux or macOS. The app is self-contained.
+
+From source:
+
+```bash
+git clone <repo> DANCR && cd DANCR
+uv sync                 # or: pip install -e .
+uv run dancr doctor     # reports which capabilities this build has
+```
+
+## Status
+
+DANCR is under active development. The agent gateway (policy, approvals, audit) is finished and tested. Linking datasets across projects is early. The running list of what is unfinished or fragile is kept in `docs/OPEN.md`.
 
 ## License
 
-Proprietary. See [LICENSE](LICENSE).
+Source-available. The code is published so anyone can read it, and the app is free to use. You may not fork it or resell it, and you may not build a paid product, service, or support business on top of it. See [LICENSE](LICENSE).

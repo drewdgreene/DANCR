@@ -17,7 +17,7 @@ from __future__ import annotations
 import importlib
 from typing import Any
 
-__version__ = "2.1.1"
+__version__ = "2.2.0"
 
 # The stable, documented public surface. Every name maps to (module, attribute) and is imported on first use,
 # so `import dancr` imports nothing heavy. `__all__` lists the same names for `from dancr import *` and for docs.

@@ -1,13 +1,13 @@
 # Roadmap: a context graph and a governed agent gateway
 
-Status: **proposal.** Nothing here is built. This document plans six features that would grow
-DANCR from a per-project analysis-and-evidence tool into a general **context-and-evidence layer**
+Status: **implemented.** The six features below have since landed; `docs/ROADMAP-PROGRESS.md` records
+what was built and how it was verified. This document is kept as the design rationale for how DANCR
+grows from a per-project analysis-and-evidence tool into a general **context-and-evidence layer**
 with a **governed agent control plane**, while keeping it a general product and keeping every
 existing promise (determinism, provenance, offline-first, one install, one writer at a time).
 
-It is generalized on purpose. The domain-specific counterpart lives outside this repo
-(`vylor/software-ideas/02-semantic-context-and-agent-gateway.md`); this file is the
-domain-neutral engineering plan.
+It is generalized on purpose. The domain-specific counterpart it grew out of, and the one it would be
+pointed at, live outside this repo; this file is the domain-neutral engineering plan.
 
 The six features:
 

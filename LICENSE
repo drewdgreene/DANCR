@@ -1,4 +1,4 @@
-DANCR — Proprietary License
+DANCR — Source-Available License
 Copyright (c) 2026 Drew Greene. All rights reserved.
 
 The source code is published so that anyone can read it and confirm for
@@ -19,7 +19,7 @@ You may not, without prior written permission from the copyright holder:
     using it to promote any other paid product or service;
   - distribute, publish, or otherwise make the application or its source code
     available to others, in whole or in part;
-  - remove or alter this notice or any other proprietary notice.
+  - remove or alter this notice or any other notice.
 
 In short: read the code, use the app for free; do not fork it or resell it, and
 do not build a paid product, service, or support business on top of it.
