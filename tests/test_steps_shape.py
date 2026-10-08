@@ -53,6 +53,7 @@ def test_describe_builds_a_data_dictionary(tmp_path):
     y = df.filter(pl.col("column") == "yield").row(0, named=True)
     assert y["role"] == "number" and y["unit"] == "q/ha" and y["definition"] == "grain yield"
     assert y["missing"] == 1 and y["mean"] == 20.0
+    assert y["distinct"] == 2                    # the blank is missing, not a distinct value
     assert st.report["columns"] == 2 and st.report["with_blanks"] == 1
 
 
@@ -67,6 +68,17 @@ def test_fuzzy_combine_tidies_and_matches(tmp_path):
     got = {r["name"]: r["code"] for r in df.iter_rows(named=True)}
     assert got["Johnston, IA"] == "J" and got["Ames  IA"] == "A" and got["Nowhere"] is None
     assert abs(st.report["match_percent"] - 100 * 2 / 3) < 1e-9
+
+
+def test_fuzzy_nearest_refuses_too_many_keys_on_either_side(tmp_path):
+    p = Pipeline("p"); p.path = tmp_path / "p.json"
+    left = data(p, [("name", "text")], [["a"], ["b"], ["c"]], "l")
+    right = data(p, [("site", "text")], [["a"], ["b"]], "r")
+    p.add_node("combine", params={"method": "fuzzy", "left_key": "name", "right_key": "site",
+                                  "algorithm": "nearest", "max_candidates": 2}, id="c")
+    p.connect(left, "c", "left"); p.connect(right, "c", "right")
+    st = Executor(p).run(targets=["c"])["c"]
+    assert st.status == "failed" and "first table has" in (st.error or "").lower()
 
 
 def test_fuzzy_combine_nearest_finds_a_close_key(tmp_path):

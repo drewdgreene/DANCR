@@ -61,7 +61,10 @@ def render_chart(lf: pl.LazyFrame, params: dict[str, Any], out: Path | str, widt
     try:
         fig.savefig(out)
     finally:
-        fig.clear()          # break the Figure<->canvas cycle: the GUI collects garbage rarely (gc is off)
+        # break the Figure<->canvas cycle without relying on gc (off in the GUI): clearing the axes alone does not
+        # drop fig.canvas, and the canvas holds the figure, so null it explicitly
+        fig.clear()
+        fig.canvas = None
     return out
 
 
@@ -201,5 +204,8 @@ def render_map(lf: pl.LazyFrame, params: dict[str, Any], out: Path | str, width:
     try:
         fig.savefig(out)
     finally:
-        fig.clear()          # break the Figure<->canvas cycle: the GUI collects garbage rarely (gc is off)
+        # break the Figure<->canvas cycle without relying on gc (off in the GUI): clearing the axes alone does not
+        # drop fig.canvas, and the canvas holds the figure, so null it explicitly
+        fig.clear()
+        fig.canvas = None
     return out

@@ -34,6 +34,15 @@ def test_chart_page_chips_and_add_to_report(window, app, sample):
     assert window.doc.pipeline.nodes[rid].params["blocks"] == [{"type": "item", "node": cid}]
 
 
+def test_chart_clears_when_its_step_is_removed(window, app, sample):
+    window._add_load_node(str(sample), None); wait_run(window, app)
+    window.steps.chart_columns(["value A"]); wait_run(window, app); pump(app, 800)
+    cid = window._current
+    assert window.chart.nid == cid
+    window.doc.remove_nodes([cid]); pump(app, 100)
+    assert window.chart.nid is None            # the deleted step's binding is dropped, not left stale
+
+
 def test_split_by_panels(window, app, tmp_path):
     from dancr.views.render import render_chart
     sample = write_sample(tmp_path / "big", rows=40_000)        # spans both sites

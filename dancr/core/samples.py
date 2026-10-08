@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -51,7 +52,7 @@ def write_sample(directory: Path | str, rows: int = 60_000) -> Path:
     })
     gap0, gap1 = rows // 2, min(rows, rows // 2 + 900)          # 75 minutes of missing data (never past the end)
     df = pl.concat([df[:gap0], df[gap1:]])
-    tmp = out.with_name(f"{out.name}.{os.getpid()}.tmp")        # a crash mid-write never leaves half a sample
+    tmp = out.with_name(f"{out.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp")   # a crash mid-write never leaves half a sample
     df.write_csv(tmp)
     os.replace(tmp, out)
     return out

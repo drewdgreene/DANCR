@@ -16,6 +16,7 @@ import math
 import os
 import re
 import unicodedata
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -219,7 +220,8 @@ def save_index(df: Any, path: Path | str) -> None:
     previous index intact."""
     p = Path(path).expanduser()
     p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_name(f".{p.name}.{os.getpid()}.tmp.parquet")
+    # the pid alone collides when two threads of one process (a batch/scenario/catalog run) write the same index
+    tmp = p.with_name(f".{p.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp.parquet")
     try:
         df.write_parquet(tmp)
         os.replace(tmp, p)

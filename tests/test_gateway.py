@@ -59,6 +59,37 @@ def test_quota_denies_after_the_limit(tmp_path):
     assert third["verdict"] == "deny" and "quota reached" in third["reason"]
 
 
+def test_quota_is_enforced_under_concurrency(tmp_path):
+    save_policy(tmp_path, {"principals": {"alice": {}}, "quotas": {"alice": {"run": 1}},
+                           "default": dict(POLICY["default"])})
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        verdicts = list(pool.map(lambda _: enforce(tmp_path, "alice", "run_pipeline")["verdict"], range(4)))
+    assert verdicts.count("allow") == 1          # the read-decide-count sequence must not interleave
+
+
+def test_an_approved_action_counts_against_the_quota(tmp_path):
+    save_policy(tmp_path, {"principals": {"alice": {}}, "quotas": {"alice": {"export": 1}},
+                           "default": dict(POLICY["default"])})
+    from dancr.headless import authorize
+    rec = request_approval(tmp_path, "alice", "export_node", project="a.json")
+    decide_approval(tmp_path, rec["id"], True, by="drew")
+    first = authorize(tmp_path, "alice", "export_node", project="a.json")
+    assert first["verdict"] == "allow" and first["reason"] == "approved"
+    rec2 = request_approval(tmp_path, "alice", "export_node", project="a.json")
+    decide_approval(tmp_path, rec2["id"], True, by="drew")
+    second = authorize(tmp_path, "alice", "export_node", project="a.json")
+    assert second["verdict"] == "deny" and "quota" in second["reason"]
+
+
+def test_an_approval_cannot_be_decided_twice(tmp_path):
+    save_policy(tmp_path, POLICY)
+    rec = request_approval(tmp_path, "alice", "export_node", project="a.json")
+    decide_approval(tmp_path, rec["id"], True, by="drew")
+    with pytest.raises(ValueError, match="already"):
+        decide_approval(tmp_path, rec["id"], False, by="drew")
+
+
 def test_audit_records_are_redacted(tmp_path):
     save_policy(tmp_path, POLICY)
     enforce(tmp_path, "alice", "run_pipeline", args={"connection": "postgres://u:secret@h/db"})

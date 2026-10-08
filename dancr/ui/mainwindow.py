@@ -154,4 +154,5 @@ class MainWindow(WindowActions, WindowPages, WindowAnswers, WindowSession, Windo
         if self.doc.running:                     # rebuilt (theme switch) during a run: show it, keep Stop working
             self._on_run_started()
         QTimer.singleShot(200, self._maybe_recover)
+        QTimer.singleShot(300, self._maybe_first_run)
 

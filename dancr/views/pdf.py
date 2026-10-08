@@ -9,12 +9,12 @@ from pathlib import Path
 
 
 def html_to_pdf(doc: str, out: Path) -> Path:
-    """Lay out ``doc`` on A4 pages and write them to ``out``. Qt needs its application object, which may only be
-    created on a program's main thread: a process that has none and is not on its main thread (the MCP server
-    runs tools on worker threads) writes the PDF in a short-lived helper process instead."""
+    """Lay out ``doc`` on A4 pages and write them to ``out``. Qt's text/paint objects belong to the main thread,
+    so anything off the main thread — the MCP server's worker threads, or a report node run by the window's run
+    thread — writes the PDF in a short-lived helper process instead."""
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     from PySide6.QtWidgets import QApplication
-    if QApplication.instance() is None and threading.current_thread() is not threading.main_thread():
+    if threading.current_thread() is not threading.main_thread():
         return _in_helper(doc, Path(out))
     QApplication.instance() or QApplication([])               # a QApplication must exist to lay out text
     return _write(doc, Path(out))

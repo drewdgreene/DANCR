@@ -107,6 +107,16 @@ def test_restricted_datasets_are_withheld_unless_allowed(tmp_path):
     assert any("b/b.json" in e["left"] or "b/b.json" in e["right"] for e in allowed["graph"]["edges"])
 
 
+def test_restricted_project_identity_is_withheld_from_the_slice(tmp_path):
+    from dancr.headless import graph_slice
+    make_repo(tmp_path, b_sensitivity="confidential")
+    build_graph(tmp_path)
+    sl = graph_slice(tmp_path)
+    assert all("b/b.json" not in p["id"] for p in sl["projects"])
+    full = graph_slice(tmp_path, allow_restricted=True)
+    assert any("b/b.json" in p["id"] for p in full["projects"])
+
+
 def test_fair_descriptors_carry_the_graph(tmp_path):
     make_repo(tmp_path)
     build_graph(tmp_path)

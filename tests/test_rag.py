@@ -27,6 +27,33 @@ def make(tmp_path):
     return p
 
 
+def test_index_write_lock_serializes_threads(tmp_path):
+    # a persistent index is read-merge-written; two runs must not overlap that sequence
+    import time
+    from threading import Lock, Thread
+
+    from dancr.core.nodes.rag import _index_write_lock
+    target = tmp_path / "idx.parquet"
+    guard = Lock()
+    state = {"active": 0, "max": 0}
+
+    def work():
+        with _index_write_lock(target):
+            with guard:
+                state["active"] += 1
+                state["max"] = max(state["max"], state["active"])
+            time.sleep(0.05)
+            with guard:
+                state["active"] -= 1
+
+    threads = [Thread(target=work) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert state["max"] == 1          # never two writers inside the critical section at once
+
+
 def test_embedding_is_deterministic_and_ranks_by_overlap():
     a = embed("drought stress field trials")
     b = embed("drought stress field trials")

@@ -121,7 +121,7 @@ def _apply(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, An
         diff = (first["mean"] - second["mean"]) if len(r["groups"]) == 2 else (hi["mean"] - lo["mean"])
         base = second["mean"] if len(r["groups"]) == 2 else lo["mean"]
         row["difference"] = diff
-        row["difference (%)"] = (diff / base * 100) if base else None
+        row["difference (%)"] = (diff / abs(base) * 100) if base else None   # sign follows the difference
         row["test"] = r.get("test", "")
         row["statistic"] = r.get("statistic")
         row["p value"] = r.get("p")

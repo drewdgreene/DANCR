@@ -152,7 +152,7 @@ def _load_url(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str,
     # the URL is redacted in the report too: it may carry a token or a password in its query string
     report_url = redact(url)
     if ext in (".parquet", ".pq"):
-        return NodeResult(pl.read_parquet(local).lazy(), messages=[note], report={"url": report_url, "bytes": size})
+        return NodeResult(pl.scan_parquet(local), messages=[note], report={"url": report_url, "bytes": size})
     if ext in (".json", ".ndjson"):
         try:
             df = pl.read_json(local)

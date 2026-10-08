@@ -144,6 +144,25 @@ def _dispose_windows():
     QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
 
 
+@pytest.fixture(autouse=True)
+def _skip_first_run_tour():
+    """A fresh QSettings would auto-open the getting-started tour in every window test; mark it seen unless a
+    test clears the key itself (the onboarding tests do)."""
+    if "PySide6.QtCore" not in sys.modules:
+        yield
+        return
+    from PySide6.QtCore import QSettings
+    s = QSettings()
+    had = s.contains("onboarding/seen")
+    prev = s.value("onboarding/seen")
+    s.setValue("onboarding/seen", True)
+    yield
+    if had:
+        s.setValue("onboarding/seen", prev)
+    else:
+        s.remove("onboarding/seen")
+
+
 @pytest.fixture
 def mcp_root(tmp_path, monkeypatch) -> Path:
     """The MCP server only creates pipelines under its root folder; tests use their temporary folder."""

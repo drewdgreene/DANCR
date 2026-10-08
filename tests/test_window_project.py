@@ -209,3 +209,13 @@ def test_recent_projects_can_be_taken_off_the_list(window, app, tmp_path):
     assert [r.path for r in rows] == [a, b]                   # a project that no longer exists is left out
     rows[0].remove.emit()
     assert window._recent() == [str(b), str(tmp_path / "gone.json")]
+
+
+def test_app_imports_the_window_before_background_import_threads():
+    """The mpl warm-up thread imports 'html' too (via matplotlib); starting it before MainWindow's import can
+    deadlock the import system, so main() must import MainWindow first."""
+    import inspect
+
+    from dancr.ui import app
+    src = inspect.getsource(app.main)
+    assert src.index("from .mainwindow import MainWindow") < src.index("mpl-warmup")

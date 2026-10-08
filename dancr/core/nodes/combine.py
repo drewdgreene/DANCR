@@ -14,6 +14,8 @@ from ..dtypes import align_time_column, temp_name, is_date
 from ..findings import finding, fmt_pct
 from ..geo import distance_m_expr, parse_distance, UNITS_M, format_distance, METRES_PER_DEGREE_LAT
 
+MAX_FUZZY_PAIRS = 50_000_000      # nearest-key matching compares every key against every other: a hard work ceiling
+
 
 def _combine(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, Any]) -> NodeResult:
     left_frames = inputs.get("left") or []
@@ -123,7 +125,7 @@ def _combine(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, 
             lkeys[i] = rkeys[i] = k
             folded.append((a, k, orig))
     out = left.join(right, left_on=lkeys, right_on=rkeys, how=how, suffix=suffix, coalesce=True,
-                    maintain_order="left" if how in ("left", "inner") else ("right" if how == "right" else "none"))
+                    maintain_order="left")     # deterministic row order for every join kind, run to run
     if folded:
         if how in ("full", "right"):
             out = out.with_columns([pl.coalesce(pl.col(a), pl.col(orig).cast(out.collect_schema()[a])).alias(a) for a, _, orig in folded])
@@ -346,6 +348,13 @@ def _fuzzy(ctx: Ctx, left: pl.LazyFrame, right: pl.LazyFrame, ls: dict[str, pl.D
             raise ValueError(f"The second table has {len(rkeys):,} distinct keys; nearest matching needs at most "
                              f"{cap:,}. Raise 'Most candidate keys', or use 'after tidying' instead.")
         lkeys = l.select(pl.col(ltmp)).drop_nulls().unique().collect(engine="streaming").get_column(ltmp).to_list()
+        if len(lkeys) > cap:
+            raise ValueError(f"The first table has {len(lkeys):,} distinct keys; nearest matching needs at most "
+                             f"{cap:,}. Raise 'Most candidate keys', or use 'after tidying' instead.")
+        if len(lkeys) * len(rkeys) > MAX_FUZZY_PAIRS:
+            # every key of one table is compared with every key of the other: bound the total work as well as each side
+            raise ValueError(f"Nearest matching would compare {len(lkeys):,} × {len(rkeys):,} keys. "
+                             "Use 'after tidying', match on a shared key, or index fewer distinct keys.")
         lookup: dict[str, tuple[str, float]] = {}
         for a in lkeys:
             best, bs = None, 0.0
@@ -375,7 +384,7 @@ def _fuzzy(ctx: Ctx, left: pl.LazyFrame, right: pl.LazyFrame, ls: dict[str, pl.D
                     .select(pl.len()).collect(engine="streaming")[0, 0] or 0)
         matched = found
         out = l.join(r, on="__lkey", how=how, suffix=suffix, coalesce=True,
-                     maintain_order="left" if how in ("left", "inner") else "none")
+                     maintain_order="left")     # deterministic row order, as for the keyed join
         rk_out = f"{rk}{suffix}" if rk in ls else rk
         out = out.with_columns(pl.when(pl.col(rk_out).is_not_null()).then(1.0).otherwise(None).alias(score_col))
         out = out.drop("__lkey")

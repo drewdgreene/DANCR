@@ -468,7 +468,7 @@ class AssistantPanel(QFrame):
         self._pending_card: ProposalCard | None = None
         self._pending_edits_card: EditsCard | None = None
         self._working: WorkingCard | None = None
-        self._progress = _Progress(); self._progress.event.connect(self._on_progress)
+        self._progress = _Progress(self); self._progress.event.connect(self._on_progress)
         self._busy = False
         self._focus: str | None = None
         self._announced: set[str] = set()
@@ -585,6 +585,7 @@ class AssistantPanel(QFrame):
         m.addAction("Show the connection map", self.show_connections)
         m.addAction("Clear this conversation", self.clear)
         m.exec(self.menu_btn.mapToGlobal(self.menu_btn.rect().bottomLeft()))
+        m.deleteLater()                    # a parented QMenu is not freed by dropping the Python reference
 
     def _set_key(self) -> None:
         s = self._settings_obj()
@@ -630,6 +631,7 @@ class AssistantPanel(QFrame):
         for nid in default_tables(self.doc.pipeline):
             m.addAction(self.doc.pipeline.nodes[nid].title, lambda n=nid: self.set_focus(n))
         m.exec(self.chip_bar.mapToGlobal(self.chip_bar.rect().bottomLeft()))
+        m.deleteLater()
 
     def set_focus(self, nid: str | None) -> None:
         self._focus = nid if (nid and nid in self.doc.pipeline.nodes) else None
@@ -666,7 +668,9 @@ class AssistantPanel(QFrame):
         box.setInformativeText(f"Endpoint: {s.base_url}\nModel: {s.model}")
         box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
         box.setDefaultButton(QMessageBox.Yes)
-        if box.exec() != QMessageBox.Yes:
+        answer = box.exec()
+        box.deleteLater()
+        if answer != QMessageBox.Yes:
             self._add_widget(_action_card("Not sent", "Allow it again from the ⋮ menu when you want to.",
                                           [("Open menu", self._show_menu)]))
             return False
@@ -779,6 +783,8 @@ class AssistantPanel(QFrame):
         if right:
             w.setMaximumWidth(self._bubble_width())
             self._right_cards.append(w)
+            if len(self._right_cards) > 200:                 # long session: keep the list (and resize work) bounded
+                self._right_cards = [c for c in self._right_cards if alive(c)][-200:]
             self.thread_layout.insertWidget(self.thread_layout.count() - 1, _Row(w, right=True))
         else:
             self.thread_layout.insertWidget(self.thread_layout.count() - 1, w)

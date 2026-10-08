@@ -29,6 +29,25 @@ def test_event_log_append_read_since_and_limit(tmp_path):
     assert [e["seq"] for e in log.read(limit=1)] == [3]
 
 
+def test_event_log_uses_a_last_seq_sidecar(tmp_path):
+    log = EventLog(tmp_path / "events.jsonl")
+    log.append("source_changed", project="p.json")
+    log.append("graph_updated", root=".")
+    assert (tmp_path / "events.jsonl.seq").read_text().strip() == "2"
+    fresh = EventLog(tmp_path / "events.jsonl")     # each append_event builds a fresh log: it must not rescan
+    assert fresh.last_seq() == 2
+    assert fresh.append("source_changed", project="q.json")["seq"] == 3
+
+
+def test_event_log_without_a_sidecar_still_numbers_correctly(tmp_path):
+    from dancr.core.repo import append_jsonl
+    path = tmp_path / "events.jsonl"
+    append_jsonl(path, {"seq": 5, "kind": "dancr.event", "version": 1, "type": "source_changed"})
+    log = EventLog(path)
+    assert log.last_seq() == 5                       # scanned from the log, then cached
+    assert log.append("graph_updated", root=".")["seq"] == 6
+
+
 def make_repo(root: Path) -> None:
     (root / "a").mkdir()
     (root / "b").mkdir()

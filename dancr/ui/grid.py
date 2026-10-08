@@ -73,6 +73,7 @@ class TableModel(QAbstractTableModel):
 
     def set_column_meta(self, meta: dict) -> None:
         self.column_meta = meta or {}
+        self._info_cache.clear()                 # tooltips carry the old label/unit until they are rebuilt
         if self.pager:
             self.headerDataChanged.emit(Qt.Horizontal, 0, max(0, len(self.pager.columns) - 1))
 

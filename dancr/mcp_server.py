@@ -354,14 +354,16 @@ def export_fair(path: str, format: str = "schema.org", out_path: str | None = No
 @mcp.tool()
 @friendly
 def catalog(root: str = ".", pattern: str = "*.json", recursive: bool = True, samples: bool = False,
-            stats: bool = True, fair: str | None = None, changed: str | None = None, jobs: int = 1) -> str:
+            stats: bool = True, fair: str | None = None, changed: str | None = None, jobs: int = 1,
+            allow_restricted: bool = False) -> str:
     """A catalog of every DANCR project under `root` (relative to the server's root folder): each project's
     datasets — schema, relations, a prose doc card, and each dataset's `content_hash`. `fair` adds a descriptor
     per project (schema.org, frictionless, manifest, rocrate). `changed` limits it to what moved since an
-    earlier catalog (JSON or JSONL). Everything is read-only; `stats`/`samples` compute a table if needed."""
+    earlier catalog (JSON or JSONL). Confidential/restricted datasets are withheld unless `allow_restricted` is
+    true. Everything is read-only; `stats`/`samples` compute a table if needed."""
     base = _from_root(root)
     cat = hl.build_catalog(base, pattern=pattern, recursive=recursive, stats=stats, samples=samples,
-                           fair_format=fair, jobs=int(jobs))
+                           fair_format=fair, jobs=int(jobs), allow_restricted=bool(allow_restricted))
     if changed:
         cp = _from_root(changed)
         text = cp.read_text(encoding="utf-8") if cp.is_file() else changed

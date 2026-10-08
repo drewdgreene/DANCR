@@ -36,11 +36,24 @@ class EventLog:
 
     def __init__(self, path: Path | str) -> None:
         self.path = Path(path).expanduser()
+        # A tiny sidecar with the last sequence number, so a fresh EventLog (each append_event call) does not
+        # rescan the whole log to find the next number: N appends would otherwise read the log N times (O(N²)).
+        self._seq_path = self.path.with_name(self.path.name + ".seq")
         self._last: int | None = None
+
+    def _read_last_seq(self) -> int:
+        try:
+            n = int(self._seq_path.read_text().strip())
+            if n >= 0:
+                return n
+        except (OSError, ValueError):
+            pass
+        # no sidecar yet (a log written by an older DANCR): fall back to a scan, which the next append caches
+        return max((int(r.get("seq", 0)) for r in read_jsonl(self.path)), default=0)
 
     def last_seq(self) -> int:
         if self._last is None:
-            self._last = max((int(r.get("seq", 0)) for r in read_jsonl(self.path)), default=0)
+            self._last = self._read_last_seq()
         return self._last
 
     def append(self, kind: str, **fields: Any) -> dict[str, Any]:
@@ -48,6 +61,10 @@ class EventLog:
         record = {"seq": seq, **make_event(kind, **fields)}
         append_jsonl(self.path, record)
         self._last = seq
+        try:                                  # the caller holds the repository lock, so a plain write is safe
+            self._seq_path.write_text(str(seq))
+        except OSError:
+            pass
         return record
 
     def read(self, *, since: int = 0, type: str | None = None, limit: int | None = None) -> list[dict[str, Any]]:

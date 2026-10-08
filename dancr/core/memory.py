@@ -46,7 +46,9 @@ def remember_alias(pipeline: Any, typed: Any, means: Any) -> None:
     if not k or not v or k == v:
         return
     store = _store(pipeline)
-    store.setdefault("aliases", {})[k] = v
+    if not isinstance(store.get("aliases"), dict):       # a hand-edited/damaged project: start the map afresh
+        store["aliases"] = {}
+    store["aliases"][k] = v
 
 
 def remember_corrections(pipeline: Any, corrected: list[dict[str, Any]] | None) -> None:

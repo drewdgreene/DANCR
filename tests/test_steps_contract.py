@@ -28,6 +28,17 @@ def test_contract_reports_column_and_rule_issues(tmp_path):
     assert st.report["errors"] >= 2 and st.report["rows"] == 3
 
 
+def test_contract_unique_counts_a_null_as_missing(tmp_path):
+    p = Pipeline("c"); p.path = tmp_path / "c.json"
+    p.add_node("enter_data", params={"columns": [{"name": "k", "type": "text"}],
+                                     "rows": [["a"], ["b"], ["b"], [None]]}, id="d")
+    p.add_node("check_contract", params={"contract": json.dumps({"columns": {"k": {"unique": True}}}),
+                                         "output": "issues"}, id="k")
+    p.connect("d", "k", "in")
+    df, _st = run(p, "k")
+    assert "unique" in set(df["check"].to_list())          # b is repeated; the blank must not hide it
+
+
 def test_contract_infers_a_draft_when_none_is_given(tmp_path):
     p = Pipeline("c"); p.path = tmp_path / "c.json"
     p.add_node("enter_data", params={"columns": [{"name": "x", "type": "number"}],

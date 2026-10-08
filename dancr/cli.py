@@ -1124,38 +1124,17 @@ def cmd_log(a: argparse.Namespace) -> None:
 
 
 # every capability ships in the one install; doctor says which libraries this build actually carries
-_DOCTOR_PACKAGES = ("shapely", "pyproj", "pyogrio", "sqlalchemy", "psycopg", "xarray", "netCDF4", "h5py", "httpx")
-
-
 def cmd_doctor(a: argparse.Namespace) -> None:
-    import importlib
-    import importlib.metadata as md
-    found: dict[str, str] = {}
-    missing: list[str] = []
-    for name in _DOCTOR_PACKAGES:
-        try:
-            importlib.import_module(name)
-            try:
-                found[name] = md.version(name if name != "netCDF4" else "netCDF4")
-            except Exception:  # noqa: BLE001
-                found[name] = "?"
-        except Exception:  # noqa: BLE001
-            missing.append(name)
-    out = {"ok": not missing, "present": found, "missing": missing}
-    try:
-        from .core.nodes.document import mineru_tool, mineru_version, mineru_home
-        tool = mineru_tool({})
-        out["documents"] = {"present": bool(tool), "command": tool or "", "version": mineru_version(tool) or "",
-                            "models": mineru_home() or ""}
-    except Exception:  # noqa: BLE001 - a diagnostic must never fail
-        out["documents"] = {"present": False}
+    from .core.capabilities import capabilities
+    out = capabilities()
+    missing = out["missing"]
     if missing:
         _print(a, out, "This build is missing: " + ", ".join(missing) + ". Reinstall DANCR (or run 'uv sync').")
     else:
         doc = out.get("documents") or {}
         extra = (f" Documents: MinerU {doc.get('version') or 'present'}" if doc.get("present")
                  else " Documents: MinerU not found (install it to read PDF/Office files)")
-        _print(a, out, "All capabilities present: " + ", ".join(f"{k} {v}" for k, v in found.items()) + "." + extra)
+        _print(a, out, "All capabilities present: " + ", ".join(f"{k} {v}" for k, v in out["present"].items()) + "." + extra)
 
 
 # the formats DANCR reads, and what to do with the ones it does not (mirrors dancr/help/formats.md)

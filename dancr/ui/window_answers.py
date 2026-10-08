@@ -338,9 +338,12 @@ class WindowAnswers:
         box.setCheckBox(cb)
         box.setStandardButtons(QMessageBox.Cancel | QMessageBox.Yes)
         box.setDefaultButton(QMessageBox.Cancel)
-        if box.exec() != QMessageBox.Yes:
+        answer = box.exec()
+        remove_steps = cb.isChecked()
+        box.deleteLater()
+        if answer != QMessageBox.Yes:
             return
-        self.doc.delete_answer(aid, remove_steps=cb.isChecked())
+        self.doc.delete_answer(aid, remove_steps=remove_steps)
         if self._current_answer == aid:
             self._current_answer = None
             self.scene.clear_highlight()

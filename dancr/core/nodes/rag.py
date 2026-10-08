@@ -7,6 +7,7 @@ best passages by cosine similarity, each carrying the source row it came from.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager, nullcontext
 from typing import Any
 
 import polars as pl
@@ -19,6 +20,19 @@ from ..rag import (DEFAULT_DIM, EMBEDDER_ID, doc_content_hash, load_index, merge
 from ._common import first_input
 
 _RESERVED = ("chunk_id", "chunk_index", "text", "vector")
+
+
+@contextmanager
+def _index_write_lock(target):
+    """Serialize the read-merge-write of a persistent index across threads and processes. Locks a file beside
+    the index (not the project file), so it never contends with the window's own project lock. Uses the core
+    lock helper, never ``headless``, which the code fingerprint must not follow from a step module."""
+    from pathlib import Path
+
+    from ..locking import lock_path
+    lock = Path(target).expanduser().resolve().parent / ".dancr" / "locks" / f"{Path(target).name}.lock"
+    with lock_path(lock, None, f"the search index {Path(target).name} is being written by another run"):
+        yield
 
 
 def _build_index(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, Any]) -> NodeResult:
@@ -37,84 +51,92 @@ def _build_index(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[s
     if target is not None and target.suffix.lower() not in (".parquet", ".pq"):
         raise ValueError("Keep the persistent index in a .parquet file (for example search_index.parquet)")
     upstream = (ctx.upstream_meta or {}).get("items") or []
-    existing = load_index(target) if target is not None else None
-    feed_note = ""
+    # A persistent index is read, merged and written back. Hold a lock over the whole sequence so two runs (a
+    # batch, scenarios, a catalog with jobs) do not each merge against the same old index and lose one's work.
+    lock = _index_write_lock(target) if target is not None else nullcontext()
+    with lock:
+        existing = load_index(target) if target is not None else None
+        feed_note = ""
 
-    # Which datasets can be skipped entirely? One whose plan hash is unchanged since the feed, and whose
-    # passages are already in the persistent index (so they can be carried over without reading it again).
-    skip: set[str] = set()
-    if changed_path and not ctx.preview:
-        try:
-            is_changed_feed, listed = read_context_feed(ctx.resolve(changed_path))
-        except OSError as e:
-            raise ValueError(f"Cannot read the changed feed {changed_path}: {e}") from e
-        if existing is None or "dataset" not in existing.columns:
-            feed_note = "Skipping unchanged datasets needs a persistent index; indexing every dataset this run"
-        else:
-            have = set(existing["dataset"].drop_nulls().unique().to_list())
-            for m in upstream:
-                nid, cur = m.get("node"), m.get("hash")
-                if not nid or nid not in have:
-                    continue
-                if is_changed_feed:
-                    if nid not in listed:                 # a changed feed lists only what moved
-                        skip.add(nid)
-                elif nid in listed and listed[nid] == cur:  # a full context: compare hashes
-                    skip.add(nid)
-
-    documents: list[dict[str, Any]] = []
-    rows_seen = 0
-    for fi, lf in enumerate(frames):
-        src_node = (upstream[fi].get("node") if fi < len(upstream) else None) or f"in{fi}"
-        if src_node in skip:
-            continue
-        df = lf.collect(engine="streaming")
-        schema = df.schema
-        tcol = text_col if text_col in schema else ("text" if "text" in schema else None)
-        meta_cols = [c for c in df.columns if c != tcol]
-        rename = {c: (f"{c}_src" if c in _RESERVED else c) for c in meta_cols}
-        for ridx, row in enumerate(df.iter_rows(named=True)):
-            if tcol is not None:
-                text = row.get(tcol)
+        # Which datasets can be skipped entirely? One whose plan hash is unchanged since the feed, and whose
+        # passages are already in the persistent index (so they can be carried over without reading it again).
+        skip: set[str] = set()
+        if changed_path and not ctx.preview:
+            try:
+                is_changed_feed, listed = read_context_feed(ctx.resolve(changed_path))
+            except OSError as e:
+                raise ValueError(f"Cannot read the changed feed {changed_path}: {e}") from e
+            if existing is None or "dataset" not in existing.columns:
+                feed_note = "Skipping unchanged datasets needs a persistent index; indexing every dataset this run"
             else:
-                text = "  ".join(f"{c}: {row[c]}" for c in df.columns if row.get(c) is not None)
-            meta = {rename[c]: row.get(c) for c in meta_cols}
-            key = f"{src_node}:{row.get(id_col)}" if (id_col and id_col in schema) else f"{src_node}:{ridx}"
-            documents.append({"dataset": src_node, "doc_key": key, "content_hash": doc_content_hash(text, meta),
-                              "text": text, "meta": meta})
-        rows_seen += df.height
+                have = set(existing["dataset"].drop_nulls().unique().to_list())
+                for m in upstream:
+                    nid, cur = m.get("node"), m.get("hash")
+                    if not nid or nid not in have:
+                        continue
+                    if is_changed_feed:
+                        if nid not in listed:                 # a changed feed lists only what moved
+                            skip.add(nid)
+                    elif nid in listed and listed[nid] == cur:  # a full context: compare hashes
+                        skip.add(nid)
 
-    # merge only the included datasets, so a skipped one is not seen as removed; then carry its passages over
-    included = {str(m["node"]) for m in upstream if m.get("node")} - skip
-    if existing is not None and "dataset" in existing.columns and any(m.get("node") for m in upstream):
-        existing_included = existing.filter(pl.col("dataset").is_in(sorted(included)))
-    else:
-        existing_included = existing
-    out, changes = merge_index(existing_included, documents, dim=dim, chunk_chars=size, overlap=overlap)
-    carried = None
-    if skip and existing is not None and "dataset" in existing.columns:
-        carried = existing.filter(pl.col("dataset").is_in(sorted(skip)))
-        if carried.height:
-            out = pl.concat([out, carried], how="diagonal_relaxed").sort("chunk_id")
-            changes["carried_chunks"] = int(carried.height)
-    if out.height > limit:
-        raise ValueError(f"The index would pass {limit:,} passages. Raise 'Most passages', index fewer files, "
-                         "or use larger chunks")
-    if target is not None:
-        save_index(out, target)
-        save_index_meta(target, embedder=EMBEDDER_ID, dim=dim)     # how the vectors were made, for provenance
-        changes["index_path"] = str(target)
+        documents: list[dict[str, Any]] = []
+        rows_seen = 0
+        for fi, lf in enumerate(frames):
+            src_node = (upstream[fi].get("node") if fi < len(upstream) else None) or f"in{fi}"
+            if src_node in skip:
+                continue
+            df = lf.collect(engine="streaming")
+            schema = df.schema
+            tcol = text_col if text_col in schema else ("text" if "text" in schema else None)
+            meta_cols = [c for c in df.columns if c != tcol]
+            rename = {c: (f"{c}_src" if c in _RESERVED else c) for c in meta_cols}
+            for ridx, row in enumerate(df.iter_rows(named=True)):
+                if tcol is not None:
+                    text = row.get(tcol)
+                else:
+                    text = "  ".join(f"{c}: {row[c]}" for c in df.columns if row.get(c) is not None)
+                meta = {rename[c]: row.get(c) for c in meta_cols}
+                key = f"{src_node}:{row.get(id_col)}" if (id_col and id_col in schema) else f"{src_node}:{ridx}"
+                documents.append({"dataset": src_node, "doc_key": key, "content_hash": doc_content_hash(text, meta),
+                                  "text": text, "meta": meta})
+                if len(documents) > limit:
+                    # each document becomes at least one passage, so stop building before the table blows up
+                    raise ValueError(f"The index would pass {limit:,} passages. Raise 'Most passages', index fewer "
+                                     "files, or use larger chunks")
+            rows_seen += df.height
 
-    said = (f"Indexed {changes['documents']:,} document(s) into {out.height:,} passage(s): "
-            f"{changes['added']} new, {changes['changed']} changed, {changes['unchanged']} unchanged"
-            + (f", {changes['removed']} removed" if changes["removed"] else "")
-            + (f" ({changes['reused_chunks']:,} passages reused, {changes['embedded_chunks']:,} embedded)"
-               if existing is not None else "")
-            + (f"; skipped {len(skip)} unchanged dataset(s)" if skip else ""))
-    report = {"documents": changes["documents"], "chunks": out.height, "dim": dim, "embedder": EMBEDDER_ID,
-              "index": changes, "skipped_datasets": sorted(skip),
-              "finding": finding("summary", said, magnitude=float(changes["embedded_chunks"]), exact=True)}
-    return NodeResult(out.lazy(), report=report, messages=([said] + ([feed_note] if feed_note else [])))
+        # merge only the included datasets, so a skipped one is not seen as removed; then carry its passages over
+        included = {str(m["node"]) for m in upstream if m.get("node")} - skip
+        if existing is not None and "dataset" in existing.columns and any(m.get("node") for m in upstream):
+            existing_included = existing.filter(pl.col("dataset").is_in(sorted(included)))
+        else:
+            existing_included = existing
+        out, changes = merge_index(existing_included, documents, dim=dim, chunk_chars=size, overlap=overlap)
+        carried = None
+        if skip and existing is not None and "dataset" in existing.columns:
+            carried = existing.filter(pl.col("dataset").is_in(sorted(skip)))
+            if carried.height:
+                out = pl.concat([out, carried], how="diagonal_relaxed").sort("chunk_id")
+                changes["carried_chunks"] = int(carried.height)
+        if out.height > limit:
+            raise ValueError(f"The index would pass {limit:,} passages. Raise 'Most passages', index fewer files, "
+                             "or use larger chunks")
+        if target is not None:
+            save_index(out, target)
+            save_index_meta(target, embedder=EMBEDDER_ID, dim=dim)     # how the vectors were made, for provenance
+            changes["index_path"] = str(target)
+
+        said = (f"Indexed {changes['documents']:,} document(s) into {out.height:,} passage(s): "
+                f"{changes['added']} new, {changes['changed']} changed, {changes['unchanged']} unchanged"
+                + (f", {changes['removed']} removed" if changes["removed"] else "")
+                + (f" ({changes['reused_chunks']:,} passages reused, {changes['embedded_chunks']:,} embedded)"
+                   if existing is not None else "")
+                + (f"; skipped {len(skip)} unchanged dataset(s)" if skip else ""))
+        report = {"documents": changes["documents"], "chunks": out.height, "dim": dim, "embedder": EMBEDDER_ID,
+                  "index": changes, "skipped_datasets": sorted(skip),
+                  "finding": finding("summary", said, magnitude=float(changes["embedded_chunks"]), exact=True)}
+        return NodeResult(out.lazy(), report=report, messages=([said] + ([feed_note] if feed_note else [])))
 
 
 registry.register(NodeType(

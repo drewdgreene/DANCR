@@ -317,6 +317,35 @@ def test_turn_flags_a_two_digit_unbacked_figure(project):
     assert "unverified-figure" in r.flags and "77" in r.unverified
 
 
+def test_a_tool_argument_cannot_launder_a_figure(project):
+    # read_question echoes the model's own text; a figure it puts there must not count as engine-backed
+    s = _session(project, [_call("read_question", text="orders where amount above 42000"),
+                           _call("propose", reply="The total is 42000.", answer=SPEC)])
+    r = s.turn("what is the total")
+    assert "unverified-figure" in r.flags and "42000" in r.unverified
+
+
+def test_ask_choice_cannot_launder_a_figure(project):
+    s = _session(project, [_call("ask_choice", question="Is the total 42000?", options=["yes", "no"]),
+                           _say("Yes, 42000.")])
+    r = s.turn("is it high?")
+    assert "unverified-figure" in r.flags
+
+
+def test_proposal_assumption_figures_are_checked(project):
+    s = _session(project, [_call("propose", reply="Done.", answer=SPEC,
+                                 assumptions=["We used a threshold of 42000."])])
+    r = s.turn("check it")
+    assert "unverified-figure" in r.flags
+
+
+def test_the_persons_own_number_is_not_flagged(project):
+    # a figure the person wrote is not a claim the model invented
+    s = _session(project, [_say("You asked about 42000.")])
+    r = s.turn("is the total 42000?")
+    assert "unverified-figure" not in r.flags
+
+
 def test_turn_does_not_flag_a_profile_stat(project):
     # the profile itself carries the engine's own amount max; quoting it is backed
     p, ex, m = project
@@ -351,6 +380,62 @@ def test_record_keeps_unverified_and_allowed(project):
     save_thread(p, s.thread)
     t = load_thread(p).turns[-1]
     assert t.unverified and t.allowed
+
+
+def test_propose_edits_refuses_an_outside_output_path(project):
+    p, ex, m = project
+    p.add_node("export", params={"path": "out.csv"}, id="e"); p.connect("orders", "e")
+    out = ToolRunner(p, ex, m).call("propose_edits", {"edits": [
+        {"op": "set_params", "node": "e", "params": {"path": "/etc/evil.csv"}}]})
+    assert out.content.get("ok") is False and "project folder" in out.content["error"]
+
+
+def test_propose_edits_allows_an_in_folder_output_path(project):
+    p, ex, m = project
+    p.add_node("export", params={"path": "out.csv"}, id="e"); p.connect("orders", "e")
+    out = ToolRunner(p, ex, m).call("propose_edits", {"edits": [
+        {"op": "set_params", "node": "e", "params": {"path": "out2.csv"}}]})
+    assert out.content.get("ok") is True
+
+
+def test_propose_edits_allows_a_source_path_anywhere(project):
+    # a source reads, it does not write: an outside read path is not the confinement's business
+    p, ex, m = project
+    out = ToolRunner(p, ex, m).call("propose_edits", {"edits": [
+        {"op": "set_params", "node": "orders", "params": {"path": "/data/orders.csv"}}]})
+    assert out.content.get("ok") is True
+
+
+def test_get_stats_does_not_split_a_string_columns_arg(project):
+    p, ex, m = project
+    out = ToolRunner(p, ex, m).call("get_stats", {"node": "orders", "columns": "amount"})
+    assert "error" not in out.content and out.content["stats"]
+
+
+def test_propose_steps_rejects_duplicate_ids(project):
+    p, ex, m = project
+    out = ToolRunner(p, ex, m).call("propose", {"reply": "x", "steps": [
+        {"type": "sort", "id": "s1", "after": "orders"}, {"type": "sort", "id": "s1", "after": "orders"}]})
+    assert out.content.get("ok") is False and "already exists" in out.content["error"]
+
+
+def test_propose_steps_rejects_an_id_that_already_exists(project):
+    p, ex, m = project
+    out = ToolRunner(p, ex, m).call("propose", {"reply": "x", "steps": [
+        {"type": "sort", "id": "orders", "after": "orders"}]})
+    assert out.content.get("ok") is False and "already exists" in out.content["error"]
+
+
+def test_loading_a_thread_caps_oversized_fields():
+    from dancr.core.assistant.store import Thread
+    big = {"turns": [{"role": "assistant", "text": "x" * 9000,
+                      "proposal": {"kind": "answer", "blob": "y" * 30000},
+                      "assumptions": [str(i) for i in range(100)],
+                      "allowed": [str(i) for i in range(5000)]}]}
+    turn = Thread.from_dict(big).turns[0]
+    assert len(turn.text) == 4000
+    assert turn.proposal == {"kind": "answer"}        # an oversized proposal is dropped to its kind
+    assert len(turn.assumptions) == 10 and len(turn.allowed) == 800
 
 
 def test_propose_edits_rejects_a_missing_column(project):

@@ -6,6 +6,7 @@ from ._safety import source_files
 
 import json
 import os
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +33,24 @@ def _dataset_meta(p: Pipeline) -> dict[str, Any]:
     older DANCR opening the project preserves it (unknown top-level keys are dropped, unknown meta keys are not)."""
     meta = p.meta.get("dataset") if isinstance(getattr(p, "meta", None), dict) else None
     return dict(meta) if isinstance(meta, dict) else {}
+
+
+def _restricted_nodes(p: Pipeline, nodes: Any) -> set[str]:
+    """The table nodes whose data is confidential or restricted: the project's declared level, or a 'Label
+    sensitivity' step's own level. They are withheld from the context/FAIR export unless ``allow_restricted``."""
+    from ..core.graph import SENSITIVITY_LEVELS, is_restricted
+    project_level = str((getattr(p, "meta", None) or {}).get("sensitivity") or "public").lower()
+    out: set[str] = set()
+    for nid in nodes:
+        node = p.nodes.get(nid)
+        level = project_level
+        if node is not None and node.type == "label_sensitivity":
+            own = str(node.params.get("level") or "").lower()
+            if own in SENSITIVITY_LEVELS:
+                level = own
+        if is_restricted(level):
+            out.add(nid)
+    return out
 
 
 def build_context(p: Pipeline, executor: Executor | None = None, *, nodes: list[str] | None = None,
@@ -61,12 +80,16 @@ def build_context(p: Pipeline, executor: Executor | None = None, *, nodes: list[
             held[nid] = ex.safe_hash(nid, memo)
         except Exception:  # noqa: BLE001 - a step whose hash cannot be worked out simply holds nothing
             held[nid] = None
-    ex.hold(held)                       # before looking for results, so a cache sweep elsewhere keeps them
+    lease = ex.new_lease()
+    ex.hold(held, lease)                # before looking for results, so a cache sweep elsewhere keeps them
     try:
+        hidden = set() if allow_restricted else _restricted_nodes(p, model.tables)
         prof = project_profile(p, model, node=node)
         by_node = {t["node"]: t for t in prof["tables"]}
         documents: list[dict[str, Any]] = []
         for nid, table in model.tables.items():
+            if nid in hidden:
+                continue
             entry = by_node.get(nid)
             if entry is None:
                 continue
@@ -105,8 +128,8 @@ def build_context(p: Pipeline, executor: Executor | None = None, *, nodes: list[
             "project": {"name": clean(getattr(p, "name", "") or "Untitled"),
                         "file": p.path.name if p.path else None},
             "dataset": _dataset_meta(p),
-            "tables": prof["tables"],
-            "relations": prof["relations"],
+            "tables": [t for t in prof["tables"] if t.get("node") not in hidden],
+            "relations": [r for r in prof["relations"] if not (set(r.get("tables", [])) & hidden)],
             "inputs": prof.get("inputs", []),
             "skipped": prof.get("tables_that_could_not_be_read", {}),
             "documents": documents,
@@ -129,7 +152,7 @@ def build_context(p: Pipeline, executor: Executor | None = None, *, nodes: list[
                     table["graph"] = slice_
         return json_safe(out)
     finally:
-        ex.release()
+        ex.release(lease)               # only this call's lease, never a hold the caller placed
 
 
 def export_fair(p: Pipeline, executor: Executor | None = None, *, fmt: str = "schema.org",
@@ -225,7 +248,7 @@ def package_rocrate(p: Pipeline, executor: Executor | None = None, *, out: Path 
     if zip:
         if destination.exists() and not overwrite:
             raise ValueError(f"{destination} already exists. Choose another name, or pass overwrite")
-        tmp = destination.with_name(f".{destination.name}.{os.getpid()}.tmp.zip")
+        tmp = destination.with_name(f".{destination.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp.zip")
         try:
             with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as z:
                 for name, text in payload.items():

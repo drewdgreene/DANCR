@@ -172,6 +172,10 @@ class FakeProvider(Provider):
         return self.next_reply(messages, tools)
 
 
+MAX_ATTEMPTS = 3                # a transient network error or a 5xx is retried this many times
+RETRY_DELAY = 0.4               # seconds before the first retry; grows linearly
+
+
 class OpenAIProvider(Provider):
     """Any OpenAI-style ``/v1/chat/completions`` endpoint, over httpx (included)."""
     name = "openai-compatible"
@@ -179,17 +183,34 @@ class OpenAIProvider(Provider):
     def __init__(self, settings: ModelSettings) -> None:
         super().__init__()
         self.settings = settings
+        self._active: Any = None                  # the client of a call in flight, so cancel() can close it
+        self._active_lock = threading.Lock()
 
-    def _client(self):
+    def cancel(self) -> None:
+        """Ask a call to stop; closing the in-flight client aborts a request already waiting on the socket."""
+        super().cancel()
+        with self._active_lock:
+            client = self._active
+        if client is not None:
+            try:
+                client.close()
+            except Exception:  # noqa: BLE001 - closing is best-effort
+                pass
+
+    def _client(self, settings: ModelSettings):
         try:
             import httpx
         except ImportError:
             raise ProviderError("Talking to a model needs the 'httpx' package, which is missing from this build. "
                                 "Reinstall DANCR (or, in a source checkout, run 'uv sync').") from None
-        return httpx.Client(timeout=self.settings.timeout)
+        return httpx.Client(timeout=settings.timeout)          # the call's settings, not the constructor's
 
     def chat(self, messages: Sequence[Message], tools: Sequence[ToolSpec], settings: ModelSettings) -> ChatResult:
+        import time
+
         import httpx
+        if self.cancelled:
+            raise ProviderError("stopped")
         body: dict[str, Any] = {
             "model": settings.model,
             "messages": [m.to_wire() for m in messages],
@@ -202,13 +223,38 @@ class OpenAIProvider(Provider):
             body["tool_choice"] = "auto"
         url = settings.base_url.rstrip("/") + "/chat/completions"
         headers = {"Authorization": f"Bearer {settings.api_key}", "Content-Type": "application/json"}
+        client = self._client(settings)
+        with self._active_lock:
+            self._active = client
         try:
-            with self._client() as client:
-                resp = client.post(url, json=body, headers=headers)
-        except httpx.TimeoutException as e:
-            raise ProviderError("The model took too long to answer. Try again, or raise the timeout in settings") from e
-        except httpx.HTTPError as e:
-            raise ProviderError(f"Could not reach the model at {settings.base_url}: {e}") from e
+            resp = None
+            for attempt in range(MAX_ATTEMPTS):
+                if self.cancelled:
+                    raise ProviderError("stopped")
+                try:
+                    resp = client.post(url, json=body, headers=headers)
+                except (httpx.HTTPError, RuntimeError) as e:     # a closed client raises RuntimeError
+                    if self.cancelled:
+                        raise ProviderError("stopped") from e
+                    if attempt < MAX_ATTEMPTS - 1:
+                        time.sleep(RETRY_DELAY * (attempt + 1))
+                        continue
+                    if isinstance(e, httpx.TimeoutException):
+                        raise ProviderError("The model took too long to answer. Try again, or raise the timeout in "
+                                            "settings") from e
+                    raise ProviderError(f"Could not reach the model at {settings.base_url}: {e}") from e
+                if resp.status_code >= 500 and attempt < MAX_ATTEMPTS - 1:
+                    time.sleep(RETRY_DELAY * (attempt + 1))      # a transient server error: try again
+                    continue
+                break
+        finally:
+            with self._active_lock:
+                self._active = None
+            try:
+                client.close()
+            except Exception:  # noqa: BLE001
+                pass
+        assert resp is not None
         if resp.status_code in (401, 403):
             raise ProviderError("The model rejected the key. Check the key in the Assistant settings")
         if resp.status_code == 402:

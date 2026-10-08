@@ -33,6 +33,18 @@ class ToolOutcome:
     content: dict[str, Any]
     terminal: bool = False
     proposal: dict[str, Any] | None = None
+    # Text that may back a figure in the reply: the engine-computed part of the result. ``None`` means the whole
+    # content; ``""`` means the result computes no data (a parser, a proposal) and must not back any number, so a
+    # model cannot launder a made-up figure by echoing it through a tool argument.
+    evidence: str | None = None
+
+
+def _str_list(value: Any) -> list[str]:
+    """A model-supplied list of strings, tolerating only an actual list (a bare string is not iterated letter by
+    letter into a confusing column list)."""
+    if not isinstance(value, (list, tuple)):
+        return []
+    return [str(v) for v in value if str(v).strip()]
 
 
 def tool_result_text(name: str, content: dict[str, Any]) -> str:
@@ -41,7 +53,8 @@ def tool_result_text(name: str, content: dict[str, Any]) -> str:
     if len(text) > MAX_TOOL_CHARS:
         text = text[:MAX_TOOL_CHARS] + "…"
     from .context import data_block
-    return data_block(f'tool_result name="{name}"', text)
+    safe_name = "".join(ch for ch in str(name) if ch.isalnum() or ch in "_-") or "tool"
+    return data_block(f'tool_result name="{safe_name}"', text)
 
 
 @dataclass
@@ -122,6 +135,23 @@ class ToolRunner:
             raise ValueError(f"No table called {node!r}. Tables: {list(self.model.tables)}")
         return t
 
+    def _write_problem(self, node_type: Any, params: dict[str, Any]) -> str | None:
+        """Why a proposed step's output path is not allowed (outside the project folder, or over a source file),
+        or None. Only steps that write files are checked; a source's read path may be anywhere."""
+        if getattr(node_type, "kind", None) != "sink":
+            return None
+        from pathlib import Path as _Path
+        from ...headless import _safety
+        for prm in node_type.params:
+            if prm.kind in ("path", "dir") and str(params.get(prm.name) or "").strip():
+                target = _Path(str(params[prm.name]).strip()).expanduser()
+                if not target.is_absolute():
+                    target = self.pipe.directory / target
+                why = _safety.unsafe_write(self.pipe, target, self.pipe.directory)
+                if why:
+                    return why
+        return None
+
     # ---------------------------------------------------------------- read tools
     def _t_list_tables(self, args: dict[str, Any]) -> ToolOutcome:
         out = []
@@ -172,7 +202,7 @@ class ToolRunner:
         self._require_table(node)                              # a clear error before touching the executor
         from ...views.stats import column_summary
         from ...headless import result_frame
-        columns = [str(c) for c in (args.get("columns") or [])] or None
+        columns = _str_list(args.get("columns")) or None
         with result_frame(self.pipe, self.executor, node, run=self.run) as lf:
             df = column_summary(lf, columns)
         return ToolOutcome({"node": node, "stats": json_safe(df.to_dicts())})
@@ -184,7 +214,7 @@ class ToolRunner:
         node = str(args.get("node") or "")
         self._require_table(node)
         rows = max(1, min(int(args.get("rows") or 5), 20))
-        cols = [str(c) for c in (args.get("columns") or [])] or None
+        cols = _str_list(args.get("columns")) or None
         from ...headless import result_frame, select_columns
         with result_frame(self.pipe, self.executor, node, run=self.run) as lf:
             df = select_columns(lf, cols).head(rows).collect(engine="streaming")
@@ -194,7 +224,7 @@ class ToolRunner:
     def _t_read_question(self, args: dict[str, Any]) -> ToolOutcome:
         from ..ask import ask
         asked = ask(self.model, str(args.get("text") or ""))
-        return ToolOutcome(json_safe(asked.to_dict()))
+        return ToolOutcome(json_safe(asked.to_dict()), evidence="")   # a parse, not a data fact
 
     def _t_suggest_answers(self, args: dict[str, Any]) -> ToolOutcome:
         from ..recipes import suggest
@@ -252,7 +282,8 @@ class ToolRunner:
             return ToolOutcome({"ok": False, "error": "ask_choice needs a question and at least two options"})
         reply = clean(args.get("reply") or question, 1000)
         return ToolOutcome({"ok": True, "asked": question}, terminal=True,
-                           proposal={"kind": "choice", "question": question, "options": options, "reply": reply})
+                           proposal={"kind": "choice", "question": question, "options": options, "reply": reply},
+                           evidence="")   # the question and options are the model's own words, never evidence
 
     def _t_propose(self, args: dict[str, Any]) -> ToolOutcome:
         reply = clean(args.get("reply") or "", 2000)
@@ -271,16 +302,18 @@ class ToolRunner:
             proposal = {"kind": "answer", "spec": json_safe(p.config), "title": p.title, "view": p.view,
                         "reply": reply, "assumptions": assumptions, "next_questions": nexts,
                         "why": p.why, "steps": built}
-            return ToolOutcome({"ok": True, "will_build": built, "title": p.title}, terminal=True, proposal=proposal)
+            return ToolOutcome({"ok": True, "will_build": built, "title": p.title}, terminal=True, proposal=proposal,
+                               evidence="")   # the spec is the model's, so it backs no figure
         if isinstance(steps, list) and steps:
             checked = self._validate_steps(steps)
             if isinstance(checked, dict):                      # an error to hand back
                 return ToolOutcome({"ok": False, **checked})
             proposal = {"kind": "steps", "steps": checked, "reply": reply, "assumptions": assumptions, "next_questions": nexts}
             return ToolOutcome({"ok": True, "will_build": [{"type": s["type"], "title": s["title"]} for s in checked]},
-                               terminal=True, proposal=proposal)
+                               terminal=True, proposal=proposal, evidence="")
         return ToolOutcome({"ok": True, "text_only": True}, terminal=True,
-                           proposal={"kind": "text", "reply": reply, "assumptions": assumptions, "next_questions": nexts})
+                           proposal={"kind": "text", "reply": reply, "assumptions": assumptions, "next_questions": nexts},
+                           evidence="")
 
     def _t_propose_edits(self, args: dict[str, Any]) -> ToolOutcome:
         reply = clean(args.get("reply") or "", 2000)
@@ -294,7 +327,8 @@ class ToolRunner:
         nexts = [clean(q, 200) for q in (args.get("next_questions") or []) if str(q).strip()][:5]
         proposal = {"kind": "edits", "edits": checked, "reply": reply, "assumptions": assumptions,
                     "next_questions": nexts, "title": "Changes to the project"}
-        return ToolOutcome({"ok": True, "will_change": [e["summary"] for e in checked]}, terminal=True, proposal=proposal)
+        return ToolOutcome({"ok": True, "will_change": [e["summary"] for e in checked]}, terminal=True, proposal=proposal,
+                           evidence="")   # the summaries echo the model's own edit values
 
     def _validate_edits(self, edits: list[Any]) -> list[dict[str, Any]] | dict[str, Any]:
         """Check a batch of pipeline edits against the project, without changing anything."""
@@ -330,6 +364,9 @@ class ToolRunner:
                         merged[k] = nt.param(k).coerce(v)
                     except ValueError as ex:
                         return {"error": f"Edit {i} ({nid}.{k}): {ex}"}
+                why = self._write_problem(nt, merged)
+                if why:
+                    return {"error": f"Edit {i} ({nid}): {why}"}
                 out.append({"op": "set_params", "node": nid, "params": changes,
                             "summary": f"{self.pipe.nodes[nid].title}: " + ", ".join(f"{k}={v}" for k, v in changes.items())})
             elif op == "set_input":
@@ -376,14 +413,21 @@ class ToolRunner:
                 params = nt.normalize_params(raw.get("params") or {}, strict=True)
             except ValueError as e:
                 return {"error": f"Step {i} ({tkey}): {e}"}
+            why = self._write_problem(nt, params)
+            if why:
+                return {"error": f"Step {i} ({tkey}): {why}"}
+            new_id = str(raw.get("id") or f"assistant_{i + 1}")
+            if new_id in known or any(s["id"] == new_id for s in out):
+                return {"error": f"Step {i}: id {new_id!r} already exists"}
             after = raw.get("after")
             if after and after not in known and not any(s.get("id") == after for s in out):
                 return {"error": f"Step {i} ({tkey}) follows {after!r}, which is neither in the project nor an earlier proposed step"}
             out.append({"type": tkey, "title": clean(raw.get("title") or nt.label, 120), "params": params,
-                        "after": str(after) if after else None, "port": raw.get("port"), "id": raw.get("id") or f"assistant_{i + 1}"})
+                        "after": str(after) if after else None, "port": raw.get("port"), "id": new_id})
         return out
 
 
 def _clean_error(e: BaseException) -> str:
-    msg = str(e).strip().strip("'\"")
+    from ..secrets import redact
+    msg = redact(str(e)).strip().strip("'\"")        # a connector error may embed a DSN or URL with a secret
     return msg[:600] or type(e).__name__

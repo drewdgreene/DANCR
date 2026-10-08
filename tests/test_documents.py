@@ -83,6 +83,16 @@ def test_output_tables_writes_csv(tmp_path):
     assert any(Path(str(f)).name == "table_001.csv" for f in st.files)
 
 
+def test_out_dir_cannot_escape_the_project_folder(tmp_path):
+    (tmp_path / "middle_json.json").write_text(json.dumps(MIDDLE))
+    st, _ex = run(tmp_path, {"path": "middle_json.json", "what": "tables", "engine": "output",
+                             "out_dir": "../escape"})
+    assert st.status == "failed" and "relative path" in (st.error or "")
+    st2, _ex = run(tmp_path, {"path": "middle_json.json", "what": "tables", "engine": "output",
+                              "out_dir": str(tmp_path / "abs")})
+    assert st2.status == "failed" and "relative path" in (st2.error or "")
+
+
 def test_output_include_filter(tmp_path):
     (tmp_path / "middle_json.json").write_text(json.dumps(MIDDLE))
     _, ex = run(tmp_path, {"path": "middle_json.json", "what": "blocks", "engine": "output",

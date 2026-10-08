@@ -105,6 +105,18 @@ def test_gateway_policy_denies_and_allows_and_audits(tmp_path):
     assert {r["principal"] for r in audit_records(tmp_path)["records"]} == {"alice", "bob"}
 
 
+def test_gateway_scopes_a_principal_to_named_projects(tmp_path):
+    save_policy(tmp_path, {"principals": {"alice": {"tokens": ["t"], "projects": ["a.json"]}}})
+    port = free_port()
+    with running(build_app(tmp_path, port=port), "127.0.0.1", port) as base:
+        # a repository-wide tool names no project: a scoped principal must not reach it
+        denied = call(base, token="t", tool="graph_build", args={})
+        assert denied.status_code == 403
+        # a tool that names a file the principal may touch passes the gate
+        allowed = call(base, token="t", tool="inspect_file", args={"file_path": "a.json"})
+        assert allowed.status_code not in (401, 403)
+
+
 def test_gateway_queues_an_approval_for_a_consequential_action(tmp_path):
     save_policy(tmp_path, POLICY)
     port = free_port()

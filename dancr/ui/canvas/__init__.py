@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (QGraphicsView, QGraphicsScene, QGraphicsObject, Q
 
 from ...core import registry, PipelineError
 from ...core.model import Edge, Node, Note, Answer
-from ...core.executor import Executor
+from ...core.executor import Executor, NodeState
 from ...core.lineage import build_lineage, proof_card
 from ...core.nodes.load import CSV_EXT, EXCEL_EXT, PARQUET_EXT
 from ..document import Document
@@ -37,6 +37,7 @@ def _show_text(parent, title: str, text: str) -> None:
     bb = QDialogButtonBox(QDialogButtonBox.Close); bb.rejected.connect(dlg.reject); bb.accepted.connect(dlg.accept)
     lay.addWidget(bb)
     dlg.exec()
+    dlg.deleteLater()
 
 
 class CanvasScene(QGraphicsScene):
@@ -216,7 +217,9 @@ class CanvasScene(QGraphicsScene):
         self._ghost_items = []
 
     def _apply_state(self, nid: str) -> None:
-        st = self.doc.state(nid)
+        # cached_state only: the rebuild runs on the GUI thread, and doc.state() may stat/sample a source's file
+        # on disk. The background poll fills the cache and emits statesChanged, which refreshes these again.
+        st = self.doc.cached_state(nid) or NodeState(nid, status="idle")
         finding = ((st.report or {}).get("finding") or {}).get("statement") or ""
         self.nodes[nid].set_state(st.status, st.rows, st.error, finding)
 

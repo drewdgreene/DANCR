@@ -113,6 +113,7 @@ class MapView(QWidget):
         listen(self, doc.reloaded, self.clear)
         listen(self, doc.edgeAdded, lambda e: self.refresh() if e.target == self.nid else None)
         listen(self, doc.edgeRemoved, lambda e: self.refresh() if e.target == self.nid else None)
+        listen(self, doc.nodeRemoved, lambda nid: self.set_node(None) if nid == self.nid else None)
 
     # ------------------------------------------------------------ node binding
     def set_node(self, nid: str | None) -> None:

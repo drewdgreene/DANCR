@@ -112,19 +112,24 @@ def main(argv: list[str] | None = None) -> int:
     if theme is not None:
         theme.changed.connect(lambda: _rebuild_for_theme(app, win_ref))
     install_signal_logging(lambda: QTimer.singleShot(0, win_ref[0].terminate) if win_ref else app.quit())
-    # matplotlib's first import can build a font cache for many seconds; do it off the GUI thread now
-    # (the figure API only: pyplot keeps global state and picks a GUI backend)
-    threading.Thread(target=lambda: (__import__("matplotlib.font_manager"), __import__("matplotlib.figure")),
-                     name="mpl-warmup", daemon=True).start()
-    from ..core.executor import sweep_untitled_caches
-    threading.Thread(target=sweep_untitled_caches, name="cache-sweep", daemon=True).start()
+    # Import the whole app graph on the main thread BEFORE any background import. Two threads importing the same
+    # python module can deadlock the import system (a module-lock cycle), and matplotlib's warm-up below also
+    # imports stdlib modules the app does (for example 'html', via matplotlib.font_manager) — the race this
+    # ordering avoids.
     from .mainwindow import MainWindow
+    from ..core.executor import sweep_untitled_caches
     win = MainWindow()
     win_ref.append(win)
     files = [a for a in argv[1:] if not a.startswith("-")]
     if files:
         win.open_path(files[0])
     win.show()
+    # Now every main-thread import is done, do the slow background work off the GUI thread: sweep dead caches,
+    # and warm matplotlib up (its first import can build a font cache for many seconds; the figure API only, since
+    # pyplot keeps global state and picks a GUI backend)
+    threading.Thread(target=sweep_untitled_caches, name="cache-sweep", daemon=True).start()
+    threading.Thread(target=lambda: (__import__("matplotlib.font_manager"), __import__("matplotlib.figure")),
+                     name="mpl-warmup", daemon=True).start()
     code = app.exec()
     breadcrumb(f"exiting normally with code {code}")
     logging.shutdown()

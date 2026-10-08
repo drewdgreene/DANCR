@@ -49,14 +49,15 @@ class SourceChip(QFrame):
         node = self.doc.pipeline.nodes.get(self.nid)
         if node is None:
             return
-        st = self.doc.state(self.nid)
-        if st.status == "done" and st.rows is not None:
+        st = self.doc.cached_state(self.nid)          # never doc.state(): it may read the source file on the GUI thread
+        status = st.status if st is not None else "idle"
+        if st is not None and st.status == "done" and st.rows is not None:
             self.sub.setText(f"{st.rows:,} rows" + (f" × {len(st.columns)}" if st.columns else ""))
             self.sub.setStyleSheet(f"color: {T.muted};")
         else:
-            state = {"idle": "not read yet", "stale": "changed", "running": "reading…", "failed": "failed"}.get(st.status, st.status)
+            state = {"idle": "not read yet", "stale": "changed", "running": "reading…", "failed": "failed"}.get(status, status)
             self.sub.setText(state)
-            self.sub.setStyleSheet(f"color: {T.danger if st.status == 'failed' else T.faint};")
+            self.sub.setStyleSheet(f"color: {T.danger if status == 'failed' else T.faint};")
 
     def mouseReleaseEvent(self, e) -> None:  # noqa: N802
         if e.button() == Qt.LeftButton and self.rect().contains(e.position().toPoint()):

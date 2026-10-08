@@ -47,6 +47,38 @@ class WindowHelp:
         from .helpdialog import HelpDialog
         HelpDialog(self, section).show()
 
+    def show_onboarding(self) -> None:
+        """The getting-started tour. Modeless, so it never blocks the window."""
+        existing = getattr(self, "_onboarding", None)
+        if existing is not None and existing.isVisible():
+            existing.raise_(); existing.activateWindow(); return
+        from .onboarding import OnboardingDialog
+        dlg = OnboardingDialog(self, on_assistant=self.setup_assistant, on_agents=self.setup_agents)
+        dlg.destroyed.connect(lambda: self.start.set_first_run(False))
+        self._onboarding = dlg
+        dlg.show()
+
+    def _maybe_first_run(self) -> None:
+        """On the very first launch, show the banner and open the tour once. Never on a project already open."""
+        if self._disposed or not self._on_start_page():
+            return
+        first = not bool(self.settings.value("onboarding/seen", False, type=bool))
+        self.start.set_first_run(first)
+        if first:
+            self.show_onboarding()
+
+    def setup_assistant(self) -> None:
+        from .setup import AssistantSetupDialog
+        AssistantSetupDialog(self, on_saved=lambda: self.assistant._refresh_dot()).exec()
+
+    def setup_agents(self) -> None:
+        from .setup import AgentSetupDialog
+        AgentSetupDialog(self).exec()
+
+    def check_build(self) -> None:
+        from .setup import CapabilitiesDialog
+        CapabilitiesDialog(self).exec()
+
     def show_log(self) -> None:
         from ..logsetup import log_path
         lp = log_path()

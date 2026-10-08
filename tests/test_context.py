@@ -64,6 +64,30 @@ def test_build_context_has_schema_relations_stats_and_cards(shop):
     assert [d["node"] for d in ctx["documents"]] == ["customers", "orders"]
 
 
+def test_restricted_datasets_are_withheld_from_the_context(shop):
+    # a Label-sensitivity step marks its output restricted: its schema, stats and sample rows stay out of the
+    # export unless allow_restricted is passed
+    shop.add_node("label_sensitivity", title="Secrets", params={"level": "restricted"}, id="secret")
+    shop.connect("orders", "secret", "in")
+    ex = Executor(shop)
+    nodes = ["customers", "secret"]
+    ctx = hl.build_context(shop, ex, nodes=nodes, stats=True, samples=True)
+    assert "secret" not in {t["node"] for t in ctx["tables"]}
+    assert "customers" in {t["node"] for t in ctx["tables"]}
+    assert all(d["node"] != "secret" for d in ctx["documents"])
+    assert all("secret" not in r.get("tables", []) for r in ctx["relations"])
+    allowed = hl.build_context(shop, ex, nodes=nodes, stats=True, samples=True, allow_restricted=True)
+    assert "secret" in {t["node"] for t in allowed["tables"]}
+
+
+def test_project_level_sensitivity_hides_every_dataset(shop):
+    shop.meta["sensitivity"] = "confidential"
+    ctx = hl.build_context(shop, stats=True)
+    assert ctx["tables"] == [] and ctx["documents"] == []
+    allowed = hl.build_context(shop, allow_restricted=True)
+    assert {t["node"] for t in allowed["tables"]} == {"customers", "orders"}
+
+
 def test_build_context_without_stats_or_samples_does_not_run(tmp_path):
     """With neither stats nor samples, nothing is run: a source that never ran is described from its first rows."""
     pl.DataFrame({"a": [1, 2, 3]}).write_csv(tmp_path / "s.csv")

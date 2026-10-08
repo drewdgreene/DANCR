@@ -36,18 +36,17 @@ def _load_netcdf(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[s
     except Exception as e:  # noqa: BLE001 - report the file, not a driver trace
         raise ValueError(f"Cannot read {path.name}: {e}") from e
     name = str(params.get("variable") or "").strip()
-    if not name:
-        variables = list(ds.data_vars)
-        if not variables:
-            raise ValueError(f"{path.name} has no data variables")
-        name = variables[0]
-    if name not in ds:
-        raise ValueError(f"{path.name} has no variable {name!r}. Variables: {', '.join(ds.data_vars) or 'none'}")
-    da = ds[name]
     try:
-        df = da.to_dataframe(name=name).reset_index()
+        if not name:
+            variables = list(ds.data_vars)
+            if not variables:
+                raise ValueError(f"{path.name} has no data variables")
+            name = variables[0]
+        if name not in ds:
+            raise ValueError(f"{path.name} has no variable {name!r}. Variables: {', '.join(ds.data_vars) or 'none'}")
+        df = ds[name].to_dataframe(name=name).reset_index()
     finally:
-        ds.close()
+        ds.close()                  # close even when the variable name is wrong, so the file handle is not leaked
     out = pl.from_pandas(df)
     return NodeResult(out.lazy(), messages=[f"Read '{name}' from {path.name} ({out.height:,} rows × {out.width} columns)"],
                       report={"variable": name, "rows": out.height})

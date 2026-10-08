@@ -96,19 +96,23 @@ def enforce(root: Path | str, principal: str, tool: str, *, category: str | None
             result_hash: str | None = None) -> dict[str, Any]:
     """Decide an action and record it in the audit log. ``allow`` also counts against the principal's quota;
     ``approve`` means the caller must obtain an approval first (see :func:`request_approval`)."""
-    policy = load_policy(root)
-    if policy is None:
-        dec = Decision("allow", category or category_for(tool), principal, tool, "no policy configured")
-    else:
-        dec = evaluate(policy, principal, tool, category=category, project=project)
-        if dec.verdict == "allow":
+    from . import repo_lock
+    # Read the quota, decide, count and audit under one lock: otherwise two calls both read used=limit-1, both
+    # pass the check, and both count, overspending the quota.
+    with repo_lock(root):
+        policy = load_policy(root)
+        if policy is None:
+            dec = Decision("allow", category or category_for(tool), principal, tool, "no policy configured")
+        else:
+            dec = evaluate(policy, principal, tool, category=category, project=project)
+            # Quota applies to every verdict, so an action needing approval cannot be an unlimited bypass either.
             over = _quota_over(policy, quota_used(root, principal, dec.category), principal, dec.category)
             if over:
                 dec = Decision("deny", dec.category, principal, tool, over)
-    audit(root, {"principal": principal, "tool": tool, "category": dec.category, "verdict": dec.verdict,
-                 "project": project, "args": redact_args(args), "result_hash": result_hash})
-    if dec.verdict == "allow":
-        _quota_bump(root, principal, dec.category)
+        audit(root, {"principal": principal, "tool": tool, "category": dec.category, "verdict": dec.verdict,
+                     "project": project, "args": redact_args(args), "result_hash": result_hash})
+        if dec.verdict == "allow":
+            _quota_bump(root, principal, dec.category)
     return dec.to_dict()
 
 
@@ -161,8 +165,11 @@ def decide_approval(root: Path | str, approval_id: str, approve: bool, *, by: st
     from . import repo_lock
     with repo_lock(root):
         current = list_approvals(root)["approvals"]
-        if not any(a["id"] == approval_id for a in current):
+        item = next((a for a in current if a["id"] == approval_id), None)
+        if item is None:
             raise ValueError(f"No approval {approval_id!r}")
+        if item.get("status") != "pending":
+            raise ValueError(f"Approval {approval_id!r} was already {item.get('status')}")
         rec = {"id": approval_id, "event": "decided", "status": "approved" if approve else "denied", "by": by}
         append_jsonl(_approvals_file(root), rec)
     audit(root, {"principal": by or "approver", "tool": "decide_approval", "category": "gateway_admin",
@@ -216,6 +223,8 @@ def authorize(root: Path | str, principal: str, tool: str, *, category: str | No
     if dec["verdict"] != "approve":
         return dec
     if consume_approval(root, principal, tool, project=project):
+        # an approved action still counts against the principal's quota, or approvals would be an unlimited bypass
+        _quota_bump(root, principal, dec["category"])
         audit(root, {"principal": principal, "tool": tool, "category": dec["category"],
                      "verdict": "allowed-after-approval", "project": project})
         return {**dec, "verdict": "allow", "reason": "approved"}

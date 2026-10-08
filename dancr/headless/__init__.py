@@ -439,7 +439,10 @@ def result_frame(p: Pipeline, ex: Executor, node_id: str, run: bool) -> Iterator
     # step it depends on, so a cache sweep elsewhere cannot delete that result while it is read
     held = {node_id} | (p.upstream_closure(node_id) if not registry_get(p, node_id).materialize else set())
     memo: dict[str, str] = {}
-    ex.hold({n: ex.safe_hash(n, memo) for n in held})           # before looking for the result, as Executor.gc expects
+    # its own lease, so releasing here never drops a hold another reader (or an outer result_frame) placed on the
+    # same executor; recorded before looking for the result, as Executor.gc expects
+    lease = ex.new_lease()
+    ex.hold({n: ex.safe_hash(n, memo) for n in held}, lease)
     try:
         st = ex.state(node_id)
         if st.status != "done":
@@ -450,7 +453,7 @@ def result_frame(p: Pipeline, ex: Executor, node_id: str, run: bool) -> Iterator
                 raise StepFailed(f"{node_id} failed: {res[node_id].error}")
         yield ex.frame(node_id)
     finally:
-        ex.release()
+        ex.release(lease)
 
 
 def select_columns(lf: pl.LazyFrame, columns: list[str] | None) -> pl.LazyFrame:
@@ -511,39 +514,6 @@ class ProjectBusy(PipelineError):
     """Another program is changing the project file, or changed it while this was being done."""
 
 
-def _try_lock(fd: int) -> bool:
-    """True when the lock is ours, False when another holder has it. A folder that cannot lock at all (some
-    network drives) is an error of its own, not a wait that ends in "being changed by another program"."""
-    import errno
-    busy = (errno.EAGAIN, errno.EWOULDBLOCK, errno.EACCES, getattr(errno, "EDEADLOCK", errno.EDEADLK))
-    try:
-        if sys.platform == "win32":
-            import msvcrt
-            os.lseek(fd, 0, os.SEEK_SET)
-            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
-        else:
-            import fcntl
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError as e:
-        # Windows msvcrt.locking reports a held lock as winerror 33 (ERROR_LOCK_VIOLATION), which some builds
-        # surface without a matching errno; treat it as busy rather than an unlockable folder.
-        if e.errno in busy or getattr(e, "winerror", None) == 33:
-            return False
-        raise PipelineError(f"The project's folder can't lock files ({e.strerror or e}), so two programs could save over each other "
-                            "there. Move the project to a local folder.") from e
-    return True
-
-
-def _unlock(fd: int) -> None:
-    if sys.platform == "win32":
-        import msvcrt
-        os.lseek(fd, 0, os.SEEK_SET)
-        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
-    else:
-        import fcntl
-        fcntl.flock(fd, fcntl.LOCK_UN)
-
-
 def lock_file(path: Path) -> Path:
     path = Path(path).expanduser().resolve()
     return path.parent / ".dancr" / "locks" / f"{path.name}.lock"
@@ -574,20 +544,15 @@ def project_lock(path: Path | str, wait: float | None = None) -> Iterator[None]:
 @contextmanager
 def _lock_path(lock: Path, wait: float | None, message: str) -> Iterator[None]:
     """The raw operating-system lock on ``lock``, waiting up to ``wait`` seconds. ``message`` shapes the error."""
-    lock.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o644)
+    from ..core.locking import LockUnavailable, lock_path
     try:
-        deadline = time.monotonic() + (LOCK_WAIT if wait is None else wait)
-        while not _try_lock(fd):
-            if time.monotonic() >= deadline:
-                raise ProjectBusy(f"{message} (the DANCR window, the command line or an agent). Try again in a moment.")
-            time.sleep(0.05)
-        try:
+        with lock_path(lock, LOCK_WAIT if wait is None else wait, message):
             yield
-        finally:
-            _unlock(fd)
-    finally:
-        os.close(fd)
+    except TimeoutError:                 # the wait was overrun: report it as a busy project, not a bare timeout
+        raise ProjectBusy(f"{message} (the DANCR window, the command line or an agent). Try again in a moment.") from None
+    except LockUnavailable as e:
+        raise PipelineError(f"The project's folder can't lock files ({e}), so two programs could save over each "
+                            "other there. Move the project to a local folder.") from e
 
 
 @contextmanager
@@ -713,7 +678,7 @@ def read_document(path: str | Path, *, what: str = "blocks", tier: str | None = 
               output_root=Path(output_root).resolve() if output_root else fp.parent)
     res = registry.get("load_document").apply(ctx, {}, params)
     lf = getattr(res, "frame", res)
-    df = lf.head(max(1, int(rows))).collect(engine="streaming")
+    df = lf.head(max(1, min(int(rows), 5000))).collect(engine="streaming")     # cap, like inspect_file/get_sample
     return {"columns": [{"name": k, "dtype": str(v)} for k, v in df.schema.items()],
             "rows": json.loads(df.write_json()), "messages": list(getattr(res, "messages", []) or []),
             "report": getattr(res, "report", {}) or {}}

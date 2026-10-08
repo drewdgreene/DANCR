@@ -7,6 +7,7 @@ built. It never holds raw model prompts or the project's data.
 """
 from __future__ import annotations
 
+import json
 import time
 from dataclasses import asdict, dataclass, field
 from typing import Any
@@ -17,6 +18,7 @@ META_KEY = "assistant"
 FORMAT = 1
 MAX_TURNS = 40
 MAX_TEXT = 4000
+MAX_PROPOSAL_JSON = 20000       # an oversized proposal (a hand-edited file) is dropped rather than loaded whole
 
 
 @dataclass
@@ -76,6 +78,18 @@ class Thread:
                 try:
                     turn = Turn.from_dict(t)
                     turn.text = str(turn.text or "")[:MAX_TEXT]
+                    # cap every list, so a hand-edited or oversized meta["assistant"] cannot bloat memory on load
+                    turn.assumptions = [str(a)[:300] for a in turn.assumptions][:10]
+                    turn.next_questions = [str(q)[:200] for q in turn.next_questions][:5]
+                    turn.flags = [str(f)[:60] for f in turn.flags][:50]
+                    turn.unverified = [str(x)[:60] for x in turn.unverified][:200]
+                    turn.allowed = [str(x)[:40] for x in turn.allowed][:800]
+                    if turn.proposal is not None:
+                        try:
+                            if len(json.dumps(turn.proposal, default=str)) > MAX_PROPOSAL_JSON:
+                                turn.proposal = {"kind": str(turn.proposal.get("kind") or "")}
+                        except (TypeError, ValueError):
+                            turn.proposal = None
                     turns.append(turn)
                 except (TypeError, ValueError):
                     continue

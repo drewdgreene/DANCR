@@ -725,14 +725,18 @@ class Executor:
         return [note]
 
     # ------------------------------------------------------------ cache mgmt
-    def hold(self, hashes: dict[str, str | None]) -> None:
+    def new_lease(self) -> str:
+        """A fresh lease name, so a caller can hold results under its own lease and release only that one."""
+        return f"{self._lease}-{uuid.uuid4().hex[:8]}"
+
+    def hold(self, hashes: dict[str, str | None], name: str | None = None) -> None:
         """Record which result of each node this process is using, so another process's cache sweep
         (the CLI or an agent running the saved file while the window shows unsaved edits) keeps them."""
         if self.pipeline.path is not None:           # an unsaved project's cache is private to this process
-            self._write_lease(self._lease, hashes)
+            self._write_lease(name or self._lease, hashes)
 
-    def release(self) -> None:
-        self._remove_lease(self._lease)
+    def release(self, name: str | None = None) -> None:
+        self._remove_lease(name or self._lease)
 
     def _write_lease(self, name: str, hashes: dict[str, str | None]) -> None:
         try:

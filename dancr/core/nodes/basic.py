@@ -550,14 +550,17 @@ def _pivot(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, An
         if not index:
             raise ValueError("Give at least one column to identify a row (the columns to keep as rows)")
         msgs.append(f"Keeping {', '.join(index)} as the row identifiers")
+    limit = int(params.get("max_columns") or 200)
+    # Count first and refuse before materialising a Python list of a high-cardinality column (a unique id column
+    # would otherwise be collected whole only to be rejected).
+    n_distinct = int(lf.select(pl.col(on_col).drop_nulls().n_unique()).collect(engine="streaming")[0, 0] or 0)
+    if n_distinct == 0:
+        raise ValueError(f"{on_col!r} has no values to turn into columns")
+    if n_distinct > limit:
+        raise ValueError(f"{on_col!r} has {n_distinct:,} distinct values, which would make {n_distinct:,} columns. "
+                         f"Filter the rows first, or raise 'Most new columns' above {n_distinct:,}")
     distinct = (lf.select(pl.col(on_col).drop_nulls().unique().sort())
                   .collect(engine="streaming").get_column(on_col).to_list())
-    if not distinct:
-        raise ValueError(f"{on_col!r} has no values to turn into columns")
-    limit = int(params.get("max_columns") or 200)
-    if len(distinct) > limit:
-        raise ValueError(f"{on_col!r} has {len(distinct):,} distinct values, which would make {len(distinct):,} columns. "
-                         f"Filter the rows first, or raise 'Most new columns' above {len(distinct):,}")
     agg = "len" if agg == "count" else agg
     out = lf.pivot(on=on_col, on_columns=distinct, index=index, values=vcol,
                    aggregate_function=agg, maintain_order=True)
@@ -605,7 +608,7 @@ def _describe(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str,
     exprs: list[pl.Expr] = []
     for c, dt in schema.items():
         exprs.append(pl.col(c).null_count().alias(f"{c}\x00missing"))
-        exprs.append(pl.col(c).n_unique().alias(f"{c}\x00distinct"))
+        exprs.append(pl.col(c).drop_nulls().n_unique().alias(f"{c}\x00distinct"))   # a blank is missing, not a value
         exprs.append(pl.col(c).cast(pl.Utf8).drop_nulls().first().alias(f"{c}\x00example"))
         k = kind_of_dtype(dt)
         if k == NUM:

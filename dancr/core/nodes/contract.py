@@ -65,7 +65,10 @@ def _infer(schema: dict[str, pl.DataType], lf: pl.LazyFrame) -> dict[str, Any]:
             if hi is not None:
                 spec["max"] = hi
         elif kind == STR:
-            uniq = lf.select(pl.col(c).drop_nulls().unique().sort()).collect(engine="streaming").get_column(c).to_list()
+            # take at most 13 values: we only need to know whether the column has 12 or fewer, so a
+            # high-cardinality text column is never materialised whole
+            uniq = (lf.select(pl.col(c).drop_nulls().unique().sort().head(13))
+                      .collect(engine="streaming").get_column(c).to_list())
             if len(uniq) <= 12:
                 spec["allowed"] = uniq
         cols[c] = spec
@@ -93,7 +96,9 @@ def _column_checks(lf: pl.LazyFrame, schema: dict[str, pl.DataType], name: str, 
         if n:
             out.append(_issue("required", name, n, f"{n:,} blank value(s) where none are allowed"))
     if spec.get("unique"):
-        row = lf.select([pl.col(name).count().alias("filled"), pl.col(name).n_unique().alias("uniq")]) \
+        # count null as missing, not as a distinct value, or a duplicated key with one blank would pass
+        row = lf.select([pl.col(name).drop_nulls().count().alias("filled"),
+                         pl.col(name).drop_nulls().n_unique().alias("uniq")]) \
                 .collect(engine="streaming").row(0, named=True)
         dup = int(row["filled"] or 0) - int(row["uniq"] or 0)
         if dup > 0:

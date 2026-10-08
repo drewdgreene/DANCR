@@ -559,6 +559,11 @@ def _load_document(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict
     written: list[Path] = []
     docs: list[dict[str, Any]] = []
     out_dir = str(params.get("out_dir") or "extracted").strip() or "extracted"
+    # Extracted tables go under the project folder; a path that climbs out of it (or an absolute one) is refused
+    # here, since a plain run (the window, the command line) sets no output_root to catch it later.
+    _od = Path(out_dir)
+    if _od.is_absolute() or any(part == ".." for part in _od.parts):
+        raise ValueError("'Folder for extracted tables' must be a relative path inside the project folder")
 
     for f in files:
         doc_pages = pages

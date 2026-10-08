@@ -136,7 +136,13 @@ class ReportView(QWidget):
     def _refresh_status(self) -> None:
         if self.nid is None or self.nid not in self.doc.pipeline.nodes:
             return
-        st = self.doc.state(self.nid)
+        st = self.doc.cached_state(self.nid)          # never doc.state(): the poll keeps the cache fresh
+        if st is None:
+            self.status.setText(status_dot("idle", "not built yet"))
+            self.open_btn.setVisible(False)
+            self.pdf_btn.setVisible(False)
+            self.build_btn.setEnabled(not self.doc.running and bool(self._items()))
+            return
         rep = st.report or {}
         if st.status == "done" and rep.get("path"):
             txt = f"saved to {rep['path']}"

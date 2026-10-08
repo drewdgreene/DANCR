@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import time
 import uuid
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -85,6 +86,20 @@ class Repo:
         return self
 
 
+def _replace_retrying(tmp: Path, target: Path, tries: int = 20, delay: float = 0.1) -> None:
+    """``os.replace``, retrying briefly: on Windows replacing a file another process has open is refused
+    (``PermissionError``), and a reader may close it in a moment."""
+    for i in range(tries):
+        try:
+            os.replace(tmp, target)
+            return
+        except PermissionError:
+            if i == tries - 1:
+                raise RuntimeError(f"{target.name} is open in another program, so it cannot be updated. "
+                                   "Close it and try again.") from None
+            time.sleep(delay)
+
+
 def write_sqlite_atomic(path: Path | str, build: Callable[[sqlite3.Connection], None]) -> Path:
     """Build a SQLite database at ``path`` atomically: ``build(conn)`` fills a unique temp file, which is
     then replaced into place. A crash leaves the previous database intact. Returns the path written."""
@@ -100,7 +115,7 @@ def write_sqlite_atomic(path: Path | str, build: Callable[[sqlite3.Connection], 
         conn.close()
         conn = None
         _fsync_file(tmp)
-        os.replace(tmp, target)
+        _replace_retrying(tmp, target)
         _fsync_dir(target.parent)
     finally:
         if conn is not None:
@@ -149,6 +164,7 @@ def write_json_atomic(path: Path | str, obj: Any) -> Path:
     try:
         tmp.write_text(json.dumps(obj, ensure_ascii=False, allow_nan=False, default=str, indent=1) + "\n",
                        encoding="utf-8")
+        _fsync_file(tmp)
         os.replace(tmp, target)
     finally:
         tmp.unlink(missing_ok=True)

@@ -168,6 +168,8 @@ class ChartView(QWidget):
         # rewiring the chart's input changes what it draws, even when no state hash changed
         listen(self, doc.edgeAdded, lambda e: self.refresh() if e.target == self.nid else None)
         listen(self, doc.edgeRemoved, lambda e: self.refresh() if e.target == self.nid else None)
+        # the step this chart shows was deleted: drop the binding, so an in-flight query cannot touch a gone node
+        listen(self, doc.nodeRemoved, lambda nid: self.set_node(None) if nid == self.nid else None)
 
     # ------------------------------------------------------------ panels
     @property

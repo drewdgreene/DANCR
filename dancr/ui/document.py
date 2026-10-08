@@ -654,6 +654,7 @@ class Document(DocWatch, DocAutosave, DocState, QObject):
             finally:
                 self._stopping = False
                 check.stop()
+                check.deleteLater()                         # a parented QTimer is not freed by dropping the local
                 try:
                     t.finished.disconnect(loop.quit)      # the thread may already be gone if it finished mid-loop
                 except (RuntimeError, TypeError):

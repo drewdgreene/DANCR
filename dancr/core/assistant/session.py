@@ -108,7 +108,11 @@ class AssistantSession:
         # What counts as a source for a figure: what the engine's tools returned this turn, plus the engine's
         # own statistics in the profile (counts, ranges, distinct) — but not the profile's category *values*,
         # which are data, so a number copied from a cell is still unverified.
-        allowed_texts: list[str] = [_profile_stats_text(self.profile())]
+        # Engine statistics back a figure; so do the person's own words (restating what they wrote is not a
+        # claim by the model). What the model itself wrote — a tool argument echoed back, a proposal reply or
+        # title — never counts, or a made-up number could be laundered through a tool call.
+        allowed_texts: list[str] = [_profile_stats_text(self.profile()), user_text]
+        allowed_texts += [t.text for t in self.thread.turns[-MAX_PRIOR_TURNS:] if t.role == "user"]
         prior = self._prior_allowed()
         called: list[str] = []
         proposal: dict[str, Any] | None = None
@@ -155,7 +159,7 @@ class AssistantSession:
                     executed += 1
                     outcome = self.runner.call(call.name, call.arguments)
                     text = tool_result_text(call.name, outcome.content)
-                    allowed_texts.append(text)
+                    allowed_texts.append(text if outcome.evidence is None else outcome.evidence)
                     messages.append(Message("tool", text, tool_call_id=call.id))
                     if call.name == "list_connections" and isinstance(outcome.content.get("connections"), list):
                         connections = outcome.content["connections"]       # keep the engine's map, to persist
@@ -189,7 +193,14 @@ class AssistantSession:
             text, kind = final_text.strip(), "text"
         text = text[:MAX_REPLY]
         allowed = _allowed_numbers(allowed_texts)
-        flags, unverified = _flags_for(text, allowed, prior)
+        # The proposal's assumptions and follow-up questions are shown to the person and saved, so check their
+        # figures too — a fabricated number must not slip through in a chip.
+        checked = text
+        if proposal is not None:
+            for _key in ("assumptions", "next_questions"):
+                for _item in (proposal.get(_key) or []):
+                    checked += "\n" + str(_item)
+        flags, unverified = _flags_for(checked, allowed, prior)
         return AssistantReply(text=text, kind=kind, proposal=proposal, flags=flags + extra_flags,
                               unverified=unverified, allowed=sorted(allowed)[:800],
                               usage=self._usage(), tool_calls=called)

@@ -149,12 +149,14 @@ class WindowSession:
             theirs = box.addButton("Load theirs", QMessageBox.DestructiveRole)
             box.addButton(QMessageBox.Cancel)
             box.exec()
-            if box.clickedButton() is mine:
+            chosen = box.clickedButton()
+            box.deleteLater()
+            if chosen is mine:
                 try:
                     self.doc.save(overwrite=True)
                 except (OSError, PipelineError) as e:
                     QMessageBox.critical(self, "Cannot save", str(e)); return False
-            elif box.clickedButton() is theirs:
+            elif chosen is theirs:
                 self.doc.load(self.doc.path)
                 return True
             else:

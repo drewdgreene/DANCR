@@ -55,6 +55,21 @@ def is_loopback(host: str) -> bool:
         return False
 
 
+_PROJECT_ARGS = ("path", "file_path", "file", "root")   # argument names that name what a tool acts on
+
+
+def _project_from_args(args: Any) -> str | None:
+    """The project a tool call names, from whichever path-like argument it uses (a pipeline `path`, a file, a
+    repository `root`). ``None`` when the call names nothing."""
+    if not isinstance(args, dict):
+        return None
+    for key in _PROJECT_ARGS:
+        value = args.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
 def _jsonrpc_error(status: int, rid: Any, message: str, data: str = "") -> JSONResponse:
     error: dict[str, Any] = {"code": status, "message": message}
     if data:
@@ -92,11 +107,18 @@ class GatewayMiddleware(BaseHTTPMiddleware):
             params = message.get("params") or {}
             name = str(params.get("name") or "")
             args = params.get("arguments") if isinstance(params.get("arguments"), dict) else {}
-            project = args.get("path") if isinstance(args, dict) else None
+            project = _project_from_args(args)
+            # A principal scoped to particular projects must name one; otherwise a tool keyed on `root` or
+            # `file_path` (or nothing) would pass project=None and slip past the scope.
+            who = self.policy.resolve(principal)
+            scoped = who is not None and who.projects and "*" not in who.projects
+            if scoped and not project:
+                return _jsonrpc_error(403, message.get("id"), "denied",
+                                      "This principal is limited to particular projects; the call names none.")
             # policy + audit touch the filesystem: keep them off the event loop
             decision = await run_in_threadpool(
                 hl.authorize, self.root, principal, name,
-                category=category_for(name), project=str(project) if project else None, args=args)
+                category=category_for(name), project=project, args=args)
             if decision["verdict"] == "deny":
                 return _jsonrpc_error(403, message.get("id"), "denied", decision.get("reason", ""))
             if decision["verdict"] == "approve":

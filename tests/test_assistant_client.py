@@ -111,6 +111,48 @@ def test_openai_provider_pauses_when_rate_limited():
         httpd.shutdown()
 
 
+def test_openai_provider_retries_a_transient_5xx():
+    seen: list[int] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *a): pass
+
+        def do_POST(self):
+            n = int(self.headers.get("Content-Length") or 0)
+            self.rfile.read(n)
+            seen.append(len(seen))
+            status = 500 if len(seen) == 1 else 200
+            body = json.dumps(REPLY).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    httpd = HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{httpd.server_address[1]}/v1"
+    try:
+        s = ModelSettings(base_url=base, model="m", api_key="k")
+        r = OpenAIProvider(s).chat([Message("user", "hi")], [], s)
+        assert r.message.tool_calls[0].name == "get_stats" and len(seen) == 2
+    finally:
+        httpd.shutdown()
+
+
+def test_openai_provider_stops_when_cancelled():
+    p = OpenAIProvider(ModelSettings(base_url="http://127.0.0.1:9/v1", model="m", api_key="k"))
+    p.cancel()
+    with pytest.raises(ProviderError) as e:
+        p.chat([Message("user", "hi")], [], p.settings)
+    assert "stopped" in str(e.value).lower()
+
+
+def test_clean_error_redacts_a_connection_secret():
+    from dancr.core.assistant.tools import _clean_error
+    assert "****" in _clean_error(Exception("could not connect to postgres://u:hunter2@host/db"))
+
+
 def test_provider_for_uses_a_passed_provider(monkeypatch):
     fake = FakeProvider(["x"])
     assert provider_for(ModelSettings(), fake) is fake

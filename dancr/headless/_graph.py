@@ -320,9 +320,14 @@ def graph_slice(root: Path | str, *, allow_restricted: bool = False) -> dict[str
     repo_root, graph = _require_graph(root)
     datasets = graph.all_datasets(allow_restricted=allow_restricted)
     edges = graph.all_edges(allow_restricted=allow_restricted)
+    # A project's own name and relative path are identity too, so a restricted project (or one whose every
+    # dataset is withheld) must not appear in the slice either.
+    visible = {d.project for d in datasets}
+    projects = [p for p in graph.projects.values()
+                if p.id in visible and (allow_restricted or not is_restricted(p.sensitivity))]
     return {"kind": "dancr.graph.slice", "root": str(repo_root), "version": GRAPH_VERSION,
             "meta": dict(sorted(graph.meta.items(), key=lambda kv: kv[0])),
-            "projects": [p.to_dict() for p in sorted(graph.projects.values(), key=lambda x: x.id)],
+            "projects": [p.to_dict() for p in sorted(projects, key=lambda x: x.id)],
             "datasets": [d.to_dict() for d in datasets], "edges": [e.to_dict() for e in edges]}
 
 
