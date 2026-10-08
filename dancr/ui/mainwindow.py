@@ -31,7 +31,7 @@ from .mapview import MapView
 from .reportview import ReportView
 from .inputsview import InputsView
 from .enterdata import EnterDataView
-from .answering import Understanding, AskBar, AnswerPanel
+from .answering import Understanding, AskBar, AskOverlay, AnswerPanel
 from .assistant import AssistantPanel, SideDock
 from .startpage import StartPage
 from .insight import InsightBar
@@ -97,10 +97,13 @@ class MainWindow(WindowActions, WindowPages, WindowAnswers, WindowSession, Windo
         self.result_expand = QToolButton(); self.result_expand.setObjectName("quiet"); self.result_expand.setCheckable(True)
         self.result_expand.setIcon(icon("arrows-out", T.muted, 14)); self.result_expand.setToolTip("Expand or restore the result panel")
         self.result_expand.toggled.connect(self._toggle_result_expand)
+        self.result_ask = QToolButton(); self.result_ask.setObjectName("quiet"); self.result_ask.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.result_ask.setIcon(icon("sparkle", T.muted, 14)); self.result_ask.setText("Ask")
+        self.result_ask.setToolTip("Ask another question (Ctrl+J)")
         self.result_close = QToolButton(); self.result_close.setObjectName("quiet"); self.result_close.setIcon(icon("x", T.muted, 14))
         self.result_close.setToolTip("Hide the result panel"); self.result_close.clicked.connect(lambda: self.a_result.setChecked(False))
-        rh.addWidget(self.result_label, 1); rh.addWidget(self.result_expand); rh.addWidget(self.result_close)
-        rl.addWidget(result_head); rl.addWidget(self.askbar); rl.addWidget(self.answer_bar); rl.addWidget(self.pages, 1)
+        rh.addWidget(self.result_label, 1); rh.addWidget(self.result_ask); rh.addWidget(self.result_expand); rh.addWidget(self.result_close)
+        rl.addWidget(result_head); rl.addWidget(self.answer_bar); rl.addWidget(self.pages, 1)
         # when the result panel is closed it collapses to this handle, always one click away
         self.result_handle = QToolButton(); self.result_handle.setObjectName("quiet"); self.result_handle.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         self.result_handle.setIcon(icon("table", T.muted, 14)); self.result_handle.setText("Show the result panel (Ctrl+M)")
@@ -130,6 +133,8 @@ class MainWindow(WindowActions, WindowPages, WindowAnswers, WindowSession, Windo
         self.outer_split.setCollapsible(0, False); self.outer_split.setCollapsible(1, True)
         self.workspace = QWidget(); cw = QVBoxLayout(self.workspace); cw.setContentsMargins(0, 0, 0, 0); cw.setSpacing(0)
         cw.addWidget(self.busy_bar); cw.addWidget(self.outer_split, 1); cw.addWidget(self.result_handle); cw.addWidget(self.progress)
+        self.ask_overlay = AskOverlay(self.workspace, self.askbar)   # the ask bar floats over the workspace
+        self.ask_overlay.closed.connect(self.close_ask)
         self.root = QStackedWidget()
         self.root.addWidget(self.start); self.root.addWidget(self.workspace)
         self._entered = False                              # False until the person leaves the start page for good

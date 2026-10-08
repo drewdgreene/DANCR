@@ -48,13 +48,14 @@ class WindowPages:
         if self._on_start_page():
             self.start.set_recent(self._recent())
             self.root.setCurrentWidget(self.start)
-            self.askbar.setVisible(False)
+            self.close_ask()
             self._apply_side_panels()
             return
         self.root.setCurrentWidget(self.workspace)
         self._apply_side_panels()
-        self.askbar.setVisible(self._ask_open and bool(self.doc.pipeline.nodes))   # only when asked for: Auto, or an answer selected
+        self._sync_ask()                            # the ask overlay, only when asked for
         self._apply_result_visibility()
+        self._update_result_label()
         nid = self._current
         if nid == "inputs":
             self.pages.setCurrentWidget(self.inputs); self._refresh_insight(); return
@@ -91,6 +92,16 @@ class WindowPages:
             self.rail.select("inputs", "inputs", emit=False)
         self._show_page()
         self._refresh_mode()
+
+    def _update_result_label(self) -> None:
+        """The result header names what is shown: the selected answer, else the selected step, else 'Result'."""
+        label = "Result"
+        a = self.doc.pipeline.answer(self._current_answer) if self._current_answer else None
+        if a is not None:
+            label = f"Answer · {a.title}"
+        elif self._current and self._current in self.doc.pipeline.nodes:
+            label = self.doc.pipeline.nodes[self._current].title
+        self.result_label.setText(label)
 
     def _on_rail_select(self, kind: str, ident) -> None:
         if kind == "node":

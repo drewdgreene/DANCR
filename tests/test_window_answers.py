@@ -44,6 +44,38 @@ def test_opening_files_offers_answers(window, app, files):
     assert not window.askbar.isVisible()
 
 
+def test_asking_floats_over_the_workspace_and_never_squeezes_it(window, app, files):
+    window._add_files(files)
+    ready(window, app)
+    before = window.outer_split.sizes()
+    window.focus_ask()
+    assert window.ask_overlay.isVisible() and window.askbar.isVisible()
+    assert window.outer_split.sizes() == before                # asking resizes nothing
+    assert window.askbar.parentWidget() is not window.result_box   # the ask bar is out of the result drawer
+    window.focus_ask()                                          # the button again closes it
+    assert not window.ask_overlay.isVisible() and not window.askbar.isVisible()
+
+
+def test_building_an_answer_dismisses_the_ask_surface(window, app, files):
+    window._add_files(files)
+    ready(window, app)
+    window.focus_ask()
+    window.askbar.edit.setText("total qty by region"); window.askbar._ask()
+    assert until(app, lambda: bool(window.doc.pipeline.answers))
+    assert not window.ask_overlay.isVisible()                   # reading the answer, not asking
+    assert window.a_result.isChecked() and window.answer_bar.answer_id == window.doc.pipeline.answers[0].id
+    assert window.result_label.text().startswith("Answer ·")    # the header names what is shown
+
+
+def test_the_result_header_reopens_the_ask_surface(window, app, files):
+    window._add_files(files); ready(window, app)
+    window.askbar.edit.setText("total qty by region"); window.askbar._ask()
+    assert until(app, lambda: bool(window.doc.pipeline.answers))
+    assert not window.ask_overlay.isVisible()
+    window.result_ask.click()
+    assert window.ask_overlay.isVisible()
+
+
 def test_a_card_builds_its_answer_and_shows_it(window, app, files):
     window._add_files(files)
     ready(window, app)

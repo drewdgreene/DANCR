@@ -387,6 +387,9 @@ class WindowSession:
     def resizeEvent(self, e) -> None:
         super().resizeEvent(e)
         self.toast.reposition()
+        overlay = getattr(self, "ask_overlay", None)
+        if overlay is not None:
+            overlay.fit()                            # keep the ask card centred over the workspace
 
     # ------------------------------------------------------------ drag and drop onto the whole window
     def dragEnterEvent(self, e) -> None:

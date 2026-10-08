@@ -47,7 +47,7 @@ class WindowAnswers:
         """Ask a question: opens the ask bar (or closes it when it is already open)."""
         if not self.doc.pipeline.nodes:
             self.add_data_files(); return
-        if self._ask_open and self.askbar.isVisible():
+        if self._ask_open and self.ask_overlay.isVisible():
             self.close_ask(); return
         self.open_ask(focus=True)
 
@@ -235,13 +235,22 @@ class WindowAnswers:
     def open_ask(self, focus: bool = False) -> None:
         self._ask_open = True
         if self.doc.pipeline.nodes:
-            self.askbar.setVisible(True)
-        if focus:
-            self.askbar.focus_edit()
+            self.ask_overlay.open(focus=focus)
 
     def close_ask(self) -> None:
         self._ask_open = False
-        self.askbar.setVisible(False)
+        self.ask_overlay.hide()
+
+    def _sync_ask(self) -> None:
+        """Show the ask overlay only when asked for and there is a project (never stealing focus here)."""
+        overlay = getattr(self, "ask_overlay", None)
+        if overlay is None:
+            return
+        want = self._ask_open and bool(self.doc.pipeline.nodes)
+        if want and not overlay.isVisible():
+            overlay.open(focus=False)
+        elif not want and overlay.isVisible():
+            overlay.hide()
 
     def build_answer(self, spec: dict, answer_id: str | None = None) -> None:
         """Build (or change) an answer once every row of the tables has been read: answers are never planned
@@ -319,7 +328,7 @@ class WindowAnswers:
         if answer is None:
             return
         self.understanding.set_focus(None)
-        self.open_ask()
+        self.close_ask()                            # reading an answer dismisses the ask surface
         self._entered = True
         self.a_result.setChecked(True)
         self._current_answer = aid
@@ -419,7 +428,8 @@ class WindowAnswers:
             sizes = self.outer_split.sizes()
             if len(sizes) == 2 and sizes[1] < 140 and not self.result_expand.isChecked():
                 total = sum(sizes) or self.outer_split.height()
-                self.outer_split.setSizes([max(220, total - 280), 280])
+                result = max(240, min(int(total * 0.45), 560))   # proportional: a tall window is not cramped
+                self.outer_split.setSizes([max(150, total - result), result])
 
     def _toggle_result_expand(self, on: bool) -> None:
         """Give the result most of the window (or restore the canvas to most of it)."""

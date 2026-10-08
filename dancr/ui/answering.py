@@ -490,6 +490,54 @@ class AskBar(QFrame):
         self._set_message(text, error)
 
 
+# =================================================================== the ask surface
+class AskOverlay(QFrame):
+    """A centred Ask card floating over the workspace, holding the ask bar.
+
+    Asking is a transient surface: it never resizes the canvas or the result panel, so the window does not
+    collapse into a squished strip every time a question is typed. Click the backdrop or press Esc to dismiss."""
+
+    closed = Signal()
+
+    def __init__(self, parent, askbar: "AskBar") -> None:
+        super().__init__(parent)
+        self._askbar = askbar
+        self.setObjectName("askoverlay")
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setStyleSheet("QFrame#askoverlay { background: rgba(20, 22, 28, 110); }")
+        outer = QVBoxLayout(self); outer.setContentsMargins(24, 24, 24, 24); outer.addStretch(1)
+        row = QHBoxLayout(); row.addStretch(1)
+        self._card = QFrame(); self._card.setObjectName("askcard")
+        self._card.setAttribute(Qt.WA_StyledBackground, True)
+        self._card.setStyleSheet(f"QFrame#askcard {{ background: {T.panel}; border: 1px solid {T.border};"
+                                 " border-radius: 12px; }}")
+        self._card.setMinimumWidth(460); self._card.setMaximumWidth(880)
+        cl = QVBoxLayout(self._card); cl.setContentsMargins(0, 0, 0, 0); cl.setSpacing(0)
+        cl.addWidget(askbar)
+        row.addWidget(self._card); row.addStretch(1)
+        outer.addLayout(row); outer.addStretch(1)
+        self.hide()
+
+    def open(self, focus: bool = True) -> None:
+        parent = self.parentWidget()
+        if parent is not None:
+            self.setGeometry(parent.rect())            # cover the workspace; recentre on every open
+        self._askbar.setVisible(True)
+        self.show(); self.raise_()
+        if focus:
+            self._askbar.focus_edit()
+
+    def fit(self) -> None:
+        """Keep the overlay covering the workspace when the window is resized while it is open."""
+        parent = self.parentWidget()
+        if parent is not None and self.isVisible():
+            self.setGeometry(parent.rect())
+
+    def mousePressEvent(self, e) -> None:
+        self.closed.emit()                             # only the backdrop reaches here; the card consumes its clicks
+        super().mousePressEvent(e)
+
+
 # =================================================================== the selected answer
 class AnswerPanel(QFrame):
     """Title, chips and assumptions of the selected answer. Emits ``change(answer_id, key, value)`` (key "set" takes

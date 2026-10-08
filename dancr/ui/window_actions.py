@@ -360,6 +360,7 @@ class WindowActions:
         self.scene.answerDeleteRequested.connect(self.delete_answer_dialog)
         self.askbar.build.connect(lambda spec: self.build_answer(spec))
         self.askbar.closed.connect(self.close_ask)
+        self.result_ask.clicked.connect(self.focus_ask)
         self.side.tabChanged.connect(self._on_side_tab)
         self.assistant.buildRequested.connect(self.apply_assistant_proposal)
         self.assistant.proposalPreview.connect(self._preview_proposal)
