@@ -1,6 +1,6 @@
 """The Assistant in the window: the dock tab, a build request, and the engine doing the work."""
 import polars as pl
-from PySide6.QtWidgets import QPushButton
+from PySide6.QtWidgets import QPushButton, QToolButton
 
 from helpers import settle, wait_run
 from dancr.core.assistant.client import ChatResult, FakeProvider, Message, ToolCall, Usage
@@ -262,6 +262,25 @@ def test_connection_map_card(window, app, tmp_path):
     before = len(panel.body.findChildren(AssistantCard))
     panel.show_connections()
     assert len(panel.body.findChildren(AssistantCard)) == before + 1
+
+
+def test_assistant_builds_several_answers_in_one_go(window, app, tmp_path):
+    src = _load(window, app, tmp_path)
+    spec = {"recipe": "breakdown", "table": src, "measure": [src, "amount"], "stat": "sum", "by": [src, "region"]}
+    second = {"recipe": "describe", "table": src}
+    window.assistant.set_provider(FakeProvider([_call("propose", reply="Two looks.", answers=[spec, second])]))
+    window.a_assistant.setChecked(True); window._apply_side_panels()
+    panel = window.assistant
+    panel.edit.setPlainText("look at everything"); panel.send()
+    settle(app, lambda: panel._pending_card is not None, 20)
+    card = panel._pending_card
+    assert card.proposal["kind"] == "answers" and len(card.proposal["specs"]) == 2
+    panel._build(card)
+    wait_run(window, app)
+    assert len(window.doc.pipeline.answers) == 2            # both answers were built and run
+    assert panel._pending_card is None
+    texts = [b.text() for b in card.findChildren(QToolButton)]
+    assert "Replace" not in texts and "Save…" not in texts  # they act on one answer, so a set leaves them off
 
 
 def test_regenerate_replaces_the_reply_without_duplicating_the_question(window, app, tmp_path):

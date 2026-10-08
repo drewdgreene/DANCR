@@ -85,28 +85,35 @@ class WindowAnswers:
         if model is None:
             self.assistant.built(message="Still reading your tables; try again in a moment.")
             return
-        aid = None
+        terminals: list[str] = []
+        answers: list[str] = []
         try:
-            if proposal.get("kind") == "answer":
-                with self.doc.macro("Assistant answer"):    # the built steps and their AI marking undo together
-                    aid = self.doc.build_answer(model, proposal.get("spec") or {})
-                    a = self.doc.pipeline.answer(aid)
-                    if a is not None:
-                        self.doc.add_ai_steps(a.nodes)
-                terminal = a.terminal if a is not None else None
+            if proposal.get("kind") in ("answer", "answers"):
+                specs = proposal.get("specs") or ([proposal["spec"]] if proposal.get("spec") else [])
+                with self.doc.macro("Assistant answers" if len(specs) > 1 else "Assistant answer"):
+                    for spec in specs:            # the built steps and their AI marking undo together
+                        aid = self.doc.build_answer(model, spec)
+                        a = self.doc.pipeline.answer(aid)
+                        if a is not None:
+                            self.doc.add_ai_steps(a.nodes)
+                            terminals.append(a.terminal)
+                            answers.append(aid)
             else:
                 terminal = self._apply_assistant_steps(proposal.get("steps") or [])
+                if terminal:
+                    terminals.append(terminal)
         except (PlanError, KeyError, ValueError) as e:
             self.assistant.built(message=f"The engine could not build that: {str(e).strip(chr(39) + chr(34))}")
             return
-        if not terminal or terminal not in self.doc.pipeline.nodes:
+        terminals = [t for t in terminals if t and t in self.doc.pipeline.nodes]
+        if not terminals:
             self.assistant.built(message="Built, but there is nothing to run.")
             return
         # stay in the chat: do not move the view or the side panel. The result lands on the card; the person
         # clicks "Canvas" when they want to look at the steps.
-        self._assistant_terminal = terminal
-        self._assistant_answer = aid
-        self.run([terminal])
+        self._assistant_terminals = terminals
+        self._assistant_answers = answers
+        self.run(terminals)
 
     def _apply_assistant_steps(self, steps: list) -> str | None:
         """Add a hand-built plan as ordinary, undoable steps. Returns the last step's id."""
@@ -127,18 +134,27 @@ class WindowAnswers:
         return last
 
     def _on_assistant_run_finished(self, ok: bool, states: dict) -> None:
-        """The Assistant's proposed steps finished: give the card the engine's own finding."""
-        terminal = getattr(self, "_assistant_terminal", None)
-        if not terminal:
+        """The Assistant's proposed steps finished: give the card the engine's own finding(s)."""
+        terminals = getattr(self, "_assistant_terminals", None) or []
+        if not terminals:
             return
-        self._assistant_terminal = None
-        answer_id, self._assistant_answer = self._assistant_answer, None
-        st = states.get(terminal) or self.doc.state(terminal)
-        if st.status == "done":
-            finding = ((st.report or {}).get("finding") or {}).get("statement") or ""
-            self.assistant.built(finding=finding or "Ran over every row.", terminal=terminal, answer_id=answer_id)
-        elif st.status == "failed":
-            self.assistant.built(message=f"That step failed: {st.error}", terminal=terminal, answer_id=answer_id)
+        self._assistant_terminals = None
+        answer_ids, self._assistant_answers = getattr(self, "_assistant_answers", []) or [], None
+        findings: list[str] = []
+        for t in terminals:
+            st = states.get(t) or self.doc.state(t)
+            if st.status == "failed":
+                self.assistant.built(message=f"That step failed: {st.error}", terminal=t)
+                return
+            if st.status == "done":
+                f = ((st.report or {}).get("finding") or {}).get("statement") or ""
+                if f:
+                    findings.append(f)
+        multi = len(terminals) > 1
+        self.assistant.built(finding=" ".join(findings) or "Ran over every row.",
+                             terminal=terminals[0],
+                             answer_id=(None if multi else (answer_ids[0] if answer_ids else None)),
+                             multi=multi)
 
     def assistant_apply_edits(self, edits: list) -> None:
         """Apply the Assistant's project changes (renames, settings, column labels, inputs) as one undo step."""
@@ -213,8 +229,8 @@ class WindowAnswers:
             self.doc.replace_canvas(new.to_dict(), text=f"Assistant: {title}")
             self.doc.add_ai_steps(built)                   # the Assistant's steps stay marked after a replace
         self.show_node(terminal)
-        self._assistant_terminal = terminal
-        self._assistant_answer = None
+        self._assistant_terminals = [terminal]
+        self._assistant_answers = []
         self.run([terminal])
 
     def open_ask(self, focus: bool = False) -> None:

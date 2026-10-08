@@ -98,9 +98,15 @@ class ToolRunner:
                  {"question": {"type": "string", "description": "the choice, in one line"},
                   "options": {"type": "array", "items": {"type": "string"}, "description": "two to six plain options"},
                   "reply": {"type": "string"}}, ["question", "options"]),
-            spec(PROPOSE, "Propose what to build. Validates the spec (or steps) against the engine and returns what it would build, or the error. Does not change the project. Call it once when ready.",
+            spec(PROPOSE, "Propose what to build. Validates the spec(s) against the engine and returns what it would "
+                          "build, or the error. Does not change the project. Call it once when ready. For an open-ended "
+                          "request (explore this, find interesting things, find hypotheses), pass several specs in "
+                          "`answers` in one call — each becomes its own Answer and chart, so the person gets the whole "
+                          "investigation at once.",
                  {"reply": {"type": "string", "description": "one or two plain sentences to the person; no numbers unless a tool result gave one"},
-                  "answer": {"type": "object", "description": "a spec for the deterministic answer engine (preferred)"},
+                  "answer": {"type": "object", "description": "a single spec for the deterministic answer engine (preferred)"},
+                  "answers": {"type": "array", "items": {"type": "object"},
+                              "description": "several specs at once for an open-ended request; each becomes its own Answer and chart (preferred there)"},
                   "steps": {"type": "array", "items": {"type": "object"},
                             "description": "manual steps [{type, title, params, after, port}] when no recipe fits"},
                   "assumptions": {"type": "array", "items": {"type": "string"}},
@@ -287,23 +293,39 @@ class ToolRunner:
 
     def _t_propose(self, args: dict[str, Any]) -> ToolOutcome:
         reply = clean(args.get("reply") or "", 2000)
-        spec = args.get("answer")
+        specs: list[dict[str, Any]] = []
+        if isinstance(args.get("answer"), dict) and args["answer"]:
+            specs.append(args["answer"])
+        for s in (args.get("answers") or [])[:8]:
+            if isinstance(s, dict) and s:
+                specs.append(s)
         steps = args.get("steps")
         assumptions = [clean(a, 300) for a in (args.get("assumptions") or []) if str(a).strip()][:10]
         nexts = [clean(q, 200) for q in (args.get("next_questions") or []) if str(q).strip()][:5]
-        if isinstance(spec, dict) and spec:
+        if specs:
             from ..recipes import plan as make_plan
-            try:
-                p = make_plan(self.model, spec)
-            except (ValueError, KeyError, TypeError) as e:      # PlanError is a ValueError
-                return ToolOutcome({"ok": False, "error": _clean_error(e),
-                                    "hint": "Fix the spec and call propose again, or use read_question on the person's words."})
-            built = [{"type": s.type, "title": s.title} for s in p.new_steps]
-            proposal = {"kind": "answer", "spec": json_safe(p.config), "title": p.title, "view": p.view,
+            plans = []
+            for i, spec in enumerate(specs):
+                try:
+                    plans.append(make_plan(self.model, spec))
+                except (ValueError, KeyError, TypeError) as e:      # PlanError is a ValueError
+                    where = f"answers[{i}]" if len(specs) > 1 else "answer"
+                    return ToolOutcome({"ok": False, "error": f"{where}: {_clean_error(e)}",
+                                        "hint": "Fix the spec and call propose again, or use read_question on the person's words."})
+            built = [{"type": s.type, "title": s.title} for p in plans for s in p.new_steps]
+            if len(plans) == 1:
+                p = plans[0]
+                proposal = {"kind": "answer", "spec": json_safe(p.config), "title": p.title, "view": p.view,
+                            "reply": reply, "assumptions": assumptions, "next_questions": nexts,
+                            "why": p.why, "steps": built}
+                return ToolOutcome({"ok": True, "will_build": built, "title": p.title}, terminal=True,
+                                   proposal=proposal, evidence="")
+            proposal = {"kind": "answers", "specs": [json_safe(p.config) for p in plans],
+                        "titles": [p.title for p in plans], "views": [p.view for p in plans],
                         "reply": reply, "assumptions": assumptions, "next_questions": nexts,
-                        "why": p.why, "steps": built}
-            return ToolOutcome({"ok": True, "will_build": built, "title": p.title}, terminal=True, proposal=proposal,
-                               evidence="")   # the spec is the model's, so it backs no figure
+                        "why": [p.why for p in plans]}
+            return ToolOutcome({"ok": True, "will_build": [{"title": p.title} for p in plans]}, terminal=True,
+                               proposal=proposal, evidence="")   # the specs are the model's, so they back no figure
         if isinstance(steps, list) and steps:
             checked = self._validate_steps(steps)
             if isinstance(checked, dict):                      # an error to hand back

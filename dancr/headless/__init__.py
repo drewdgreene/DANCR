@@ -799,7 +799,7 @@ def assistant_turn(p: Pipeline, text: str, *, allow_samples: bool = False, focus
         out["error"] = reply.text or reply.error
         return out
     prop = reply.proposal or {}
-    if not build or prop.get("kind") not in ("answer", "steps", "edits"):
+    if not build or prop.get("kind") not in ("answer", "answers", "steps", "edits"):
         return out
     if prop.get("kind") == "edits":
         from ..core.assistant.edits import apply_edits
@@ -811,25 +811,35 @@ def assistant_turn(p: Pipeline, text: str, *, allow_samples: bool = False, focus
                 if nid and nid in p.nodes:
                     check_output(p, nid)
         return out
-    if prop.get("kind") == "answer":
-        a, _plan = answers.build(p, model, prop["spec"])
-        terminal = a.terminal
-        out["answer"] = answers.describe(p, a)
+    terminals: list[str] = []
+    if prop.get("kind") in ("answer", "answers"):
+        specs = prop.get("specs") or ([prop["spec"]] if prop.get("spec") else [])
+        described = []
+        for spec in specs:
+            a, _plan = answers.build(p, model, spec)
+            described.append(answers.describe(p, a))
+            terminals.append(a.terminal)
+        out["answers"] = described
+        if len(described) == 1:
+            out["answer"] = described[0]
     else:
-        terminal = None
         for s in prop.get("steps") or []:
             node = add_step(p, s["type"], s.get("params"), s.get("title"), None, s.get("after"), s.get("port"))
             if check_output is not None:          # a proposed sink step may not save outside the project folder
                 check_output(p, node.id)
-            terminal = node.id
-    if not terminal:
+            terminals.append(node.id)
+    if not terminals:
         return out
-    st = Executor(p, output_root=output_root).run(targets=[terminal])[terminal]
-    finding = (st.report or {}).get("finding", {}).get("statement", "")
-    out.update({"terminal": terminal, "status": st.status, "finding": finding, "error": st.error})
+    states = Executor(p, output_root=output_root).run(targets=terminals)
+    findings = [(states[t].report or {}).get("finding", {}).get("statement", "") for t in terminals
+                if states[t].status == "done"]
+    finding = " ".join(f for f in findings if f)
+    first = states[terminals[0]]
+    out.update({"terminals": terminals, "terminal": terminals[0], "status": first.status,
+                "finding": finding, "error": first.error})
     last = session.thread.turns[-1] if session.thread.turns else None
     if last is not None and last.role == "assistant":     # fold the outcome in, so a reload shows it built
-        last.node = terminal
+        last.node = terminals[0]
         if isinstance(out.get("answer"), dict):
             last.answer = out["answer"].get("id")
         if finding:
@@ -956,7 +966,7 @@ def run_eval(p: Pipeline, cases: list[dict[str, Any]], *, model: bool = False, p
                 reasons.append(f"unverified figures: {unver}")
             if c.get("expect_no_text") and str(c["expect_no_text"]).lower() in text.lower():
                 reasons.append(f"reply contained {c['expect_no_text']!r}")
-            if c.get("expect_refuse") and kind in ("answer", "steps", "edits"):
+            if c.get("expect_refuse") and kind in ("answer", "answers", "steps", "edits"):
                 reasons.append("built something instead of refusing")
             if c.get("expect_kind") and kind != c["expect_kind"]:
                 reasons.append(f"kind was {kind}, expected {c['expect_kind']}")

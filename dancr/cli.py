@@ -836,10 +836,12 @@ def cmd_assistant(a: argparse.Namespace) -> None:
             sys.exit(EXIT_ERROR)
         raise CliError(out["error"])
     text = out.get("text") or ""
-    if out.get("answer"):
-        text += f"\nBuilt “{out['answer']['title']}” as {out['answer']['id']} (step {out.get('terminal')}, {out.get('status')})."
+    answers = out.get("answers") or ([out["answer"]] if out.get("answer") else [])
+    if answers:
+        for x in answers:
+            text += f"\nBuilt “{x.get('title')}” as {x.get('id')} (step {x.get('terminal')})."
         if out.get("finding"):
-            text += f"\nFinding: {out['finding']}"
+            text += f"\nFindings: {out['finding']}"
     elif out.get("terminal"):
         text += f"\nBuilt and ran step {out['terminal']} ({out.get('status')})."
     _print(a, out, text)

@@ -24,10 +24,10 @@ from .tools import ToolRunner, tool_result_text
 
 log = logging.getLogger("dancr.assistant")
 
-MAX_ROUNDS = 10                 # model -> tools rounds in one turn
-MAX_TOOL_CALLS = 30
+MAX_ROUNDS = 12                 # model -> tools rounds in one turn
+MAX_TOOL_CALLS = 40
 TOOL_REPEAT_LIMIT = 2           # the same call, same arguments: after this many, nudge instead of running it
-TOOL_NAME_LIMIT = 5             # any one tool, this many times in a turn, then nudge
+TOOL_NAME_LIMIT = 8             # any one tool, this many times in a turn, then nudge
 MAX_PRIOR_TURNS = 12
 MAX_REPLY = 4000
 
@@ -37,7 +37,7 @@ _NUMBER = re.compile(r"-?\d[\d,]*(?:\.\d+)?")
 @dataclass
 class AssistantReply:
     text: str = ""
-    kind: str = "text"                       # text | answer | steps | error | paused
+    kind: str = "text"                       # text | answer | answers | steps | choice | edits | error | paused
     proposal: dict[str, Any] | None = None
     flags: list[str] = field(default_factory=list)
     unverified: list[str] = field(default_factory=list)   # the exact figures no tool result backed

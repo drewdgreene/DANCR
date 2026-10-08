@@ -231,6 +231,18 @@ def test_headless_turn_can_build_and_run(project):
     assert p.meta.get("assistant", {}).get("turns")          # the thread is saved into the project
 
 
+def test_headless_turn_builds_several_answers(project):
+    p, _ex, _m = project
+    from dancr import headless as hl
+    second = {"recipe": "describe", "table": "orders"}
+    out = hl.assistant_turn(p, "look at everything",
+                            provider=FakeProvider([_call("propose", reply="Two looks.", answers=[SPEC, second])]),
+                            settings=ModelSettings(api_key="k"), build=True)
+    assert out["kind"] == "answers" and len(out["answers"]) == 2
+    assert len(out["terminals"]) == 2 and all(t in p.nodes for t in out["terminals"])
+    assert out["finding"]                                   # the engine's own findings were collected
+
+
 def test_headless_turn_without_a_key_reports_a_pause(project):
     p, _ex, _m = project
     from dancr import headless as hl
@@ -249,6 +261,15 @@ def test_session_returns_a_choice_reply(linked):
 
 # ---------------------------------------------------------------- propose
 SPEC = {"recipe": "breakdown", "table": "orders", "measure": ["orders", "amount"], "stat": "sum", "by": ["orders", "region"]}
+
+
+def test_propose_accepts_several_answers_at_once(project):
+    p, ex, m = project
+    second = {"recipe": "describe", "table": "orders"}
+    out = ToolRunner(p, ex, m).call("propose", {"reply": "Two looks.", "answers": [SPEC, second]})
+    assert out.terminal and out.content["ok"]
+    assert out.proposal["kind"] == "answers" and len(out.proposal["specs"]) == 2
+    assert len(out.proposal["titles"]) == 2
 
 
 def test_propose_validates_a_spec_without_changing_the_project(project):

@@ -89,6 +89,8 @@ class SourcesTray(QFrame):
         self.add_btn.setToolTip("Bring in a file, folder, URL or database"); self.add_btn.clicked.connect(self.addRequested.emit)
         self.toggle = QToolButton(); self.toggle.setObjectName("quiet"); self.toggle.setCheckable(True); self.toggle.setChecked(True)
         self.toggle.setIcon(icon("list-bullets", T.muted, 14)); self.toggle.setToolTip("Show or hide the sources")
+        self._auto = True                 # auto-collapse until the person opens it by hand: the strip matters at 2+
+        self._syncing = False
         h.addWidget(self.heading); h.addWidget(self.count); h.addStretch(1)
         h.addWidget(self.relate_btn); h.addWidget(self.add_btn); h.addWidget(self.toggle)
         v.addWidget(head)
@@ -99,7 +101,7 @@ class SourcesTray(QFrame):
         self.row_lay.setContentsMargins(10, 4, 10, 6); self.row_lay.setSpacing(8); self.row_lay.addStretch(1)
         self.scroll.setWidget(self.row)
         v.addWidget(self.scroll)
-        self.toggle.toggled.connect(self.scroll.setVisible)
+        self.toggle.toggled.connect(self._on_toggle)
         self._chips: dict[str, SourceChip] = {}
         for sig in (doc.nodeAdded, doc.nodeRemoved, doc.reloaded):
             listen(self, sig, lambda *_: self.refresh())
@@ -109,6 +111,11 @@ class SourcesTray(QFrame):
 
     def source_ids(self) -> list[str]:
         return [nid for nid, n in self.doc.pipeline.nodes.items() if registry.get(n.type).kind == "source"]
+
+    def _on_toggle(self, on: bool) -> None:
+        self.scroll.setVisible(on)
+        if not self._syncing:
+            self._auto = False            # the person opened or closed it: stop auto-setting it from the count
 
     def refresh(self) -> None:
         ids = set(self.source_ids())
@@ -126,6 +133,12 @@ class SourcesTray(QFrame):
         n = len(self._chips)
         self.count.setText(f"· {n}" if n else "")
         self.relate_btn.setEnabled(n >= 2)
+        if self._auto:
+            # collapsed until there are two or more sources to compare; the header (Add, Relate) stays visible
+            self._syncing = True
+            self.toggle.setChecked(n >= 2)
+            self._syncing = False
+        self.scroll.setVisible(self.toggle.isChecked())
         self.setVisible(n > 0)
 
     def _refresh_chips(self) -> None:

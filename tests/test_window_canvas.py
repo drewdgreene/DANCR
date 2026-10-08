@@ -34,6 +34,21 @@ def test_sources_tray_lists_and_hides(window, app, tmp_path):
     assert not window.sources.isVisible() or not window.sources._chips
 
 
+def test_sources_tray_collapses_until_two_sources(window, app, tmp_path):
+    window._add_load_node(_csv(tmp_path), None)
+    wait_run(window, app); pump(app, 80)
+    assert window.sources.isVisible()
+    assert not window.sources.scroll.isVisibleTo(window.sources)      # one source: collapsed by default
+    pl.DataFrame({"x": [1, 2, 3]}).write_csv(tmp_path / "b.csv")
+    window._add_load_node(str(tmp_path / "b.csv"), None)
+    wait_run(window, app); pump(app, 120)
+    assert window.sources.scroll.isVisibleTo(window.sources)          # two sources: opened to compare them
+    window.sources.toggle.setChecked(False)                           # a manual choice sticks
+    pump(app, 20)
+    assert not window.sources.scroll.isVisibleTo(window.sources)
+    assert not window.sources._auto
+
+
 def test_node_card_carries_the_finding(window, app, tmp_path):
     path = _csv(tmp_path)
     src = window._add_load_node(path, None)

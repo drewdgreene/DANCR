@@ -240,16 +240,22 @@ class ProposalCard(QFrame):
         self.setStyleSheet(f"QFrame {{ background:{T.panel}; border:1px solid {T.border}; border-radius:{RADIUS}px; }}")
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
         v = QVBoxLayout(self); v.setContentsMargins(10, 8, 10, 9); v.setSpacing(7)
-        title = proposal.get("title") or ("Steps to build" if proposal.get("kind") == "steps" else "Plan")
-        v.addWidget(_plain(QLabel(title), T.text, bold=True))
-        names = [str(s.get("title") or s.get("type")) for s in (proposal.get("steps") or [])]
-        if names and proposal.get("title") and names[-1] == proposal["title"]:
-            names = names[:-1]
-        if names:
-            self.steps_label = _plain(QLabel(" → ".join(names)), T.muted)
-            v.addWidget(self.steps_label)
-        if proposal.get("why"):
-            v.addWidget(_plain(QLabel(str(proposal["why"])), T.muted))
+        if proposal.get("kind") == "answers":
+            titles = [str(t) for t in (proposal.get("titles") or []) if str(t).strip()]
+            v.addWidget(_plain(QLabel(proposal.get("title") or f"{len(titles)} analyses"), T.text, bold=True))
+            for t in titles[:10]:
+                v.addWidget(_plain(QLabel("•  " + t), T.muted))
+        else:
+            title = proposal.get("title") or ("Steps to build" if proposal.get("kind") == "steps" else "Plan")
+            v.addWidget(_plain(QLabel(title), T.text, bold=True))
+            names = [str(s.get("title") or s.get("type")) for s in (proposal.get("steps") or [])]
+            if names and proposal.get("title") and names[-1] == proposal["title"]:
+                names = names[:-1]
+            if names:
+                self.steps_label = _plain(QLabel(" → ".join(names)), T.muted)
+                v.addWidget(self.steps_label)
+            if proposal.get("why"):
+                v.addWidget(_plain(QLabel(str(proposal["why"])), T.muted))
         assumptions = [str(a) for a in (proposal.get("assumptions") or []) if str(a).strip()]
         if assumptions:
             holder = QWidget(); hl = QVBoxLayout(holder); hl.setContentsMargins(0, 0, 0, 0); hl.setSpacing(2)
@@ -806,7 +812,7 @@ class AssistantPanel(QFrame):
         self._add_widget(AssistantCard(turn.text, turn.flags, turn.next_questions, self._ask_again,
                                        unverified=turn.unverified))
         prop = turn.proposal
-        if prop and prop.get("kind") in ("answer", "steps"):
+        if prop and prop.get("kind") in ("answer", "answers", "steps"):
             card = ProposalCard(prop, self._build, self._discard)
             if turn.answer or turn.node:
                 card.mark_built(turn.finding)
@@ -1087,7 +1093,7 @@ class AssistantPanel(QFrame):
         self._add_widget(AssistantCard(reply.text, reply.flags, nxt, self._ask_again, unverified=reply.unverified,
                                        on_regenerate=self._regenerate))
         prop = reply.proposal
-        if prop and prop.get("kind") in ("answer", "steps"):
+        if prop and prop.get("kind") in ("answer", "answers", "steps"):
             card = ProposalCard(prop, self._build, self._discard)
             self._pending_card = card
             self._add_widget(card)
@@ -1121,13 +1127,16 @@ class AssistantPanel(QFrame):
             card.applied()
             self._pending_edits_card = None
 
-    def built(self, finding: str = "", message: str = "", terminal: str | None = None, answer_id: str | None = None) -> None:
+    def built(self, finding: str = "", message: str = "", terminal: str | None = None, answer_id: str | None = None,
+              multi: bool = False) -> None:
         card = self._pending_card
         if card is not None:
+            # a set of answers gets only "Canvas" (reveal the first): Save/Replace act on one answer, which would
+            # hide the others, so they are left off for a multi-answer investigation
             card.built(finding,
                        on_reveal=(lambda t=terminal: self.revealRequested.emit(t)) if terminal else None,
-                       on_save=(lambda t=terminal: self.saveProjectRequested.emit(t)) if terminal else None,
-                       on_replace=(lambda t=terminal: self.replaceCanvasRequested.emit(t)) if terminal else None)
+                       on_save=(None if multi else (lambda t=terminal: self.saveProjectRequested.emit(t)) if terminal else None),
+                       on_replace=(None if multi else (lambda t=terminal: self.replaceCanvasRequested.emit(t)) if terminal else None))
             self._pending_card = None
         self._note_built(finding=finding, terminal=terminal, answer_id=answer_id)
         if message:

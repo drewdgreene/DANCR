@@ -141,8 +141,8 @@ class MainWindow(WindowActions, WindowPages, WindowAnswers, WindowSession, Windo
         self.mode_label = QLabel(""); self.mode_label.setObjectName("faint"); self.status.addPermanentWidget(self.mode_label)
         self._current: str | None = None
         self._current_answer: str | None = None
-        self._assistant_terminal: str | None = None
-        self._assistant_answer: str | None = None
+        self._assistant_terminals: list[str] = []
+        self._assistant_answers: list[str] = []
         self._ask_open = False                    # the ask bar shows only when asked for
         self._building: set[str] = set()          # answers queued until every row has been read
         self._tick = QTimer(self); self._tick.setInterval(100); self._tick.timeout.connect(self._tick_progress)
