@@ -41,6 +41,22 @@ def test_the_stewardship_audit_finds_the_seeded_defects(tmp_path):
     assert {"unique", "allowed values", "required", "reference"} <= checks
 
 
+def test_the_pack_benchmark_reads_its_questions_as_intended(tmp_path):
+    # the example's questions are a small benchmark: each must still read as the recipe it is meant to
+    from dancr.headless import run_eval
+    p = Pipeline.load(write_example("trial", tmp_path))
+    cases = [
+        {"id": "hero", "question": "t test grain yield rainfed vs drought_stress", "expect_recipe": "groups"},
+        {"id": "breakdown", "question": "average grain yield by treatment", "expect_recipe": "breakdown"},
+        {"id": "relationship", "question": "relationship between grain yield and plant height", "expect_recipe": "relationship"},
+        {"id": "top", "question": "top 5 lines by grain yield", "expect_recipe": "top"},
+        {"id": "quality", "question": "check the measurements", "expect_recipe": "quality"},
+        {"id": "trend", "question": "grain yield per month", "expect_recipe": "trend"},
+    ]
+    out = run_eval(p, cases)
+    assert out["ok"], out["cases"]
+
+
 def test_the_knowledge_base_withholds_the_restricted_dossier(tmp_path):
     write_example("trial", tmp_path)
     res = _run(tmp_path / "Knowledge base.json")
