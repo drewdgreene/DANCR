@@ -69,6 +69,19 @@ def test_tools_list_and_describe(project):
     assert any(c["name"] == "amount" for c in desc["columns"])
 
 
+def test_the_assistant_can_search_the_projects_text_index(tmp_path):
+    p = Pipeline("kb"); p.path = tmp_path / "kb.json"
+    p.add_node("enter_data", params={"columns": [{"name": "text", "type": "text"}],
+                                     "rows": [["drought tolerance in maize"], ["nitrogen use efficiency"]]}, id="docs")
+    p.add_node("build_index", params={"text_column": "text"}, id="idx"); p.connect("docs", "idx", "items")
+    p.save()
+    ex = Executor(p)
+    runner = ToolRunner(p, ex, deepen(p, ex, understand(p, ex)))
+    assert "search_knowledge" in [s.name for s in runner.schemas()]
+    out = runner.call("search_knowledge", {"query": "drought"}).content
+    assert out["count"] >= 1 and out["hits"][0]["text"].startswith("drought")
+
+
 def test_tool_list_steps_shows_the_map(project):
     p, ex, m = project
     out = ToolRunner(p, ex, m).call("list_steps", {}).content

@@ -85,6 +85,11 @@ class ToolRunner:
                  {**node, "rows": {"type": "integer"}, "columns": {"type": "array", "items": {"type": "string"}}}, ["node"]),
             spec("read_question", "Ask DANCR's deterministic reader to read a question in the person's own words; it returns a spec or why it could not.",
                  {"text": {"type": "string"}}, ["text"]),
+            spec("search_knowledge", "Search the project's own text index (a 'Build search index' step) and return the "
+                                     "closest passages, each with the source columns it came from. Use it to answer "
+                                     "questions from the project's documents and notes. Confidential/restricted "
+                                     "passages are withheld.",
+                 {**node, "query": {"type": "string"}, "k": {"type": "integer"}}, ["query"]),
             spec("suggest_answers", "The answers DANCR can build for these tables on its own, best first. Each carries a ready spec.",
                  {"focus": {"type": "string", "description": "optional step id to focus on"}}),
             spec("answer_reference", "The answer recipes and the spec keys each accepts."),
@@ -226,6 +231,20 @@ class ToolRunner:
             df = select_columns(lf, cols).head(rows).collect(engine="streaming")
         return ToolOutcome({"node": node, "rows": json_safe(df.to_dicts()),
                             "note": "Real sample rows were sent to the model because sample rows are allowed."})
+
+    def _t_search_knowledge(self, args: dict[str, Any]) -> ToolOutcome:
+        """Search the project's own text index. Restricted passages are withheld (never bypassable by the model)."""
+        from ..rag import search_knowledge
+        query = str(args.get("query") or "").strip()
+        if not query:
+            return ToolOutcome({"error": "search_knowledge needs a query"})
+        node = str(args.get("node") or "") or None
+        k = max(1, min(int(args.get("k") or 5), 20))
+        try:
+            out = search_knowledge(self.pipe, query, node=node, k=k, executor=self.executor)
+        except ValueError as e:
+            return ToolOutcome({"error": _clean_error(e)})
+        return ToolOutcome(out)
 
     def _t_read_question(self, args: dict[str, Any]) -> ToolOutcome:
         from ..ask import ask
