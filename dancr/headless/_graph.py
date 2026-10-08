@@ -29,14 +29,16 @@ from ..core.understand import default_tables, understand
 log = logging.getLogger("dancr.graph")
 
 
-def _sensitivity(pipe: Pipeline, node_id: str, project_level: str) -> str:
-    """A dataset's sensitivity: the project's declared level, or a 'Label sensitivity' step's own level for its
-    output. Anything else is public."""
-    node = pipe.nodes.get(node_id)
-    if node is not None and node.type == "label_sensitivity":
-        level = str(node.params.get("level") or "").lower()
-        if level in SENSITIVITY_LEVELS:
-            return level
+def _sensitivity(pipe: Pipeline, node_id: str, project_level: str, restricted: frozenset[str] = frozenset()) -> str:
+    """A dataset's sensitivity: the project's declared level, a 'Label sensitivity' step's own level (or, for a
+    per-row label column, ``confidential``), and anything derived from a restricted table. Anything else public."""
+    if node_id in restricted:
+        node = pipe.nodes.get(node_id)
+        if node is not None and node.type == "label_sensitivity" and not str(node.params.get("column") or "").strip():
+            level = str(node.params.get("level") or "").lower()
+            if level in SENSITIVITY_LEVELS:
+                return level                       # keep the declared level for a whole-table label
+        return "confidential"
     return project_level if project_level in SENSITIVITY_LEVELS else "public"
 
 
@@ -69,6 +71,8 @@ def _project_graph(root: Path, path: Path, pipe: Pipeline) -> tuple[Project, lis
     proj = Project(pid, pipe.name, Path(pid).name, change_key(path, pipe), CODE_FINGERPRINT, project_level)
     ex = Executor(pipe)
     model = understand(pipe, ex, nodes=default_tables(pipe))
+    from ..core.graph import restricted_nodes
+    restricted = frozenset(restricted_nodes(pipe, list(model.tables)))
     datasets: list[Dataset] = []
     version_of: dict[str, str] = {}
     sens_of: dict[str, str] = {}
@@ -77,7 +81,7 @@ def _project_graph(root: Path, path: Path, pipe: Pipeline) -> tuple[Project, lis
         dsid = dataset_id(pid, t.node)
         version = ex.safe_hash(t.node, memo) or ""
         version_of[dsid] = version
-        sens = _sensitivity(pipe, t.node, project_level)
+        sens = _sensitivity(pipe, t.node, project_level, restricted)
         sens_of[dsid] = sens
         ds = Dataset(dsid, pid, t.node, t.title, shape=t.shape, rows=t.rows, rows_exact=t.rows_exact,
                      time_column=t.time or "", source=Path(t.source).name if t.source else "",
@@ -214,7 +218,7 @@ def build_graph(root: Path | str, *, projects: list[str] | None = None, force: b
         outcomes: list[tuple[str, Any]] = []
         if int(jobs or 1) > 1 and len(wanted) > 1:
             from concurrent.futures import ThreadPoolExecutor
-            with ThreadPoolExecutor(max_workers=int(jobs)) as pool:
+            with ThreadPoolExecutor(max_workers=max(1, min(int(jobs), 32))) as pool:
                 outcomes = list(pool.map(one, wanted))
         else:
             outcomes = [one(p) for p in wanted]

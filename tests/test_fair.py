@@ -188,3 +188,44 @@ def test_mcp_export_fair_and_meta(tmp_path, mcp_root):
     assert json.loads(srv.get_dataset_meta(str(pj)))["license"] == "MIT"
     out = json.loads(srv.export_fair(str(pj), format="frictionless"))
     assert out["resources"][0]["name"] == "src"
+
+
+# ---------------------------------------------------------------- sensitivity is respected in shared exports
+def test_a_manifest_withholds_a_confidential_project_unless_allowed(tmp_path):
+    pl.DataFrame({"a": [1, 2, 3]}).write_csv(tmp_path / "s.csv")
+    p = Pipeline("p"); p.path = tmp_path / "p.json"
+    p.add_node("load_file", params={"path": "s.csv"}, id="src")
+    p.meta["sensitivity"] = "confidential"
+    p.save()
+    ex = Executor(p)
+    full = fair.run_manifest(p, ex)
+    assert {n["id"] for n in full["nodes"]} == {"src"} and full["sources"]
+    shared = fair.run_manifest(p, ex, allow_restricted=False)
+    assert shared["nodes"] == [] and shared["sources"] == []      # nothing leaks by default
+
+
+def test_export_fair_manifest_withholds_restricted_nodes_by_default(shop):
+    shop.add_node("label_sensitivity", title="Secrets", params={"level": "restricted"}, id="secret")
+    shop.connect("orders", "secret", "in")
+    shop.save()
+    doc = hl.export_fair(shop, fmt="manifest")                    # allow_restricted defaults to False (shared)
+    ids = {n["id"] for n in doc["nodes"]}
+    assert "secret" not in ids and "orders" in ids
+    assert "Secrets" not in json.dumps(doc)                       # the withheld title does not leak
+    full = hl.export_fair(shop, fmt="manifest", allow_restricted=True)
+    assert "secret" in {n["id"] for n in full["nodes"]}
+
+
+def test_a_shared_crate_withholds_a_confidential_project(tmp_path):
+    pl.DataFrame({"a": [1, 2, 3]}).write_csv(tmp_path / "s.csv")
+    p = Pipeline("p"); p.path = tmp_path / "p.json"
+    p.add_node("load_file", params={"path": "s.csv"}, id="src")
+    p.meta["sensitivity"] = "confidential"
+    p.meta["assistant"] = {"turns": [{"role": "user", "text": "secret question"}]}
+    p.save()
+    out = tmp_path / "crate"
+    rec = hl.package_rocrate(p, Executor(p), out=out, copy="data", allow_restricted=False)
+    assert not any(str(f).endswith("s.csv") for f in rec["files"])    # the source is not copied
+    assert "secret question" not in (out / "dancr-pipeline.json").read_text()
+    full = hl.package_rocrate(p, Executor(p), out=tmp_path / "crate_full", copy="data", allow_restricted=True)
+    assert any(str(f).endswith("s.csv") for f in full["files"])

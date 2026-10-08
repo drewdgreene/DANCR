@@ -184,7 +184,10 @@ def _retrieve(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str,
                           messages=["The index has no searchable passages"])
     withheld = 0
     if "sensitivity" in df.columns and not params.get("allow_restricted"):
-        restricted = df["sensitivity"].cast(pl.Utf8).str.to_lowercase().is_in(["confidential", "restricted"])
+        # a null label is "not marked" (visible): only explicitly restricted rows are withheld. A null compared
+        # with is_in is null, and ~null is null, so without the is_not_null guard every unlabelled row would drop.
+        level = df["sensitivity"].cast(pl.Utf8).str.to_lowercase()
+        restricted = level.is_not_null() & level.is_in(["confidential", "restricted"])
         withheld = int(restricted.sum())
         df = df.filter(~restricted)
     texts = df["text"].to_list() if "text" in df.columns else [""] * df.height

@@ -730,14 +730,27 @@ class AssistantPanel(QFrame):
         return True
 
     def _project_replaced(self) -> None:
+        # A turn may still be running against the project we are leaving. Detach it so its reply is neither
+        # recorded into the session that will replace it nor written into the newly opened project's file.
+        self._detach_turn()
         self._pending_card = None
         self._pending_edits_card = None
-        self._finish_working()
-        self._busy = False
         self._announced = set()
         self._focus = None
         self.proposalCleared.emit()
         self._reload_cards()
+
+    def _detach_turn(self) -> None:
+        """Stop waiting on the current turn and drop any result it has yet to deliver."""
+        task = self._task
+        if task is not None:
+            task.cancelled = True
+            view_pool().take(task)
+        self._task = None
+        self._session = None
+        self._regenerating = False
+        self._finish_working()
+        self._set_busy(False, "")
 
     def _on_node_added(self, nid: str) -> None:
         if not alive(self) or not self.isVisible():
@@ -940,17 +953,12 @@ class AssistantPanel(QFrame):
             self.send()
 
     def stop(self) -> None:
-        if self._task is not None:
-            self._task.cancelled = True
-            view_pool().take(self._task)
         if self._session is not None:
             try:
                 self._session.provider.cancel()
             except Exception:  # noqa: BLE001
                 pass
-        self._regenerating = False
-        self._finish_working()
-        self._set_busy(False, "")
+        self._detach_turn()
 
     COMMANDS = {
         "profile": "Profile every table in this project: what each one is, its columns and their roles, how many "
@@ -1033,23 +1041,23 @@ class AssistantPanel(QFrame):
         ex = self.doc.snapshot_executor()
         settings = self._settings_obj()
         provider = self._provider or provider_for(settings)
-        self._session = AssistantSession(ex.pipeline, ex, model, provider, settings,
-                                         allow_samples=self.allow_samples(), focus=self._focus,
-                                         thread=self._thread, run=True)
+        session = AssistantSession(ex.pipeline, ex, model, provider, settings,
+                                   allow_samples=self.allow_samples(), focus=self._focus,
+                                   thread=self._thread, run=True)
+        self._session = session
         self._working = WorkingCard("Thinking")
         self._add_widget(self._working)
-        task = Task(self._run_turn, text)
+        # The turn is bound to *this* session, never to self._session: if the panel is stopped or reloaded into
+        # another project while it runs, a late reply must not be recorded against the session that replaced it.
+        task = Task(lambda: session.turn(text, on_event=self._progress.event.emit))
         task.waits_for_run = True
-        # Capture the task and drop a reply that arrives after Stop or after a newer turn: a queued delivery can
-        # outlive a cancel, and must not record the turn or add a proposal card.
-        task.signals.done.connect(lambda reply, t=task: self._got_reply(text, reply) if t is self._task and not t.cancelled else None)
+        # Capture the task and drop a reply that arrives after Stop, a reload, or a newer turn: a queued delivery
+        # can outlive a cancel, and must not record the turn or add a proposal card.
+        task.signals.done.connect(lambda reply, t=task, s=session: self._got_reply(text, reply, s) if t is self._task and not t.cancelled else None)
         task.signals.failed.connect(lambda msg, t=task: self._failed(msg) if t is self._task and not t.cancelled else None)
         task.signals.finished.connect(lambda t=task: self._set_busy(False, "") if t is self._task else None)
         self._task = task
         view_pool().start(task)
-
-    def _run_turn(self, text: str):
-        return self._session.turn(text, on_event=self._progress.event.emit)
 
     def _finish_working(self) -> None:
         if self._working is not None:
@@ -1068,19 +1076,19 @@ class AssistantPanel(QFrame):
         self._set_busy(True, "Interpreting")
         task = Task(lambda: session.synthesize(findings, on_event=self._progress.event.emit))
         task.waits_for_run = False
-        task.signals.done.connect(lambda reply, t=task: self._got_synthesis(reply) if t is self._task and not t.cancelled else None)
+        task.signals.done.connect(lambda reply, t=task, s=session: self._got_synthesis(reply, s) if t is self._task and not t.cancelled else None)
         task.signals.failed.connect(lambda msg, t=task: self._failed(msg) if t is self._task and not t.cancelled else None)
         task.signals.finished.connect(lambda t=task: self._set_busy(False, "") if t is self._task else None)
         self._task = task
         view_pool().start(task)
 
-    def _got_synthesis(self, reply) -> None:
-        if not alive(self) or self._session is None:
+    def _got_synthesis(self, reply, session: AssistantSession) -> None:
+        if not alive(self) or session is None:
             return
         self._finish_working()
-        self._session.record("", reply, new_user=False)
-        self.doc.set_thread(self._session.thread.to_dict())
-        self._thread = self._session.thread
+        session.record("", reply, new_user=False)
+        self.doc.set_thread(session.thread.to_dict())
+        self._thread = session.thread
         self._update_cost()
         if reply.kind == "error":
             self._add_widget(NoteCard(reply.error or "Could not interpret the results.", error=True))
@@ -1106,14 +1114,14 @@ class AssistantPanel(QFrame):
         self._add_widget(_action_card("The Assistant could not finish", str(msg),
                                       [("Try again", lambda: self._ask_again(self._last_text))], tone="danger"))
 
-    def _got_reply(self, text: str, reply) -> None:
-        if self._session is None or not alive(self):
+    def _got_reply(self, text: str, reply, session: AssistantSession) -> None:
+        if session is None or not alive(self):
             return
         self._finish_working()
-        self._session.record(text, reply, new_user=not self._regenerating)
+        session.record(text, reply, new_user=not self._regenerating)
         self._regenerating = False
-        self.doc.set_thread(self._session.thread.to_dict())
-        self._thread = self._session.thread
+        self.doc.set_thread(session.thread.to_dict())
+        self._thread = session.thread
         self._update_cost()
         if reply.kind == "paused":
             self._add_widget(_action_card("Paused", reply.text or "The model is not available.",

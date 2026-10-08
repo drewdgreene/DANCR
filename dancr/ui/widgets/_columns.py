@@ -55,6 +55,7 @@ class ColumnCombo(QComboBox):
             self.addItem(f"{KIND_ICON.get(kind_of(schema, c), '?')}  {c}", c)
         self.setCurrentText(cur)
         self.blockSignals(False)
+        # QCompleter.setModel takes ownership and frees the previous model, so refreshes do not leak
         self._completer.setModel(QStringListModel([c for c in columns_for(schema, group)], self._completer))
 
     def column(self) -> str:

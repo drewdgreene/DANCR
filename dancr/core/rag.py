@@ -65,9 +65,9 @@ def chunks(text: Any, size: int = 800, overlap: int = 100) -> list[str]:
     return out
 
 
-def matrix(vectors: list[Any]) -> np.ndarray:
-    """A (n, dim) float32 matrix from a column of vectors (lists or arrays)."""
-    if not vectors:
+def matrix(vectors: Any) -> np.ndarray:
+    """A (n, dim) float32 matrix from a column of vectors (a numpy array passes through; a list is converted)."""
+    if vectors is None or len(vectors) == 0:
         return np.zeros((0, DEFAULT_DIM), dtype=np.float32)
     return np.asarray(vectors, dtype=np.float32)
 
@@ -152,14 +152,14 @@ def rank(query: str, *, texts: list[Any], vectors: list[Any] | None, dim: int | 
     floor on the reported score and is ignored for BM25, whose scores are unbounded."""
     if retriever not in RETRIEVERS:
         raise ValueError(f"Unknown retriever {retriever!r}. Choose one of: {', '.join(RETRIEVERS)}")
-    vectors = vectors or []
+    has_vectors = vectors is not None and len(vectors) > 0
     provenance: dict[str, Any] = {"retriever": retriever, "embedder": None, "retrievers": []}
-    if retriever == "bm25" or not vectors:
+    if retriever == "bm25" or not has_vectors:
         scores = bm25_scores(texts, query)
         provenance["retrievers"] = ["bm25"]
         floor = 0.0
     else:
-        size = int(dim or (len(vectors[0]) if vectors else DEFAULT_DIM))
+        size = int(dim or (len(vectors[0]) if has_vectors else DEFAULT_DIM))
         lex = lexical_scores(query, vectors, size)
         provenance["embedder"] = EMBEDDER_ID
         if retriever == "hybrid":
@@ -360,15 +360,20 @@ def search_knowledge(pipe, query: str, *, node: str | None = None, k: int = 5, m
     df = pl.read_parquet(st.output)
     withheld = 0
     if "sensitivity" in df.columns and not allow_restricted:
-        restricted = df["sensitivity"].cast(pl.Utf8).str.to_lowercase().is_in([s.lower() for s in restricted_levels])
+        # a null label means "not marked", i.e. visible: only rows explicitly labelled at a restricted level are
+        # withheld. (A null compared with is_in gives null, and ~null is null, which filter would drop.)
+        level = df["sensitivity"].cast(pl.Utf8).str.to_lowercase()
+        restricted = level.is_not_null() & level.is_in([s.lower() for s in restricted_levels])
         withheld = int(restricted.sum())
         df = df.filter(~restricted)
     if df.height == 0:
         return {"kind": "dancr.search", "query": query, "node": node, "count": 0, "withheld": withheld,
                 "provenance": {"retriever": retriever, "retrievers": [], "embedder": None}, "hits": []}
     texts = df["text"].to_list() if "text" in df.columns else [""] * df.height
-    vectors = df["vector"].to_list() if "vector" in df.columns else []
-    use = retriever if (vectors or retriever == "bm25") else "bm25"   # an index with no vectors still searches by keywords
+    # a numpy matrix straight from the Arrow buffer, not a Python list of lists: a 200k-chunk index is held once,
+    # not copied into interpreter objects
+    vectors = df["vector"].to_numpy() if "vector" in df.columns else []
+    use = retriever if (len(vectors) or retriever == "bm25") else "bm25"   # an index with no vectors still searches by keywords
     order, scores, provenance = rank(query, texts=texts, vectors=vectors, dim=None, retriever=use,
                                      k=k, min_score=min_score)
     provenance["node"] = node

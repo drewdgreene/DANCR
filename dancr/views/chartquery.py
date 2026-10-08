@@ -26,6 +26,8 @@ class ChartData:
     kind: str
     x: str | None = None                    # axis column for line/scatter (None = row number)
     ys: list[str] = field(default_factory=list)
+    series_specs: list[dict[str, Any]] = field(default_factory=list)   # the chosen series, aligned to ``ys`` (a
+    #                                     column dropped from the schema must not shift the others' colour/label)
     line: lod.LineData | None = None
     scatter: lod.ScatterData | None = None
     groups: list[tuple[str, Any]] | None = None   # colour-by: (value, LineData | ScatterData)
@@ -101,6 +103,13 @@ def resolve_columns(schema: dict[str, pl.DataType], spec: dict[str, Any]) -> tup
     return x, ys
 
 
+def resolve_series_specs(spec: dict[str, Any], ys: list[str]) -> list[dict[str, Any]]:
+    """The chosen series entries, in the same order as the resolved ``ys``: a series whose column is no longer in
+    the table is left out here too, so it cannot shift the other series' colour and label."""
+    chosen = [s for s in (spec.get("series") or []) if s.get("column") in ys]
+    return chosen if chosen else [{"column": y} for y in ys]
+
+
 def _mean(lf: pl.LazyFrame, col: str) -> float | None:
     v = lf.select(pl.col(col).cast(pl.Float64).mean()).collect(engine="streaming")[0, 0]
     return None if v is None or v != v else float(v)
@@ -130,7 +139,7 @@ def query_one(lf: pl.LazyFrame, schema: dict[str, pl.DataType], spec: dict[str, 
         key = x or "__row"
         if key not in bounds:
             bounds[key] = lod.x_bounds(whole, x)
-        cd = ChartData("line", x, ys)
+        cd = ChartData("line", x, ys, series_specs=resolve_series_specs(spec, ys))
         values, others, other_rows = lod.group_values_info(lf, color_by) if color_by else ([], 0, 0)
         if values:
             # with no x column the rows are numbered before the groups are taken apart, so each group keeps its rows
@@ -148,7 +157,7 @@ def query_one(lf: pl.LazyFrame, schema: dict[str, pl.DataType], spec: dict[str, 
         if not x or not ys:
             raise ChartError("A scatter chart needs an X column and a Y column")
         w, h = max(1, width_px // 2), max(1, height_px // 2)
-        cd = ChartData("scatter", x, ys[:1])
+        cd = ChartData("scatter", x, ys[:1], series_specs=resolve_series_specs(spec, ys[:1]))
         cd.scatter = lod.scatter_data(lf, x, ys[0], x_range=x_range, width_px=w, height_px=h)
         values, others, other_rows = lod.group_values_info(lf, color_by) if color_by else ([], 0, 0)
         if values:

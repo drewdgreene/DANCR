@@ -499,3 +499,13 @@ def test_geojson_multipolygon_keeps_holes_with_their_polygon():
                       "((10 10, 12 10, 12 12, 10 12, 10 10), (11 11, 11.5 11, 11.5 11.5, 11 11)))")
     assert g["type"] == "MultiPolygon" and len(g["coordinates"]) == 2
     assert len(g["coordinates"][1]) == 2                     # the second polygon keeps its hole as a second ring
+
+
+def test_a_map_with_a_cell_size_is_drawn_as_cells(tmp_path):
+    from dancr.views.mapquery import query_map
+    src = _cities(tmp_path)
+    lf = pl.read_csv(src).lazy()
+    md = query_map(lf, lf.collect_schema(), {"lat": "lat", "lon": "lon", "cell_size": "5km"})
+    assert md.kind == "cells" and md.cell_size and md.plotted == 3
+    md2 = query_map(lf, lf.collect_schema(), {"lat": "lat", "lon": "lon"})
+    assert md2.kind == "points" and md2.cell_size is None

@@ -105,6 +105,8 @@ def fmt_pct(v: Any, digits: int = 1) -> str:
     if n is None:
         return "–"
     s = f"{n:.{digits}f}".rstrip("0").rstrip(".")
+    if s in ("-0", "-", ""):            # a small negative rounds to zero, which is not "-0%"
+        s = "0"
     return f"{s}%"
 
 

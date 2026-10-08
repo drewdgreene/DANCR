@@ -418,3 +418,11 @@ def test_every_shape_refuses_a_single_x_value(kind, x):
     lf = pl.DataFrame({"x": [x] * 7, "y": [1.0, 2, 3, 4, 5, 6, 7]}).lazy()
     with pytest.raises(ValueError, match="All x values are the same"):
         fits.fit_frame(lf, "x", "y", kind)
+
+
+def test_compare_groups_survives_an_input_column_named_order(tmp_path):
+    # the step adds a temp row-order column; a real column of that name must not collide with it
+    p = pipe_with(tmp_path, pl.DataFrame({"__order": [1, 2, 3, 4], "g": ["a", "a", "b", "b"], "x": [1.0, 2.0, 3.0, 4.0]}))
+    c = p.add_node("compare_groups", params={"by": "g", "columns": ["x"]}); p.connect("src", c.id)
+    st = Executor(p).run()[c.id]
+    assert st.status == "done", st.error

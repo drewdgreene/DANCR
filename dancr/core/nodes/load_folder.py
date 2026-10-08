@@ -97,6 +97,7 @@ def _apply(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, An
             except Exception as e:  # noqa: BLE001 - reported below with the file named
                 found = []
                 report_files.append({"file": f.name, "tables_error": str(e)})
+            all_tables = found
             if mode == "match":
                 found = [t for t in found if wanted and (wanted in t[0].lower()
                                                          or any(wanted == str(v).lower() for v in t[1].values()))]
@@ -106,7 +107,8 @@ def _apply(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, An
                         skipped.append(f"{f.name}: {why}")
                         report_files.append({"file": f.name, "skipped": why})
                         continue
-                    raise ValueError(f"{f.name}: {why}. It holds: {', '.join(t[0] for t in tables_in(f)) or 'none'}")
+                    # name what the file does hold from the list already read, not by reading it a second time
+                    raise ValueError(f"{f.name}: {why}. It holds: {', '.join(t[0] for t in all_tables) or 'none'}")
             parts = found or [(f.stem, {})]
         for title, extra in parts:
             try:

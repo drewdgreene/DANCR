@@ -85,10 +85,13 @@ def _download(ctx: Ctx, url: str, headers: dict[str, str], timeout: int, ext: st
         raise
     name = hashlib.sha1(url.encode()).hexdigest()[:16] + h.hexdigest()[:8] + ext
     target = folder / name
-    if target.exists():
-        tmp.unlink(missing_ok=True)
-    else:
-        os.replace(tmp, target)
+    try:
+        if target.exists():
+            pass                                  # an identical download is already cached
+        else:
+            os.replace(tmp, target)
+    finally:
+        tmp.unlink(missing_ok=True)               # never leave the temp behind, even if the replace is refused
     return target, size
 
 

@@ -366,8 +366,13 @@ def _fuzzy(ctx: Ctx, left: pl.LazyFrame, right: pl.LazyFrame, ls: dict[str, pl.D
                 lookup[str(a)] = (best, round(float(bs), 4))
         if not lookup:
             msgs.append(f"No key in the first table reached a similarity of {threshold:g}")
-        mapping = pl.DataFrame({ltmp: list(lookup), "__rmatch": [v[0] for v in lookup.values()],
-                                score_col: [v[1] for v in lookup.values()]})
+        if lookup:
+            mapping = pl.DataFrame({ltmp: list(lookup), "__rmatch": [v[0] for v in lookup.values()],
+                                    score_col: [v[1] for v in lookup.values()]})
+        else:
+            # no key matched: still join *something* with the right dtypes, or an all-Null mapping would make the
+            # key types disagree and the join below fail. Every left row keeps a blank key and score, as intended.
+            mapping = pl.DataFrame(schema={ltmp: pl.Utf8, "__rmatch": pl.Utf8, score_col: pl.Float64})
         l = l.join(mapping.lazy(), on=ltmp, how="left")
         total = len(lkeys)
         matched = len(lookup)

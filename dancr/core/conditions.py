@@ -113,9 +113,15 @@ def rule_mask(schema: dict[str, pl.DataType], rule: dict[str, Any], inputs: dict
     if op == "not_empty":
         return ~rule_mask(schema, {"column": col, "op": "empty"})
     if op in ("year", "month"):
-        n = _month_number(v) if op == "month" else int(number_from_text(v, what))
-        if op == "month" and not 1 <= n <= 12:
-            raise ValueError(f"{what}: {v!r} is not a month (1–12 or its name)")
+        if op == "month":
+            n = _month_number(v)
+            if not 1 <= n <= 12:
+                raise ValueError(f"{what}: {v!r} is not a month (1–12 or its name)")
+        else:
+            f = number_from_text(v, what)               # a NaN/inf value is refused here, not turned into a year
+            if f != int(f):
+                raise ValueError(f"{what}: {v!r} is not a whole year")
+            n = int(f)
         return (c.dt.year() if op == "year" else c.dt.month()) == n
     if op == "true":
         return c.cast(pl.Boolean) == True  # noqa: E712
@@ -162,6 +168,8 @@ def rule_mask(schema: dict[str, pl.DataType], rule: dict[str, Any], inputs: dict
     lit = _literal(v, kind, what, ltype)
     case = bool(rule.get("case_sensitive", False))
     if op == "between":
+        if kind == NUM and number_from_text(v2, what) < number_from_text(v, what):
+            raise ValueError(f"{what}: the range ends before it starts ({v!r} to {v2!r})")   # would match nothing
         return excel_compare(">=", c, lit, kind) & excel_compare("<=", c, _literal(v2, kind, what, ltype), kind)
     sym = {"eq": "=", "ne": "!=", "gt": ">", "lt": "<", "ge": ">=", "le": "<="}.get(op)
     if sym is None:

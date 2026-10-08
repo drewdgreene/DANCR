@@ -53,3 +53,18 @@ def test_headless_render_resolves_an_input_named_limit(tmp_path):
                       "limits": [{"value": "upper", "label": "upper"}]},
                  out, inputs={"upper": 4.0})
     assert out.exists() and out.stat().st_size > 0
+
+
+def test_a_pdf_helper_that_fails_with_no_message_is_reported_plainly(tmp_path, monkeypatch):
+    import subprocess
+
+    import pytest
+
+    from dancr.views import pdf
+
+    def fake(*a, **k):
+        return subprocess.CompletedProcess(a, 1, "", "")     # non-zero exit, empty stderr (killed/aborted)
+
+    monkeypatch.setattr(pdf.subprocess, "run", fake)
+    with pytest.raises(RuntimeError, match="exit 1"):
+        pdf._in_helper("<h1>x</h1>", tmp_path / "r.pdf")

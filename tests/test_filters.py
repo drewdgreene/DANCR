@@ -173,3 +173,16 @@ def test_conditions_tz_categorical_thousands():
     assert tz.filter(m).height == 2
     m = rule_mask(tz.schema, {"column": "n", "op": "in", "value": "1000, 7"})
     assert tz.filter(m).height == 2
+
+
+def test_a_year_must_be_whole_and_finite():
+    df = pl.DataFrame({"d": [datetime(2024, 1, 1)]})
+    with pytest.raises(ValueError, match="whole year"):
+        rule_mask(df.schema, {"column": "d", "op": "year", "value": "2024.7"})
+    with pytest.raises(ValueError):
+        rule_mask(df.schema, {"column": "d", "op": "year", "value": "inf"})
+
+
+def test_a_reversed_between_range_is_refused_not_silently_empty():
+    with pytest.raises(ValueError, match="before it starts"):
+        rule_mask(DF.schema, {"column": "n", "op": "between", "value": 10, "value2": 2})

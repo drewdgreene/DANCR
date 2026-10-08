@@ -380,9 +380,9 @@ class WindowSession:
         self._refresh_recent()
 
     def _refresh_recent(self) -> None:
-        self.recent_menu.clear()
+        self.recent_menu.clear()                            # clear() frees actions parented to the menu, not to the window
         for r in self._recent():
-            self.recent_menu.addAction(QAction(r, self, triggered=lambda checked=False, p=r: self._confirm_stop_run("open another project") and self.maybe_save() and self.open_path(p)))
+            self.recent_menu.addAction(QAction(r, self.recent_menu, triggered=lambda checked=False, p=r: self._confirm_stop_run("open another project") and self.maybe_save() and self.open_path(p)))
 
     def resizeEvent(self, e) -> None:
         super().resizeEvent(e)

@@ -159,6 +159,7 @@ def test_number_and_percent_formatting():
     assert fmt_number(1234.5) == "1,234" or fmt_number(1234.5) == "1,230"
     assert fmt_number(None) == "–" and fmt_number(float("nan")) == "–"
     assert fmt_pct(12.0) == "12%" and fmt_pct(0.5) == "0.5%" and fmt_pct(None) == "–"
+    assert fmt_pct(-0.001) == "0%"                              # a small negative rounds to zero, not "-0%"
 
 
 # ------------------------------------------------------------------- regressions

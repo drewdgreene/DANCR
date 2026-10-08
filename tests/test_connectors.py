@@ -103,6 +103,13 @@ def test_expand_env_and_redact(monkeypatch):
     assert "secret" not in secrets.redact("https://x/y?password=secret")
 
 
+def test_redact_handles_passwords_with_slash_or_at():
+    # a password may contain the very characters that usually delimit the URL
+    assert "pa/ss" not in secrets.redact("postgresql://user:pa/ss@host/db")
+    assert "p@ss" not in secrets.redact("postgresql://user:p@ss@host/db")
+    assert secrets.redact("postgresql://user:p@ss@host/db").endswith("@host/db")
+
+
 def test_connector_secrets_are_redacted_in_describe(tmp_path, mcp_root):
     import dancr.mcp_server as srv
     pj = tmp_path / "p.json"

@@ -122,7 +122,8 @@ def query_map(lf: pl.LazyFrame, schema: dict[str, pl.DataType], params: dict[str
         xs, ys = xs[good], ys[good]
         df = df.filter(pl.Series(good))
 
-    md = MapData(xs=xs, ys=ys, total=total, plotted=len(xs), stride=stride,
+    md = MapData(kind="cells" if r["cell_size"] else "points",
+                 xs=xs, ys=ys, total=total, plotted=len(xs), stride=stride,
                  basemap=r["basemap"], cell_size=r["cell_size"], color_column=r["color_by"])
 
     if r["color_by"]:

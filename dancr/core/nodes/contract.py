@@ -75,6 +75,16 @@ def _infer(schema: dict[str, pl.DataType], lf: pl.LazyFrame) -> dict[str, Any]:
     return {"columns": cols}
 
 
+def _as_number(v: Any) -> float | None:
+    """A contract's allowed value as a number, or None when it is not one (a bool is not a number here)."""
+    if isinstance(v, bool) or v is None:
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
 def _issue(check: str, column: str | None, failing: int, message: str, severity: str = "error",
            example: Any = None) -> dict[str, Any]:
     return {"check": check, "column": column, "severity": severity, "failing_rows": int(failing),
@@ -114,8 +124,17 @@ def _column_checks(lf: pl.LazyFrame, schema: dict[str, pl.DataType], name: str, 
                 out.append(_issue("maximum", name, n, f"{n:,} value(s) above {spec['max']}"))
     if spec.get("allowed"):
         allowed = list(spec["allowed"])
-        bad = (pl.col(name).is_not_null()) & (~pl.col(name).cast(pl.Utf8).is_in([str(a) for a in allowed]))
-        n = int(lf.select(bad.sum()).collect(engine="streaming")[0, 0] or 0)
+        if kind == NUM:
+            # compare numbers as numbers: an allowed 1 must accept a Float64 1.0, which a text comparison rejects
+            nums = [n for a in allowed if (n := _as_number(a)) is not None]
+            if nums:
+                bad = (pl.col(name).is_not_null()) & (~pl.col(name).cast(pl.Float64).is_in(nums))
+                n = int(lf.select(bad.sum()).collect(engine="streaming")[0, 0] or 0)
+            else:
+                bad, n = None, 0                       # no numeric allowed values: nothing enforceable to report
+        else:
+            bad = (pl.col(name).is_not_null()) & (~pl.col(name).cast(pl.Utf8).is_in([str(a) for a in allowed]))
+            n = int(lf.select(bad.sum()).collect(engine="streaming")[0, 0] or 0)
         if n:
             example = lf.filter(bad).select(pl.col(name).cast(pl.Utf8)).head(1).collect(engine="streaming")
             ex = example[0, 0] if example.height else None

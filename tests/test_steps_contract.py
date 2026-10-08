@@ -39,6 +39,19 @@ def test_contract_unique_counts_a_null_as_missing(tmp_path):
     assert "unique" in set(df["check"].to_list())          # b is repeated; the blank must not hide it
 
 
+def test_contract_allowed_compares_numbers_as_numbers(tmp_path):
+    p = Pipeline("c"); p.path = tmp_path / "c.json"
+    p.add_node("enter_data", params={
+        "columns": [{"name": "code", "type": "number"}],
+        "rows": [[1.0], [2.0], [3.0]]}, id="d")
+    contract = {"columns": {"code": {"allowed": [1, 2]}}}
+    p.add_node("check_contract", params={"contract": json.dumps(contract), "output": "issues"}, id="k")
+    p.connect("d", "k", "in")
+    df, st = run(p, "k")
+    issues = [r for r in df.iter_rows(named=True) if r["check"] == "allowed values"]
+    assert len(issues) == 1 and issues[0]["failing_rows"] == 1   # only 3.0 is outside; 1.0 and 2.0 are allowed
+
+
 def test_contract_infers_a_draft_when_none_is_given(tmp_path):
     p = Pipeline("c"); p.path = tmp_path / "c.json"
     p.add_node("enter_data", params={"columns": [{"name": "x", "type": "number"}],

@@ -36,21 +36,11 @@ def _dataset_meta(p: Pipeline) -> dict[str, Any]:
 
 
 def _restricted_nodes(p: Pipeline, nodes: Any) -> set[str]:
-    """The table nodes whose data is confidential or restricted: the project's declared level, or a 'Label
-    sensitivity' step's own level. They are withheld from the context/FAIR export unless ``allow_restricted``."""
-    from ..core.graph import SENSITIVITY_LEVELS, is_restricted
-    project_level = str((getattr(p, "meta", None) or {}).get("sensitivity") or "public").lower()
-    out: set[str] = set()
-    for nid in nodes:
-        node = p.nodes.get(nid)
-        level = project_level
-        if node is not None and node.type == "label_sensitivity":
-            own = str(node.params.get("level") or "").lower()
-            if own in SENSITIVITY_LEVELS:
-                level = own
-        if is_restricted(level):
-            out.add(nid)
-    return out
+    """The table nodes whose data is confidential or restricted (see ``core.graph.restricted_nodes``): a project
+    or step label, a per-row label column, and anything derived from a restricted table. They are withheld from
+    the context/FAIR export unless ``allow_restricted``."""
+    from ..core.graph import restricted_nodes
+    return restricted_nodes(p, nodes)
 
 
 def build_context(p: Pipeline, executor: Executor | None = None, *, nodes: list[str] | None = None,
@@ -169,7 +159,8 @@ def export_fair(p: Pipeline, executor: Executor | None = None, *, fmt: str = "sc
                         samples=samples, sample_rows=sample_rows, run=run, root=root,
                         allow_restricted=allow_restricted)
     meta = p.dataset_meta()
-    manifest = fair.run_manifest(p, ex, meta=meta, graph=ctx.get("graph")) if fmt.strip().lower().replace("_", ".") in (
+    manifest = fair.run_manifest(p, ex, meta=meta, graph=ctx.get("graph"),
+                                 allow_restricted=allow_restricted) if fmt.strip().lower().replace("_", ".") in (
         "manifest", "provenance", "run", "rocrate", "ro-crate") else None
     doc = fair.fair_document(ctx, fmt, pipe=p, executor=ex, manifest=manifest, meta=meta,
                              pipeline_file=p.path.name if p.path else None)
@@ -184,10 +175,15 @@ ROCRATE_COPY = ("metadata", "data", "results", "all")
 def package_rocrate(p: Pipeline, executor: Executor | None = None, *, out: Path | str,
                     copy: str = "metadata", zip: bool = False, meta: dict[str, Any] | None = None,
                     manifest: dict[str, Any] | None = None, samples: bool = False,
-                    overwrite: bool = False) -> dict[str, Any]:
+                    overwrite: bool = False, allow_restricted: bool = False) -> dict[str, Any]:
     """Write a self-contained RO-Crate: the FAIR descriptors, the project file and its run manifest, and — with
     ``copy`` ``data``/``results``/``all`` — the source files and the files the project writes. Written as a
-    directory or a ``.zip``. Everything lands inside the project's folder, never over a data file it reads."""
+    directory or a ``.zip``. Everything lands inside the project's folder, never over a data file it reads.
+
+    A crate is a shared artefact, so confidential/restricted datasets are withheld by default: their manifest
+    entries, source and result files, and the Assistant conversation are left out. Pass ``allow_restricted=True``
+    for a complete crate."""
+    import copy as _copy
     import shutil
     import zipfile
     from ..core import fair
@@ -197,8 +193,19 @@ def package_rocrate(p: Pipeline, executor: Executor | None = None, *, out: Path 
     mode = (copy or "metadata").lower()
     if mode not in ROCRATE_COPY:
         raise ValueError(f"copy must be one of: {', '.join(ROCRATE_COPY)}")
-    ctx = build_context(p, ex, stats=False, samples=samples)
-    man = manifest if manifest is not None else fair.run_manifest(p, ex, meta=meta, graph=ctx.get("graph"))
+    ctx = build_context(p, ex, stats=False, samples=samples, allow_restricted=allow_restricted)
+    man = manifest if manifest is not None else fair.run_manifest(
+        p, ex, meta=meta, graph=ctx.get("graph"), allow_restricted=allow_restricted)
+    # which nodes and files a shared crate must leave out
+    from ..core.graph import restricted_nodes
+    state_map = ex.states()
+    hidden = frozenset() if allow_restricted else frozenset(restricted_nodes(p, list(p.nodes)))
+    blocked_files: set[Path] = set()
+    if hidden:
+        from ._safety import _path_settings
+        for nid in hidden:
+            blocked_files |= {t.resolve() for t in _path_settings(p, nid)}
+            blocked_files |= {Path(f).resolve() for f in (state_map.get(nid).files if state_map.get(nid) else []) or []}
 
     destination = Path(out).expanduser()
     destination = (destination if destination.is_absolute() else folder / destination).resolve()
@@ -210,30 +217,37 @@ def package_rocrate(p: Pipeline, executor: Executor | None = None, *, out: Path 
     from ..core.dtypes import json_safe
     from ..core.secrets import redact_params
     from ..core.verify import build_attestation, dump_attestation
-    public = p.to_dict()
+    public = _copy.deepcopy(p.to_dict())
     for nd in public.get("nodes", []):                  # a crate is shared: never ship a password or token in it
         try:
             nd["params"] = redact_params(registry.get(nd["type"]), nd.get("params") or {})
         except Exception:  # noqa: BLE001 - an unknown node type is left as it is
             pass
+    if not allow_restricted and isinstance(public.get("meta"), dict):
+        public["meta"].pop("assistant", None)           # a model conversation may embed sample data
     pipeline_text = json.dumps(json_safe(public), indent=2, ensure_ascii=False, allow_nan=False) + "\n"
     descriptors: dict[str, str] = {
         "dancr-pipeline.json": pipeline_text,
         "datapackage.json": fair.dump(fair.datapackage(ctx, meta)),
         "dataset.jsonld": fair.dump(fair.dataset_jsonld(ctx, meta)),
         "dancr-manifest.json": fair.dump(man),
-        "dancr-attestation.json": dump_attestation(build_attestation(p, ex, states=ex.states())),
+        "dancr-attestation.json": dump_attestation(build_attestation(p, ex, states=state_map,
+                                                                     allow_restricted=allow_restricted)),
         "context.jsonl": context_jsonl(ctx),
     }
     copies: dict[str, Path] = {}                        # arcname -> source file
     if mode in ("data", "all"):
         for f in sorted(source_files(p), key=str):
+            if f.resolve() in blocked_files:            # a withheld dataset's source is not copied either
+                continue
             copies[_unique_arc("data", f.name, copies)] = f
     if mode in ("results", "all"):
-        for _nid, st in ex.states().items():
+        for _nid, st in state_map.items():
+            if _nid in hidden:
+                continue
             for f in sorted(st.files or {}, key=str):
                 fp = Path(f)
-                if fp.exists():
+                if fp.exists() and fp.resolve() not in blocked_files:
                     copies[_unique_arc("results", fp.name, copies)] = fp
 
     files = [{"path": name, "name": _descriptor_name(name), "encodingFormat": "application/json"}
@@ -473,7 +487,7 @@ def build_catalog(root: Path | str, *, pattern: str = "*.json", recursive: bool 
     skipped: dict[str, str] = {}
     if int(jobs or 1) > 1:
         from concurrent.futures import ThreadPoolExecutor
-        with ThreadPoolExecutor(max_workers=int(jobs)) as pool:
+        with ThreadPoolExecutor(max_workers=max(1, min(int(jobs), 32))) as pool:
             for entry, bad, why in pool.map(one, files):
                 if entry is not None:
                     projects.append(entry)

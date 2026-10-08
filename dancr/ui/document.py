@@ -33,7 +33,7 @@ from ..core import Pipeline, PipelineError, registry
 from ..core.model import Edge, Answer, Input, rebase_params
 from ..core.executor import Executor, NodeState, _pid_alive
 from ..headless import ProjectBusy, project_lock, read_project, unsafe_outputs, output_files
-from .workers import RunThread, Task, view_pool
+from .workers import RunThread, Task, alive, view_pool
 from . import commands as cmd
 from .doc_edits import _DocEdits
 from .doc_recovery import _saved_paths, dead_recovery_files, recovery_path
@@ -660,7 +660,8 @@ class Document(DocWatch, DocAutosave, DocState, QObject):
                 except (RuntimeError, TypeError):
                     pass
                 self.busy.emit(None)
-        t.wait()                                            # it has ended: this only joins the thread
+        if alive(t):                                        # the nested loop may have delivered the thread's
+            t.wait()                                        # deleteLater, which frees the C++ object behind it
         self._on_run_done(t)
 
     def _on_run_failed(self, text: str) -> None:

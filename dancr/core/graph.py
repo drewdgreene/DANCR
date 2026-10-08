@@ -37,6 +37,37 @@ def is_restricted(level: str | None) -> bool:
     return (level or "public").lower() in RESTRICTED_LEVELS
 
 
+def restricted_nodes(pipe: Any, nodes: Any) -> set[str]:
+    """The table nodes whose data is confidential or restricted, for withholding from a default export/query.
+
+    A node is restricted by the project's declared level, or by a 'Label sensitivity' step: its own ``level`` for
+    a whole-table label, or (when it labels from a ``column``) conservatively, since some labelled rows may be
+    restricted. Restrictedness then flows downstream: a step that reads a restricted table is withheld too, so a
+    derived table is never exported as if it were public. Pure; takes the pipeline and an iterable of node ids."""
+    names = list(nodes)
+    project_level = str((getattr(pipe, "meta", None) or {}).get("sensitivity") or "public").lower()
+    seed: set[str] = set()
+    for nid in names:
+        node = pipe.nodes.get(nid)
+        level = project_level
+        if node is not None and node.type == "label_sensitivity":
+            if str(node.params.get("column") or "").strip():
+                level = "confidential"          # per-row labels: not all rows public, so withhold by default
+            else:
+                own = str(node.params.get("level") or "").lower()
+                if own in SENSITIVITY_LEVELS:
+                    level = own
+        if is_restricted(level):
+            seed.add(nid)
+    if not seed:
+        return set()
+    out = set(seed)
+    for nid in names:
+        if nid not in out and pipe.upstream_closure(nid) & seed:
+            out.add(nid)
+    return out
+
+
 @dataclass
 class Project:
     id: str

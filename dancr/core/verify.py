@@ -105,7 +105,8 @@ def _finding(report: dict[str, Any] | None) -> str:
 
 # ----------------------------------------------------------------- attestation
 def build_attestation(pipe, executor: Executor | None = None, *, states: dict[str, Any] | None = None,
-                      hash_outputs: bool = True, run: bool = True, extra: dict[str, Any] | None = None) -> dict[str, Any]:
+                      hash_outputs: bool = True, run: bool = True, extra: dict[str, Any] | None = None,
+                      allow_restricted: bool = True) -> dict[str, Any]:
     """A complete, self-contained record of the project's current state (see the module docstring).
 
     A materialised step that has not been computed is run first (so its content can be hashed), exactly as the
@@ -127,7 +128,7 @@ def build_attestation(pipe, executor: Executor | None = None, *, states: dict[st
             except Exception:  # noqa: BLE001 - a failing step is recorded as it is, not raised here
                 pass
         states = ex.states()
-    man = run_manifest(pipe, ex, states=states)
+    man = run_manifest(pipe, ex, states=states, allow_restricted=allow_restricted)
 
     for entry in man["nodes"]:
         nid = entry["id"]
@@ -297,11 +298,23 @@ def verify_pipeline(pipe, reference: Any, *, mode: str = "stored", strict_source
             if hash_outputs and "output_hash" in rn and rn.get("materialize", True):
                 same_out = rn.get("output_hash") == cn.get("output_hash")
                 checks.append(_check("node", "output_hash", rn.get("output_hash"), cn.get("output_hash"), same_out, nid))
-                if not same_out and rn.get("output_hash") and cn.get("output_hash"):
-                    mismatches.append({"scope": "node", "name": "output_hash", "id": nid,
-                                       "expected": rn.get("output_hash"), "actual": cn.get("output_hash")})
-            same_rows = rn.get("rows") == cn.get("rows")
-            checks.append(_check("node", "rows", rn.get("rows"), cn.get("rows"), same_rows, nid))
+                if not same_out:
+                    if rn.get("output_hash") and cn.get("output_hash"):
+                        mismatches.append({"scope": "node", "name": "output_hash", "id": nid,
+                                           "expected": rn.get("output_hash"), "actual": cn.get("output_hash")})
+                    elif rn.get("output_hash"):
+                        # the attestation recorded a result this run could not re-read: not a claim we can confirm
+                        incomplete.append(f"result of step {nid} could not be re-read")
+            # a changed row count is a changed result, not a footnote: promote it (or mark it unconfirmable)
+            if rn.get("rows") is not None:
+                same_rows = rn.get("rows") == cn.get("rows")
+                checks.append(_check("node", "rows", rn.get("rows"), cn.get("rows"), same_rows, nid))
+                if not same_rows:
+                    if cn.get("rows") is None:
+                        incomplete.append(f"row count of step {nid} could not be re-read")
+                    else:
+                        mismatches.append({"scope": "node", "name": "rows", "id": nid,
+                                           "expected": rn.get("rows"), "actual": cn.get("rows")})
             # reports/findings exist only in an attestation; a manifest records none, so skip that comparison
             if "report" in rn:
                 diffs = _diff_reports(rn.get("report") or {}, cn.get("report") or {}, tol)

@@ -200,3 +200,24 @@ def test_mcp_profile_tool(tmp_path, mcp_root):
     assert "sample" not in out["tables"][0]
     with_samples = json.loads(srv.profile(str(pj), samples=True, sample_rows=1))
     assert len(with_samples["tables"][0]["sample"]) == 1
+
+
+def test_per_row_sensitivity_labels_and_their_derivatives_are_withheld(tmp_path):
+    # a label from a column marks some rows sensitive; the node and anything derived from it stay out of the
+    # default export, even though no whole-table level was declared
+    pl.DataFrame({"name": ["a", "b", "c"], "region": ["N", "S", "N"],
+                  "level": ["public", "restricted", "internal"]}).write_csv(tmp_path / "d.csv")
+    p = Pipeline("p"); p.path = tmp_path / "p.json"
+    p.add_node("load_file", params={"path": "d.csv"}, id="src")
+    p.add_node("label_sensitivity", params={"column": "level"}, id="lab")
+    p.connect("src", "lab")
+    p.add_node("keep_rows", params={"conditions": {"match": "all", "rules": [{"column": "region", "op": "eq", "value": "N"}]}}, id="down")
+    p.connect("lab", "down")
+    p.save()
+    nodes = ["src", "lab", "down"]
+    ctx = hl.build_context(p, nodes=nodes, stats=True, samples=True)
+    shown = {t["node"] for t in ctx["tables"]}
+    assert "src" in shown                                   # the unlabelled source is fine
+    assert "lab" not in shown and "down" not in shown       # both the labelled table and its derivative
+    allowed = hl.build_context(p, nodes=nodes, stats=True, samples=True, allow_restricted=True)
+    assert {"lab", "down"} <= {t["node"] for t in allowed["tables"]}

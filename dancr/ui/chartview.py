@@ -531,7 +531,7 @@ class ChartView(QWidget):
                         self._add_curve(p, xs, ys, series_color(gi), g, symbols=(s.mode == "raw" and len(xs) <= 1500))
                         p.series.append((g, s.x, s.y))
             else:
-                specs = spec.get("series") or []
+                specs = cd.series_specs or (spec.get("series") or [])   # aligned to the drawn series
                 for i, s in enumerate(cd.line.series):
                     sp = specs[i] if i < len(specs) else {}
                     color = series_color(i, sp)

@@ -30,10 +30,14 @@ def _source_fingerprint(pipe, node_id: str) -> list[dict[str, Any]]:
 
 
 def run_manifest(pipe, executor=None, states: dict[str, Any] | None = None,
-                 meta: dict[str, Any] | None = None, graph: dict[str, Any] | None = None) -> dict[str, Any]:
+                 meta: dict[str, Any] | None = None, graph: dict[str, Any] | None = None,
+                 allow_restricted: bool = True) -> dict[str, Any]:
     """Exactly what produced the project's results: the engine and library versions, the code fingerprint, the
     source files (with the stamp they are fingerprinted by), and every step's plan hash, row count and elapsed
-    time. This is the provenance half of a FAIR record, and it is already what the cache keys on."""
+    time. This is the provenance half of a FAIR record, and it is already what the cache keys on.
+
+    With ``allow_restricted=False`` (a shared export), confidential/restricted datasets and their source
+    fingerprints are withheld; a self-verification record keeps them (the default), since a verifier needs them."""
     from ..executor import engine_versions, CODE_FINGERPRINT, IMPL_VERSION
     if executor is None:
         from ..executor import Executor
@@ -42,8 +46,15 @@ def run_manifest(pipe, executor=None, states: dict[str, Any] | None = None,
         states = executor.states()
     dataset_meta = dict(meta if meta is not None else pipe.dataset_meta())
 
+    hidden: frozenset[str] = frozenset()
+    if not allow_restricted:
+        from ..graph import restricted_nodes
+        hidden = frozenset(restricted_nodes(pipe, list(pipe.nodes)))
+
     nodes = []
     for nid in pipe.topological_order():
+        if nid in hidden:
+            continue
         node = pipe.nodes[nid]
         st = states.get(nid)
         try:
@@ -64,6 +75,8 @@ def run_manifest(pipe, executor=None, states: dict[str, Any] | None = None,
     sources = []
     from ..registry import registry
     for nid, node in pipe.nodes.items():
+        if nid in hidden:
+            continue
         if registry.get(node.type).kind == "source":
             sources.append({"node": nid, "title": node.title, "files": _source_fingerprint(pipe, nid)})
 

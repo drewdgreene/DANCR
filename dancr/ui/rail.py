@@ -287,7 +287,8 @@ class Rail(QWidget):
             it = QTreeWidgetItem(self.tree)
             it.setText(0, a.title)
             it.setIcon(0, icon("sparkle", T.accent, 16))
-            st = self.doc.state(a.terminal).status if a.terminal in self.doc.pipeline.nodes else "idle"
+            cached = self.doc.cached_state(a.terminal) if a.terminal in self.doc.pipeline.nodes else None
+            st = cached.status if cached else "idle"          # never doc.state(): it may stat sources on the GUI thread
             it.setData(0, KIND_ROLE, "answer"); it.setData(0, ID_ROLE, a.id); it.setData(0, STATUS_ROLE, st)
             it.setToolTip(0, "A guided answer. Click to see its result")
             it.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)

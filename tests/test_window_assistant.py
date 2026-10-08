@@ -1,8 +1,10 @@
 """The Assistant in the window: the dock tab, a build request, and the engine doing the work."""
+import threading
+
 import polars as pl
 from PySide6.QtWidgets import QLabel, QPushButton, QToolButton
 
-from helpers import settle, wait_run
+from helpers import pump, settle, wait_run
 from dancr.core.assistant.client import ChatResult, FakeProvider, Message, ToolCall, Usage
 from dancr.ui.assistant import AssistantCard, ChoiceCard, ChoiceRow, ProposalCard
 
@@ -310,3 +312,27 @@ def test_assistant_text_reply_changes_nothing(window, app, tmp_path):
     settle(app, lambda: window.assistant._pending_card is None and not window.assistant._busy, 20)
     assert set(window.doc.pipeline.nodes) == before
     assert not window.doc.pipeline.answers
+
+
+def test_a_reply_after_the_project_is_replaced_is_dropped(window, app, tmp_path):
+    # A turn in flight when the window reloads into another project must not record its reply into that project.
+    _load(window, app, tmp_path)
+    panel = window.assistant
+    gate = threading.Event()
+
+    def respond(_messages, _tools):
+        gate.wait(5)
+        return _say("A stale answer that must be dropped.")
+
+    panel.set_provider(FakeProvider(respond))
+    panel.edit.setPlainText("hello"); panel.send()
+    settle(app, lambda: panel._busy, 10)                 # the turn is running in the pool
+
+    window.doc.reloaded.emit()                           # the project is replaced under the running turn
+    settle(app, lambda: panel._task is None and not panel._busy, 10)
+
+    gate.set()                                           # now let the stale reply arrive
+    pump(app, 500)
+
+    assert not any("stale answer" in str(t.text) for t in panel._thread.turns)
+    assert panel._session is None

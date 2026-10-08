@@ -32,14 +32,16 @@ def _clear(p: float | None) -> bool:
 
 
 def _summaries(lf: pl.LazyFrame, by: str, cols: list[str]) -> pl.DataFrame:
-    aggs: list[pl.Expr] = [pl.len().alias("__rows"), pl.col("__order").min().alias("__first")]
+    from ..dtypes import temp_name
+    order = temp_name("order", list(lf.collect_schema().names()))     # never collide with a real column
+    aggs: list[pl.Expr] = [pl.len().alias("__rows"), pl.col(order).min().alias("__first")]
     for i, c in enumerate(cols):
         f = pl.col(c).cast(pl.Float64)
         x = pl.when(f.is_finite()).then(f)            # NaN and infinity are blanks, not values to average
         aggs += [x.count().alias(f"n{i}"), x.mean().alias(f"mean{i}"), x.std().alias(f"sd{i}"),
                  x.median().alias(f"med{i}"), x.min().alias(f"min{i}"), x.max().alias(f"max{i}")]
     # the groups as text, as the sample of rows is: True, dates and codes then match their rows exactly
-    return (lf.with_row_index("__order").filter(pl.col(by).is_not_null()).with_columns(pl.col(by).cast(pl.Utf8))
+    return (lf.with_row_index(order).filter(pl.col(by).is_not_null()).with_columns(pl.col(by).cast(pl.Utf8))
             .group_by(by).agg(aggs).sort("__first").collect(engine="streaming"))
 
 

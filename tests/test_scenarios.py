@@ -36,6 +36,13 @@ def test_sweep_is_deterministic_and_sorted():
 def test_monte_carlo_is_seeded_and_sensitivity_is_one_at_a_time():
     assert monte_carlo({}, {"x": {"min": 0, "max": 1}}, n=5, seed=7) == monte_carlo({}, {"x": {"min": 0, "max": 1}}, n=5, seed=7)
     assert monte_carlo({}, {"x": {"min": 0, "max": 1}}, n=5, seed=7) != monte_carlo({}, {"x": {"min": 0, "max": 1}}, n=5, seed=8)
+
+
+def test_monte_carlo_refuses_an_absurd_sample_count():
+    import pytest
+    from dancr.core.scenarios import MAX_SWEEP
+    with pytest.raises(ValueError, match="Monte-Carlo"):
+        monte_carlo({}, {"x": {"min": 0, "max": 1}}, n=MAX_SWEEP + 1)
     s = sensitivity({"factor": 1}, {"factor": [1, 2, 3]})
     assert s[0]["inputs"]["factor"] == 1 and {x["inputs"]["factor"] for x in s} == {1, 2, 3}
 

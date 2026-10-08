@@ -12,8 +12,9 @@ import re
 from typing import Any
 
 _ENV = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
-# a password inside scheme://user:password@host
-_CRED = re.compile(r"(?P<scheme>[a-zA-Z][\w+.-]*://)(?P<user>[^:/@\s]+):(?P<pw>[^@/\s]+)@")
+# a password inside scheme://user:password@host. The password part is matched greedily up to the *last* "@" in
+# the token, so a password that itself contains "@" or "/" is still swallowed whole rather than leaking its tail.
+_CRED = re.compile(r"(?P<scheme>[a-zA-Z][\w+.-]*://)(?P<user>[^:/@\s]+):(?P<pw>\S+)@")
 _PW_PARAM = re.compile(r"(?i)(password|passwd|pwd|secret|token|api[_-]?key)=([^&;\s]+)")
 # an Authorization header written as text ("Authorization: Bearer xyz", "authorization=xyz")
 _AUTH = re.compile(r"(?i)(authorization\s*[:=]\s*)(?:bearer\s+)?[^\s,;\"']+")

@@ -94,7 +94,7 @@ def run_scenarios(p: Pipeline, spec: dict[str, Any] | list[dict[str, Any]], *, t
         clone = _Pipeline.from_dict(copy.deepcopy(p.to_dict()), p.path)
         for name, value in (sc.get("inputs") or {}).items():
             clone.set_input(name, value)
-        ex = Executor(clone)
+        ex = Executor(clone, output_root=folder)     # a scenario sink may not write outside the project folder
         st = ex.run(targets=[target], force=force, sweep=False).get(target)
         rec: dict[str, Any] = {"id": sid, "inputs": dict(sc.get("inputs") or {}), "status": (st.status if st else "idle"),
                                "plan_hash": ex.safe_hash(target)}
@@ -117,7 +117,7 @@ def run_scenarios(p: Pipeline, spec: dict[str, Any] | list[dict[str, Any]], *, t
     ready: list[tuple[str, str]] = []
     if int(jobs or 1) > 1:
         from concurrent.futures import ThreadPoolExecutor
-        with ThreadPoolExecutor(max_workers=int(jobs)) as pool:
+        with ThreadPoolExecutor(max_workers=max(1, min(int(jobs), 32))) as pool:
             for rec, out in pool.map(one, scenarios):
                 results.append(rec)
                 if out:

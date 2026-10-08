@@ -135,6 +135,11 @@ class Provider:
         """Ask an in-flight call to stop. Best-effort; may do nothing."""
         self._cancelled.set()
 
+    def reset(self) -> None:
+        """Clear a previous cancel: a new turn starts uncancelled, so a provider reused across turns (a shared
+        fake, or one whose key outlives a Stop) does not fail every later call with 'stopped'."""
+        self._cancelled.clear()
+
     @property
     def cancelled(self) -> bool:
         return self._cancelled.is_set()

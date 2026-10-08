@@ -295,6 +295,7 @@ class _Builder:
         self.cols: list[str] = []
         self.current = ""
         self.avoid = set(spec.get("avoid") or [])
+        self.filters_done = False       # did a planner turn spec["filters"] into steps? (see plan())
 
     # -- steps
     def use(self, node: str) -> str:
@@ -506,6 +507,8 @@ class _Builder:
         if formulas:
             self.current = self.add("compare_columns", "keep_rows", text, {"mode": "keep", "formula": " AND ".join(formulas)},
                                     {"in": [self.current]})
+        if self.spec.get("filters"):
+            self.filters_done = True
 
 
 def plan(model: DataModel, spec: dict) -> Plan:
@@ -520,6 +523,11 @@ def plan(model: DataModel, spec: dict) -> Plan:
     terminal, view, title, why = PLANNERS[recipe](b)
     b.spec.pop("title", None)
     said = [f for f in spec.get("filters") or [] if not (recipe == "groups" and f["column"] == spec.get("by"))]
+    # Never title an answer "where …" unless the filter was actually turned into steps: a planner that does not
+    # apply filters (yet) must refuse the question rather than answer over the wrong rows.
+    if said and recipe not in ("rows", "single") and not b.filters_done:
+        raise PlanError(f"This kind of answer cannot apply the filter “{filter_text(model, said)}” yet. "
+                        "Ask it as a row question instead, for example “rows where …”")
     if said and recipe not in ("rows", "single"):
         title += " where " + filter_text(model, said)       # (the groups compared are already in the title)
     st = model.stack_of(spec["table"])
@@ -769,10 +777,17 @@ def _plan_compare(b: _Builder):
     ta, tb = m.table(a), m.table(other)
     col = measure[1]
     ka, kb = b.table(a), b.table(other)
+    # filters describe rows of the first log: apply them to it before pairing (the second log is the reference)
+    for c in ta.columns:
+        b.names[(a, c.name)] = c.name
+    for c in tb.columns:
+        b.names[(other, c.name)] = c.name
+    b.current = ka
+    b.filters()
     tol = spec.get("tolerance") or rel.tolerance
     b.add("pair", "combine", f"Pair {ta.title} with {tb.title}",
           {"method": "nearest_time", "left_time": ta.time, "right_time": tb.time, "direction": "nearest",
-           "tolerance": tol, "suffix": "_2"}, {"left": [ka], "right": [kb]})
+           "tolerance": tol, "suffix": "_2"}, {"left": [b.current], "right": [kb]})
     b.assume("pairing", f"Paired each reading of {ta.title} with the nearest reading of {tb.title}"
                         + (f" no more than {tol} away" if tol else ""),
              [{"label": "Allow twice as far apart", "set": {"tolerance": _double(tol)}}] if tol else [])
@@ -811,7 +826,8 @@ def _plan_gaps(b: _Builder):
     if not t.time:
         raise PlanError(f"{t.title} has no date or time column")
     b.base(together=False)
-    key = b.add("gaps", "find_gaps", f"Gaps in {t.title}", {"time_column": t.time}, {"in": [b.current]})
+    b.filters()
+    key = b.add("gaps", "find_gaps", f"Gaps in {t.title}", {"time_column": b.name([t.node, t.time])}, {"in": [b.current]})
     return key, "table", f"Gaps in {t.title}", f"{t.title} has readings over time"
 
 
@@ -834,10 +850,16 @@ def _plan_outliers(b: _Builder):
     if st is not None and spec.get("together", True) and measure[0] in st.tables:
         # each table checked against its own readings (a spike is local to its log), then the finds put together
         found = []
+        rules = [_rule(f, f["column"][1]) for f in spec.get("filters") or []]
         for node in st.tables:
+            cur = b.table(node)
+            if rules:
+                cur = b.add(f"filter:{node}", "keep_rows", f"Keep {filter_text(m, spec['filters'])}",
+                            {"mode": "keep", "conditions": {"match": "all", "rules": rules}}, {"in": [cur]})
             fk = b.add(f"flag:{node}", "remove_outliers", f"Mark unusual {label(m, measure)} in {_tlabel(m, node)}", params,
-                       {"in": [b.table(node)]})
+                       {"in": [cur]})
             found.append(b.add(f"unusual:{node}", "keep_rows", f"Unusual in {_tlabel(m, node)}", keep, {"in": [fk]}))
+        b.filters_done = True
         label_col = _free_name("source", [c.name for c in t.columns])
         key = b.add("stack", "stack", title, {"label_column": label_col, "labels": list(st.labels)}, {"tables": found})
         b.assume("together", f"Checked each of {', '.join(st.labels)} against its own readings, then listed them together",
@@ -845,6 +867,7 @@ def _plan_outliers(b: _Builder):
     else:
         b.base(together=False)
         b.need(measure)
+        b.filters()
         params["columns"] = [b.name(measure)]
         flag = _free_name("unusual", b.cols); params["flag_column"] = flag
         keep = {"mode": "keep", "conditions": {"match": "all", "rules": [{"column": flag, "op": "true"}]}}
@@ -863,6 +886,8 @@ def _plan_study_outliers(b: _Builder):
     measures = [c.name for c in ordered_measures(t)]
     by = spec.get("by") or next((g for g in groupables(m, t.node) if g[0] == t.node and 1 < _distinct(m, g) <= GROUP_MAX), None)
     b.base(together=False)
+    b.need(by)
+    b.filters()
     flag = _free_name("unusual", b.cols)
     params = {"columns": measures, "method": "iqr", "action": "flag", "flag_column": flag}
     if by:
@@ -923,6 +948,7 @@ def _plan_linked(b: _Builder):
         key = next((c for c in u.columns if c.role != "blank"), None)
         if key is not None:
             b.need([node, key.name])
+    b.filters()
     title = f"{t.title} with {', '.join(_tlabel(m, n) for n in reach)}"
     b.steps[-1].title = title
     return b.current, "table", title, f"{t.title} links to {len(reach)} other table{'s' if len(reach) > 1 else ''}"
@@ -934,6 +960,7 @@ def _plan_stacked(b: _Builder):
     if st is None:
         raise PlanError("No other table has the same columns")
     b.base(together=True)
+    b.filters()
     title = f"{', '.join(st.labels)} in one table"
     b.steps[-1].title = title
     return b.current, "table", title, st.why
@@ -954,6 +981,7 @@ def _plan_rows(b: _Builder):
 def _plan_describe(b: _Builder):
     t = b.m.table(b.spec["table"])
     b.base(together=False)
+    b.filters()
     title = f"What is in {t.title}"
     key = b.add("describe", "summarize", title, {}, {"in": [b.current]})
     return key, "table", title, "one row per column: count, blanks, average, range"
@@ -1038,6 +1066,8 @@ def _plan_drivers(b: _Builder):
     t = m.table(spec["table"])
     b.base(together=False)
     target = spec.get("target")
+    b.need(target)
+    b.filters()
     params: dict[str, Any] = {}
     if target:
         params["target"] = b.name(target)
@@ -1202,6 +1232,7 @@ def _plan_quality(b: _Builder):
     """A check of the table itself: blanks, duplicates, values that are really numbers stored as text."""
     t = b.m.table(b.spec["table"])
     b.base(together=False)
+    b.filters()
     title = f"Check {t.title}"
     key = b.add("quality", "check_data", title, {}, {"in": [b.current]})
     b.breaks(t.node)
@@ -1222,6 +1253,7 @@ def _plan_map(b: _Builder):
     if not t.geo:
         raise PlanError(f"{t.title} has no latitude and longitude columns to map")
     b.base(together=False)
+    b.filters()
     params = {"lat": b.name([t.node, t.geo["lat"]]), "lon": b.name([t.node, t.geo["lon"]])}
     color = spec.get("color_by")
     if color:
@@ -1240,6 +1272,7 @@ def _plan_density(b: _Builder):
     if not t.geo:
         raise PlanError(f"{t.title} has no latitude and longitude columns")
     b.base(together=False)
+    b.filters()
     lat = b.name([t.node, t.geo["lat"]])
     lon = b.name([t.node, t.geo["lon"]])
     size = str(spec.get("size") or _default_cell(t))
@@ -1272,6 +1305,7 @@ def _plan_nearest(b: _Builder):
     left, right = m.table(rel.tables[0]), m.table(rel.tables[1])
     b.spec["table"] = left.node
     b.base(together=False)
+    b.filters()
     dist = str(spec.get("distance") or NEAR_DEFAULT)
     dist_col = _free_name("distance", [c.name for c in right.columns] + [c.name for c in left.columns])
     params = {"method": "nearest_feature", "near_how": "left",
@@ -1301,6 +1335,7 @@ def _plan_place(b: _Builder):
     regions = m.table(rel.tables[1])
     b.spec["table"] = points.node
     b.base(together=False)
+    b.filters()
     geom = rel.geo.get("right_geometry") or "geometry"
     label = _free_name("region", [c.name for c in points.columns] + [c.name for c in regions.columns])
     params = {"method": "within", "near_how": "left", "left_lat": rel.geo["left_lat"], "left_lon": rel.geo["left_lon"],

@@ -17,6 +17,7 @@ from typing import Any
 
 KEY = "ask"
 MAX_RECENT = 12
+MAX_ALIASES = 500           # a bound, so a project file cannot grow without limit as words are learned
 
 
 def _store(pipeline: Any) -> dict[str, Any]:
@@ -48,7 +49,11 @@ def remember_alias(pipeline: Any, typed: Any, means: Any) -> None:
     store = _store(pipeline)
     if not isinstance(store.get("aliases"), dict):       # a hand-edited/damaged project: start the map afresh
         store["aliases"] = {}
-    store["aliases"][k] = v
+    aliases = store["aliases"]
+    aliases[k] = v
+    if len(aliases) > MAX_ALIASES:                       # drop the oldest learned words, not the newest
+        for old in list(aliases)[:len(aliases) - MAX_ALIASES]:
+            del aliases[old]
 
 
 def remember_corrections(pipeline: Any, corrected: list[dict[str, Any]] | None) -> None:

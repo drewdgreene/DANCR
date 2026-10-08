@@ -127,3 +127,15 @@ def test_gateway_queues_an_approval_for_a_consequential_action(tmp_path):
     from dancr.headless import list_approvals
     pending = list_approvals(tmp_path, pending_only=True)
     assert pending["count"] == 1 and pending["approvals"][0]["tool"] == "export_node"
+
+
+def test_gateway_scope_cannot_be_escaped_with_dotdot(tmp_path):
+    save_policy(tmp_path, {"principals": {"alice": {"tokens": ["t"], "projects": ["sub/*"]}}})
+    port = free_port()
+    with running(build_app(tmp_path, port=port), "127.0.0.1", port) as base:
+        # sub/../a.json resolves to a.json, outside the scope: the raw string must not slip past
+        denied = call(base, token="t", tool="inspect_file", args={"file_path": "sub/../a.json"})
+        assert denied.status_code == 403
+        # a file genuinely inside the scope passes
+        allowed = call(base, token="t", tool="inspect_file", args={"file_path": "sub/a.json"})
+        assert allowed.status_code not in (401, 403)

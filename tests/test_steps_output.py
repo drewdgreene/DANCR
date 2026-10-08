@@ -85,3 +85,14 @@ def test_export_is_atomic_and_strips_tz(tmp_path):
     Executor(p).run()
     assert target.read_text() == "precious\n"
     assert not list(tmp_path.glob(".keep.csv.*"))
+
+
+def test_excel_export_refuses_when_the_header_would_overflow_the_sheet(tmp_path, monkeypatch):
+    from dancr.core.nodes import outputs
+    monkeypatch.setattr(outputs, "EXCEL_MAX_ROWS", 3)          # the sheet holds 3 rows including the header
+    p = pipe_with(tmp_path, pl.DataFrame({"x": [1, 2, 3]}))
+    e = p.add_node("export", params={"path": "out.xlsx"}); p.connect("src", e.id)
+    assert "Excel" in failed(p, e.id)                          # 3 data rows + header = 4 > 3
+    p2 = pipe_with(tmp_path, pl.DataFrame({"x": [1, 2]}), name="t2.parquet")
+    e2 = p2.add_node("export", params={"path": "ok.xlsx"}); p2.connect("src", e2.id)
+    assert Executor(p2).run()[e2.id].status == "done"          # 2 data rows + header = 3 fits

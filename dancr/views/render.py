@@ -81,6 +81,7 @@ def _draw_panel(ax, cd: ChartData, params: dict[str, Any], columns, inputs, mdat
                     xs, yv = lod_break(s.x, s.y, breaks)
                     ax.plot(_to_dates(xs) if data.axis.kind == "time" else xs, yv, lw=0.8, color=PALETTE[gi % len(PALETTE)], label=g)
         else:
+            specs = cd.series_specs or specs                  # aligned to the drawn series, so a dropped one cannot shift them
             for i, s in enumerate(cd.line.series):
                 spec = specs[i] if i < len(specs) else {}
                 xs, yv = lod_break(s.x, s.y, breaks)

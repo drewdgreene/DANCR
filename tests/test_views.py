@@ -104,3 +104,14 @@ def test_summary_quartiles_are_exact(pipe):
     vals = np.sort(lf.select("pressure_psi").collect()["pressure_psi"].drop_nulls().to_numpy())
     for key, q in (("q25", 0.25), ("median", 0.5), ("q75", 0.75)):
         assert row[key] == pytest.approx(float(np.quantile(vals, q)))   # interpolated (QUARTILE.INC) over every row
+
+
+def test_a_dropped_series_does_not_shift_the_others_colour_and_label():
+    from dancr.views.chartquery import query_one
+    lf = pl.LazyFrame({"x": [1.0, 2.0, 3.0], "b": [1.0, 2.0, 3.0], "c": [3.0, 2.0, 1.0]})
+    spec = {"kind": "line", "x": "x",
+            "series": [{"column": "gone", "label": "Gone"}, {"column": "b", "label": "Bee"},
+                       {"column": "c", "label": "Cee"}]}
+    cd = query_one(lf, dict(lf.collect_schema()), spec)
+    assert cd.ys == ["b", "c"]                                  # the vanished series is left out
+    assert [s.get("label") for s in cd.series_specs] == ["Bee", "Cee"]   # and the rest keep their labels

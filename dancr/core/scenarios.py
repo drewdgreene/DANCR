@@ -70,9 +70,12 @@ def name_value(combo: dict[str, Any]) -> str:
 def monte_carlo(base: dict[str, Any], distributions: dict[str, Any], *, n: int = 100, seed: int = 0) -> list[dict[str, Any]]:
     """``n`` samples drawn within each input's range, from an explicit seed, so the set is reproducible.
     A distribution is ``{"min": .., "max": ..}`` (uniform, rounded to 6 dp) or ``{"values": [..]}`` (choice)."""
+    n = max(0, int(n))
+    if n > MAX_SWEEP:                                 # same ceiling as a sweep, so an agent cannot ask for millions
+        raise ValueError(f"That Monte-Carlo set would make {n:,} scenarios. Ask for {MAX_SWEEP:,} or fewer")
     rng = random.Random(int(seed))
     out = []
-    for i in range(max(0, int(n))):
+    for i in range(n):
         inputs = dict(base)
         for name in sorted(distributions):
             spec = distributions[name] or {}

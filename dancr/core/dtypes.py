@@ -179,7 +179,10 @@ def number_from_text(value: Any, what: str) -> float:
     if isinstance(value, bool):
         raise ValueError(f"{what}: {value!r} is not a number")
     if isinstance(value, (int, float)):
-        return float(value)
+        f = float(value)
+        if f != f or f in (float("inf"), float("-inf")):     # a NaN/inf setting is not a number
+            raise ValueError(f"{what}: {value!r} is not a number")
+        return f
     try:
         f = float(normalise_number_text(str(value)))
     except ValueError:

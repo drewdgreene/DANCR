@@ -91,3 +91,16 @@ def test_fuzzy_combine_nearest_finds_a_close_key(tmp_path):
     df, st = run(p, "c")
     row = df.row(0, named=True)
     assert row["code"] == "D" and row["match_score"] > 0.8
+
+
+def test_fuzzy_combine_nearest_keeps_all_rows_when_nothing_matches(tmp_path):
+    p = Pipeline("p"); p.path = tmp_path / "p.json"
+    left = data(p, [("name", "text")], [["alpha"], ["beta"]], "l")
+    right = data(p, [("site", "text"), ("code", "text")], [["zzzzzzzz", "Z"]], "r")
+    p.add_node("combine", params={"method": "fuzzy", "left_key": "name", "right_key": "site",
+                                  "algorithm": "nearest", "threshold": 0.9, "how": "left"}, id="c")
+    p.connect(left, "c", "left"); p.connect(right, "c", "right")
+    df, st = run(p, "c")
+    assert df.height == 2                                  # every left row is kept
+    assert df["code"].to_list() == [None, None]            # ...with a blank match
+    assert any("No key in the first table" in m for m in st.messages)

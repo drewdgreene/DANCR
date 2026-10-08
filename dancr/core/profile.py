@@ -119,9 +119,10 @@ def data_block(tag: str, payload: str) -> str:
     """Wrap data-derived text so the model can tell it from instructions. The tag names the source.
 
     A payload cannot close its own block: the closing form of the tag's *name* (its first word, so a tag
-    carrying attributes such as ``tool_result name="…"`` is still safe) is escaped wherever it appears."""
+    carrying attributes such as ``tool_result name="…"`` is still safe) is escaped wherever it appears — matched
+    case-insensitively and across stray spaces, so ``</TOOL_RESULT>`` and ``</ tool_result >`` cannot break out."""
     name = (tag.split() or [tag])[0]
-    safe = payload.replace("</" + name, "<\\/" + name)
+    safe = re.sub(rf"</\s*{re.escape(name)}\s*>", f"<\\/{name}>", payload, flags=re.IGNORECASE)
     return f"<{tag}>\n{safe}\n</{tag}>"
 
 

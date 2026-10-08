@@ -71,6 +71,16 @@ def test_batch_refuses_output_outside_project(project):
         hl.run_batch(project, ["files/*.csv"], target="calc", out_dir="/tmp/elsewhere-batch")
 
 
+def test_batch_target_sink_cannot_write_outside_the_project(project, tmp_path):
+    # the target step's own sink (an export here) must be confined to the project folder, not just the batch output
+    escape = tmp_path.parent / f"{tmp_path.name}-escape.csv"        # genuinely outside the project folder
+    project.add_node("export", params={"path": str(escape)}, id="exp")
+    project.connect("calc", "exp")
+    project.save()
+    rec = hl.run_batch(project, ["files/*.csv"], target="exp", out_dir="out")
+    assert not escape.exists() and not rec["ok"]
+
+
 def test_batch_manifest_written(project):
     out = project.directory / "out"
     hl.run_batch(project, ["files/*.csv"], target="calc", out_dir=out, manifest=out / "manifest.json")

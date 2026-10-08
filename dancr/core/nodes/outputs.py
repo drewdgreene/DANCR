@@ -112,8 +112,10 @@ def excel_frame(lf: pl.LazyFrame, what: str = "This table") -> pl.DataFrame:
     """The whole table in memory, ready for Excel (which holds at most 1,048,576 rows and no time zones)."""
     from ..dtypes import strip_time_zones
     n = int(lf.select(pl.len()).collect(engine="streaming")[0, 0])
-    if n > EXCEL_MAX_ROWS:
-        raise ValueError(f"{what} has {n:,} rows, but an Excel sheet holds at most {EXCEL_MAX_ROWS:,}. Save as CSV or Parquet, or use 'Average over time' first.")
+    # the sheet's row limit includes the header row, so the most data rows it can hold is one fewer
+    if n >= EXCEL_MAX_ROWS:
+        raise ValueError(f"{what} has {n:,} rows, but an Excel sheet holds at most {EXCEL_MAX_ROWS - 1:,} data rows "
+                         "(plus a header). Save as CSV or Parquet, or use 'Average over time' first.")
     return strip_time_zones(lf.collect(engine="streaming"))
 
 
@@ -170,7 +172,7 @@ def write_geojson(lf: pl.LazyFrame, out: Path) -> None:
             geom = _wkt_geometry(row.get(geom_col))
         else:
             la, lo = row.get(lat), row.get(lon)
-            if la is None or lo is None:
+            if la is None or lo is None or la != la or lo != lo:      # null or NaN: no valid coordinate
                 return None
             geom = {"type": "Point", "coordinates": [float(lo), float(la)]}
         if geom is None:

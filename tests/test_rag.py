@@ -200,3 +200,27 @@ def test_cli_search(tmp_path):
                        capture_output=True, text=True, cwd=tmp_path)
     assert r.returncode == 0, r.stderr
     assert "1 passage(s)" in r.stdout and "drought" in r.stdout
+
+
+def test_a_null_sensitivity_label_is_visible_not_withheld(tmp_path):
+    # an index that mixes labelled and unlabelled passages must return the unlabelled hits and withhold only the
+    # labelled ones (a null label compared with is_in is null, which would otherwise drop every unlabelled row)
+    p = Pipeline("m"); p.path = tmp_path / "m.json"
+    p.add_node("enter_data", params={
+        "columns": [{"name": "doc", "type": "text"}, {"name": "text", "type": "text"},
+                    {"name": "sensitivity", "type": "text"}],
+        "rows": [["pub", "drought tolerance in maize", None],
+                 ["pub2", "nitrogen use efficiency in maize", None],
+                 ["sec", "restricted regulatory dossier on gene editing", "restricted"]]}, id="d")
+    p.add_node("build_index", params={"chunk_chars": 100}, id="idx")
+    p.connect("d", "idx", "items")
+    p.add_node("retrieve", params={"query": "drought", "k": 3}, id="r")
+    p.connect("idx", "r")
+    p.save()
+    res = Executor(p).run()
+    assert res["r"].status == "done", res["r"].error
+    assert res["r"].report["withheld"] == 1                       # only the restricted row
+    hits = pl.read_parquet(res["r"].output)
+    assert hits.height >= 1 and "sec" not in hits["doc"].to_list()   # unlabelled rows are searchable
+    out = search_knowledge(p, "drought", k=3)
+    assert out["withheld"] == 1 and out["count"] >= 1

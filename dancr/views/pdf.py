@@ -39,7 +39,8 @@ def _in_helper(doc: str, out: Path) -> Path:
         cmd = [sys.executable, "pdf-helper", str(out)]
     r = subprocess.run(cmd, input=doc, text=True, encoding="utf-8", capture_output=True, env=env, timeout=300)
     if r.returncode != 0 or not out.exists():
-        raise RuntimeError((r.stderr or "the PDF helper failed").strip().splitlines()[-1])
+        tail = (r.stderr or "").strip().splitlines()          # a helper killed with empty stderr must not IndexError
+        raise RuntimeError(tail[-1] if tail else f"the PDF helper failed (exit {r.returncode})")
     return out
 
 

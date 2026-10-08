@@ -337,17 +337,20 @@ def set_dataset_meta(path: str, fields: dict[str, Any]) -> str:
 
 @mcp.tool()
 @friendly
-def export_fair(path: str, format: str = "schema.org", out_path: str | None = None, samples: bool = False) -> str:
+def export_fair(path: str, format: str = "schema.org", out_path: str | None = None, samples: bool = False,
+                allow_restricted: bool = False) -> str:
     """A FAIR descriptor for the project's datasets: `schema.org` (JSON-LD Dataset), `frictionless` (Data Package),
     `manifest` (what produced the results: engine, library and input versions, per-step hashes) or `rocrate`.
-    With out_path (inside the pipeline file's folder) it is written to a file; otherwise the JSON is returned."""
+    With out_path (inside the pipeline file's folder) it is written to a file; otherwise the JSON is returned.
+    Confidential/restricted datasets are withheld unless `allow_restricted` is true."""
     from .core.fair import FORMATS
     key = format.strip().lower().replace("_", ".")
     if key not in FORMATS and key not in ("provenance", "run", "data-package", "datapackage", "jsonld", "schemaorg"):
         raise ToolError(f"Unknown format {format!r}. Choose one of: {', '.join(FORMATS)}")
     p = _load(path)
     out = _inside_project(p, out_path) if out_path else None
-    doc = hl.export_fair(p, _executor(p), fmt=format, samples=samples, out=out)
+    doc = hl.export_fair(p, _executor(p), fmt=format, samples=samples, out=out,
+                         allow_restricted=bool(allow_restricted))
     return _dump(doc)
 
 
@@ -373,14 +376,17 @@ def catalog(root: str = ".", pattern: str = "*.json", recursive: bool = True, sa
 
 @mcp.tool()
 @friendly
-def package_project(path: str, out_path: str, copy: str = "metadata", zip: bool = True, overwrite: bool = False) -> str:
+def package_project(path: str, out_path: str, copy: str = "metadata", zip: bool = True, overwrite: bool = False,
+                    allow_restricted: bool = False) -> str:
     """Write a self-contained RO-Crate: the FAIR descriptors (schema.org, Frictionless, run manifest), the
     pipeline file and a knowledge-base context file, as a `.zip` or a folder inside the pipeline's folder.
     `copy` controls extra files: `metadata` (none), `data` (the source files), `results` (files the project
-    wrote) or `all`."""
+    wrote) or `all`. Confidential/restricted datasets and the Assistant conversation are withheld unless
+    `allow_restricted` is true."""
     p = _load(path)
     out = _inside_project(p, out_path)
-    rec = hl.package_rocrate(p, _executor(p), out=out, copy=copy, zip=bool(zip), overwrite=overwrite)
+    rec = hl.package_rocrate(p, _executor(p), out=out, copy=copy, zip=bool(zip), overwrite=overwrite,
+                             allow_restricted=bool(allow_restricted))
     return _dump(rec)
 
 
@@ -777,6 +783,8 @@ def render_chart(path: str, node_id: str, out_png: str | None = None, kind: str 
     out_png (optional) must be inside the pipeline file's folder; otherwise the PNG goes to the cache."""
     from .views.render import render_chart as _render
     import tempfile
+    width = max(64, min(int(width), 4000))          # a bound, so a huge size cannot exhaust memory
+    height = max(64, min(int(height), 4000))
     with _frame(path, node_id, run) as (p, lf):
         params = hl.chart_params(p.nodes[node_id], kind, x, y, column, title)
         if out_png:
@@ -806,6 +814,8 @@ def render_map(path: str, node_id: str, out_png: str | None = None, lat: str | N
     pipeline file's folder; otherwise the PNG goes to the cache."""
     from .views.render import render_map as _render
     import tempfile
+    width = max(64, min(int(width), 4000))          # a bound, so a huge size cannot exhaust memory
+    height = max(64, min(int(height), 4000))
     with _frame(path, node_id, run) as (p, lf):
         params = dict(p.nodes[node_id].params) if p.nodes[node_id].type == "map" else {}
         for k, v in (("lat", lat), ("lon", lon), ("color_by", color_by), ("size_by", size_by),

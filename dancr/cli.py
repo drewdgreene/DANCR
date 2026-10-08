@@ -172,11 +172,24 @@ def cmd_formulas(a: argparse.Namespace) -> None:
         print(f"  {n:18s} {d}")
 
 
+def _is_pipeline_file(path: Path) -> bool:
+    """Whether an existing file is a DANCR project (so --force may replace it), not someone else's file."""
+    from .core.model import FORMAT_VERSION
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(data, dict) and data.get("dancr") == FORMAT_VERSION
+
+
 def cmd_new(a: argparse.Namespace) -> None:
     p = Path(a.pipeline)
     with hl.project_lock(p):
-        if p.exists() and not a.force:
-            raise CliError(f"{p} already exists. Use --force to overwrite it")
+        if p.exists():
+            if not a.force:
+                raise CliError(f"{p} already exists. Use --force to overwrite it")
+            if not _is_pipeline_file(p):                 # --force must never clobber an unrelated file
+                raise CliError(f"{p} already exists and is not a DANCR project. Choose another file name.")
         pipe = Pipeline(a.name or p.stem)
         pipe.save(p)
     _print(a, {"path": str(p), "name": pipe.name}, f"Created {p}")
@@ -446,7 +459,10 @@ def cmd_events(a: argparse.Namespace) -> None:
             while True:
                 out = hl.read_events(a.root, since=since, type=a.type)
                 for e in out["events"]:
-                    _print_event(a, e)
+                    if a.json:                              # --json means JSON, on every line, in follow mode too
+                        print(json.dumps(e, default=str, ensure_ascii=False))
+                    else:
+                        _print_event(a, e)
                     since = e["seq"]
                 time.sleep(a.interval)
         except KeyboardInterrupt:
@@ -1121,7 +1137,7 @@ def cmd_log(a: argparse.Namespace) -> None:
         _print(a, {"path": str(lp)})
         return
     print(lp)
-    if lp.exists():
+    if lp.exists() and a.lines > 0:
         print("".join(lp.read_text(errors="replace").splitlines(True)[-a.lines:]), end="")
 
 
@@ -1207,8 +1223,11 @@ def cmd_template(a: argparse.Namespace) -> None:
     from .core.samples import check_template
     check_template(a.key)                           # before anything is written, the lock included
     with hl.project_lock(out):
-        if out.exists() and not a.force:
-            raise CliError(f"{out} already exists. Use --force to overwrite it")
+        if out.exists():
+            if not a.force:
+                raise CliError(f"{out} already exists. Use --force to overwrite it")
+            if not _is_pipeline_file(out):               # --force must never clobber an unrelated file
+                raise CliError(f"{out} already exists and is not a DANCR project. Choose another file name.")
         pipe, data = hl.build_template(out, a.key, Path(a.data).resolve() if a.data else None)   # --data: relative to here
     _print(a, {"path": str(out), "data": str(data), "nodes": list(pipe.nodes)}, f"Built the {a.key!r} template in {out}, using the data in {data}")
 

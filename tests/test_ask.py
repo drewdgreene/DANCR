@@ -437,3 +437,45 @@ def test_biggest_period_by_a_measure_is_the_top_period(tmp_path):
     # "highest quantity per month" is a line of monthly maxima, not the single biggest month
     spec2, _ = answer(p, m, "highest quantity per month")
     assert spec2["recipe"] == "trend"
+
+
+# ------------------------------------------------------------------- a filter must reach the rows, not just the title
+@pytest.mark.parametrize("recipe,extra", [
+    ("gaps", {}),
+    ("describe", {}),
+    ("quality", {}),
+    ("drivers", {}),
+    ("linked", {}),
+    ("outliers", {"measure": ["orders", "price"]}),
+])
+def test_a_filter_becomes_a_step_for_each_recipe(shop, recipe, extra):
+    _, m, _ = shop
+    spec = {"recipe": recipe, "table": "orders",
+            "filters": [{"column": ["orders", "price"], "op": "gt", "value": 30}], **extra}
+    pl_ = plan(m, spec)                                   # must plan, not silently ignore the filter
+    assert "keep_rows" in [s.type for s in pl_.steps]
+    assert " where " in pl_.title
+
+
+def test_a_recipe_that_ignores_a_filter_is_refused_not_mis_titled(shop, monkeypatch):
+    from dancr.core.recipes import PlanError, _plan
+    _, m, _ = shop
+
+    def ignores(b):                                       # a planner that forgets to apply the filter
+        b.base()
+        return b.current, "table", "Answer", "why"
+
+    monkeypatch.setitem(_plan.PLANNERS, "describe", ignores)
+    with pytest.raises(PlanError, match="cannot apply the filter"):
+        plan(m, {"recipe": "describe", "table": "orders",
+                 "filters": [{"column": ["orders", "price"], "op": "gt", "value": 30}]})
+
+
+def test_compare_applies_a_filter_to_the_first_log(probes):
+    _, m, _ = probes
+    spec = {"recipe": "compare", "table": "logger_site_A", "other": "logger_site_B",
+            "measure": ["logger_site_A", "pressure (bar)"],
+            "filters": [{"column": ["logger_site_A", "time"], "op": "gt", "value": "2024-06-01 01:00:00"}]}
+    pl_ = plan(m, spec)
+    assert "keep_rows" in [s.type for s in pl_.steps]
+    assert " where " in pl_.title

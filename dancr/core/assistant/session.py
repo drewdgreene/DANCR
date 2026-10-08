@@ -101,6 +101,8 @@ class AssistantSession:
         user_text = str(user_text or "").strip()
         if not user_text:
             return AssistantReply(kind="text", text="")
+        if hasattr(self.provider, "reset"):
+            self.provider.reset()                 # a provider reused after a Stop is not stuck cancelled
         if isinstance(self.provider, OpenAIProvider) and not self.settings.configured:
             return AssistantReply(kind="paused", text="No model key is set. Open the Assistant settings and add a key.")
         messages = self._messages(user_text)
@@ -227,6 +229,8 @@ class AssistantSession:
         """A short, plain-language synthesis over the engine's findings after a build: what the data shows and the
         hypotheses it supports. The model writes it, but every figure is checked against the findings text."""
         emit = on_event or (lambda _s: None)
+        if hasattr(self.provider, "reset"):
+            self.provider.reset()
         if isinstance(self.provider, OpenAIProvider) and not self.settings.configured:
             return AssistantReply(kind="paused", text="No model key is set.")
         prompt = ("These analyses were just built and run. The engine's finding for each is below. Write a short "

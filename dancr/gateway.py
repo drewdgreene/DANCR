@@ -56,17 +56,29 @@ def is_loopback(host: str) -> bool:
 
 
 _PROJECT_ARGS = ("path", "file_path", "file", "root")   # argument names that name what a tool acts on
+MAX_BODY_BYTES = 8 * 1024 * 1024                 # a tool call never needs a bigger body than this; refuse it early
 
 
-def _project_from_args(args: Any) -> str | None:
+def _project_from_args(args: Any, root: Path) -> str | None:
     """The project a tool call names, from whichever path-like argument it uses (a pipeline `path`, a file, a
-    repository `root`). ``None`` when the call names nothing."""
+    repository `root`), **resolved against the repository root**. Resolution is what makes a project scope a
+    real boundary: a raw string scope could be slipped past with ``..`` or a symlink. A path outside the root is
+    returned as its resolved absolute form, so an absolute scope pattern still matches. ``None`` when the call
+    names nothing."""
     if not isinstance(args, dict):
         return None
     for key in _PROJECT_ARGS:
         value = args.get(key)
         if isinstance(value, str) and value.strip():
-            return value.strip()
+            p = Path(value.strip()).expanduser()
+            try:
+                p = (p if p.is_absolute() else root / p).resolve()
+            except (OSError, RuntimeError):
+                return value.strip()
+            try:
+                return p.relative_to(root).as_posix()
+            except ValueError:
+                return str(p)
     return None
 
 
@@ -88,6 +100,10 @@ class GatewayMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next: Any) -> Any:
         if request.url.path != self.path:
+            # The MCP app serves only the tool path; a near-miss (a trailing slash) or any other path has no
+            # business reaching the app unauthenticated, so it is refused rather than passed through.
+            if request.url.path.startswith(self.path.rstrip("/") + "/"):
+                return _jsonrpc_error(404, None, "not found", "Use the tool path.")
             return await call_next(request)
         auth = request.headers.get("authorization", "")
         token = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
@@ -96,7 +112,12 @@ class GatewayMiddleware(BaseHTTPMiddleware):
             return _jsonrpc_error(401, None, "unauthorized", "A valid bearer token is required.")
         request.state.gateway_principal = principal
 
+        length = request.headers.get("content-length")
+        if length is not None and length.isdigit() and int(length) > MAX_BODY_BYTES:
+            return _jsonrpc_error(413, None, "payload too large", f"A tool call body must be at most {MAX_BODY_BYTES} bytes.")
         body = await request.body()
+        if len(body) > MAX_BODY_BYTES:
+            return _jsonrpc_error(413, None, "payload too large", f"A tool call body must be at most {MAX_BODY_BYTES} bytes.")
         message: Any = {}
         if body:
             try:
@@ -107,7 +128,7 @@ class GatewayMiddleware(BaseHTTPMiddleware):
             params = message.get("params") or {}
             name = str(params.get("name") or "")
             args = params.get("arguments") if isinstance(params.get("arguments"), dict) else {}
-            project = _project_from_args(args)
+            project = _project_from_args(args, self.root)
             # A principal scoped to particular projects must name one; otherwise a tool keyed on `root` or
             # `file_path` (or nothing) would pass project=None and slip past the scope.
             who = self.policy.resolve(principal)

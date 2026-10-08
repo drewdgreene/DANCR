@@ -246,7 +246,8 @@ def run_batch(p: Pipeline, files: list[str] | None, *, target: str, out_dir: Pat
     def one(f: Path) -> tuple[dict[str, Any], tuple[Path, str] | None]:
         clone = _Pipeline.from_dict(copy.deepcopy(p.to_dict()), p.path)
         clone.set_params(loader_id, **{path_param: portable_path(f, folder)})
-        ex = Executor(clone)
+        # a sink in the target step must not write outside the project folder either (batch writes are confined)
+        ex = Executor(clone, output_root=folder)
         st = ex.run(targets=[target], force=force, sweep=False).get(target)
         rec: dict[str, Any] = {"file": str(f), "name": names[f], "status": (st.status if st else "idle")}
         if st is not None and st.status == "done" and st.output:
@@ -266,7 +267,7 @@ def run_batch(p: Pipeline, files: list[str] | None, *, target: str, out_dir: Pat
     results: list[dict[str, Any]] = []
     ready: list[tuple[Path, str]] = []
     if int(jobs or 1) > 1:
-        with ThreadPoolExecutor(max_workers=int(jobs)) as pool:
+        with ThreadPoolExecutor(max_workers=max(1, min(int(jobs), 32))) as pool:
             for rec, out in pool.map(one, inputs):
                 results.append(rec)
                 if out:

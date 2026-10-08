@@ -159,3 +159,26 @@ def test_mcp_record_and_verify_roundtrip_is_confined(tmp_path, mcp_root):
     # a write outside the pipeline file's folder is refused, same as every other MCP write
     with pytest.raises(ToolError):
         srv.record_attestation(str(pj), str(tmp_path.parent / "evil.json"))
+
+
+def test_a_changed_row_count_is_a_mismatch(tmp_path):
+    # tamper only the recorded row count, leaving the output hash equal: this must not pass as "verified"
+    p, _src = make_project(tmp_path)
+    att = record(p, tmp_path / "a.json")
+    for n in att["nodes"]:
+        if n["id"] == "g":
+            n["rows"] = 999
+    Path(tmp_path / "a.json").write_text(dump_attestation(att))
+    res = verify_pipeline(p, tmp_path / "a.json")
+    assert res["verdict"] == "mismatch"
+    assert any(m["name"] == "rows" for m in res["mismatches"])
+
+
+def test_a_result_that_cannot_be_reread_is_not_verified(tmp_path, monkeypatch):
+    # the attestation recorded an output hash; if this run cannot produce one, that is not a confirmation
+    p, _src = make_project(tmp_path)
+    record(p, tmp_path / "a.json")
+    monkeypatch.setattr("dancr.core.verify.output_hash", lambda ex, nid: None)
+    res = verify_pipeline(p, tmp_path / "a.json")
+    assert res["verdict"] == "incomplete"
+    assert any("could not be re-read" in s for s in res["incomplete"])

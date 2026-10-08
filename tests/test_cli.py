@@ -275,3 +275,15 @@ def test_formats_help_file_ships_and_matches_the_guard():
     assert "What DANCR can read" in doc
     # the guard messages the loader raises are explained here
     assert "Load HDF5" in doc and "Load NetCDF" in doc
+
+
+def test_cli_new_force_never_clobbers_an_unrelated_file(tmp_path):
+    target = tmp_path / "data.json"
+    target.write_text('{"important": true}')
+    code, _out, err = run("new", str(target), "--force")
+    assert code != 0 and "not a DANCR project" in err
+    assert target.read_text() == '{"important": true}'          # untouched
+    # a real pipeline may still be replaced
+    pj = tmp_path / "p.json"
+    assert run("new", str(pj))[0] == 0
+    assert run("new", str(pj), "--force")[0] == 0

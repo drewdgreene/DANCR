@@ -39,3 +39,13 @@ def test_offset_literal_keeps_its_instant_against_a_zoned_column():
     # a naive column has no zone: the literal's own wall time is used
     assert pl.select(datetime_literal("2024-06-01T12:00:00+02:00", pl.Datetime("ms"))).item() == datetime(2024, 6, 1, 12)
     assert pl.select(datetime_literal("2024-06-01", pl.Date)).dtypes == [pl.Datetime("us")]
+
+
+def test_a_non_finite_number_is_refused():
+    from dancr.core.dtypes import number_from_text
+    from dancr.core.params import Param
+    for bad in (float("inf"), float("-inf"), float("nan")):
+        with pytest.raises(ValueError):
+            number_from_text(bad, "value")
+        with pytest.raises(ValueError):
+            Param("x", "X", "float").coerce(bad)
