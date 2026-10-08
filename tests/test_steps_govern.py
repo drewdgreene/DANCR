@@ -54,3 +54,34 @@ def test_search_withholds_restricted_by_default(tmp_path):
     assert all(h["sensitivity"] == "public" for h in governed["hits"])
     open_search = search_knowledge(p, "drought", k=5, allow_restricted=True)
     assert open_search["count"] == 3 and open_search["withheld"] == 0
+
+
+def test_restricted_rows_are_withheld_from_reads_and_exports(tmp_path):
+    # the same gate covers every surface that reads a result to an agent, the CLI or an export
+    from dancr import headless as hl
+    p = Pipeline("g"); p.path = tmp_path / "g.json"
+    p.add_node("enter_data", params={
+        "columns": [{"name": "note", "type": "text"}, {"name": "sensitivity", "type": "text"}],
+        "rows": [["public note", "public"], ["secret dossier", "restricted"], ["unlabelled", None]]}, id="d")
+    p.save()
+    ex = Executor(p)
+    with hl.result_frame(p, ex, "d", run=True) as lf:
+        got = lf.collect()["note"].to_list()
+    assert "public note" in got and "unlabelled" in got and "secret dossier" not in got
+    with hl.result_frame(p, ex, "d", run=True, allow_restricted=True) as lf:
+        got = lf.collect()["note"].to_list()
+    assert "secret dossier" in got
+
+
+def test_mcp_get_sample_withholds_restricted_rows(tmp_path, mcp_root):
+    import dancr.mcp_server as srv
+    pj = tmp_path / "p.json"
+    srv.create_pipeline(str(pj))
+    srv.add_node(str(pj), "enter_data", {"columns": [{"name": "note", "type": "text"},
+                                                     {"name": "sensitivity", "type": "text"}],
+                                         "rows": [["public", "public"], ["secret", "restricted"]]}, node_id="d")
+    srv.run_pipeline(str(pj))
+    out = srv.get_sample(str(pj), "d", rows=10)
+    assert "secret" not in out and "public" in out
+    out = srv.get_sample(str(pj), "d", rows=10, allow_restricted=True)
+    assert "secret" in out

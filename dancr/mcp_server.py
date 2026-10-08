@@ -726,14 +726,15 @@ def node_status(path: str, node_id: str) -> str:
 
 
 @contextmanager
-def _frame(path: str, node_id: str, run: bool) -> Iterator[tuple[Pipeline, pl.LazyFrame]]:
-    """The pipeline and a step's output, held while the block reads it (``headless.result_frame``)."""
+def _frame(path: str, node_id: str, run: bool, allow_restricted: bool = False) -> Iterator[tuple[Pipeline, pl.LazyFrame]]:
+    """The pipeline and a step's output, held while the block reads it (``headless.result_frame``). Rows labelled
+    confidential/restricted are withheld unless ``allow_restricted``."""
     p = _load(path)
     hl.require_node(p, node_id)
     unsafe = _unsafe_steps(p, [node_id])
     if unsafe and run:
         raise ToolError(next(iter(unsafe.values())))
-    with hl.result_frame(p, _executor(p), node_id, run) as lf:
+    with hl.result_frame(p, _executor(p), node_id, run, allow_restricted=allow_restricted) as lf:
         yield p, lf
 
 
@@ -755,20 +756,24 @@ def get_schema(path: str, node_id: str) -> str:
 
 @mcp.tool()
 @friendly
-def get_sample(path: str, node_id: str, rows: int = 20, offset: int = 0, columns: list[str] | None = None, run: bool = True) -> str:
-    """Rows from a node's output as JSON records (1 to 500 rows; pass columns to narrow wide tables)."""
+def get_sample(path: str, node_id: str, rows: int = 20, offset: int = 0, columns: list[str] | None = None,
+               run: bool = True, allow_restricted: bool = False) -> str:
+    """Rows from a node's output as JSON records (1 to 500 rows; pass columns to narrow wide tables). Rows
+    labelled confidential/restricted are withheld unless allow_restricted is true."""
     if not 1 <= int(rows) <= 500 or int(offset) < 0:
         raise ValueError("rows must be between 1 and 500, and offset at least 0")
-    with _frame(path, node_id, run) as (_, lf):
+    with _frame(path, node_id, run, allow_restricted) as (_, lf):
         return hl.select_columns(lf, columns).slice(int(offset), int(rows)).collect(engine="streaming").write_json()
 
 
 @mcp.tool()
 @friendly
-def get_stats(path: str, node_id: str, columns: list[str] | None = None, run: bool = True) -> str:
-    """Summary statistics (count, missing, mean, std, min, quartiles, max) for the columns of a node's output."""
+def get_stats(path: str, node_id: str, columns: list[str] | None = None, run: bool = True,
+              allow_restricted: bool = False) -> str:
+    """Summary statistics (count, missing, mean, std, min, quartiles, max) for the columns of a node's output.
+    Rows labelled confidential/restricted are withheld unless allow_restricted is true."""
     from .views.stats import column_summary
-    with _frame(path, node_id, run) as (_, lf):
+    with _frame(path, node_id, run, allow_restricted) as (_, lf):
         return column_summary(lf, columns).write_json()
 
 
@@ -776,16 +781,17 @@ def get_stats(path: str, node_id: str, columns: list[str] | None = None, run: bo
 @friendly
 def render_chart(path: str, node_id: str, out_png: str | None = None, kind: str | None = None, x: str | None = None,
                  y: list[str] | None = None, column: str | None = None, title: str | None = None,
-                 width: int = 1200, height: int = 600, run: bool = True) -> Image:
+                 width: int = 1200, height: int = 600, run: bool = True, allow_restricted: bool = False) -> Image:
     """Render a chart of a node's output to PNG and return the image. If node is a chart node its settings are used
     and any of kind/x/y/column/title given here override them; otherwise give kind (line|scatter|histogram|bar,
     default line), x and y. Big data is downsampled per pixel.
-    out_png (optional) must be inside the pipeline file's folder; otherwise the PNG goes to the cache."""
+    out_png (optional) must be inside the pipeline file's folder; otherwise the PNG goes to the cache.
+    Rows labelled confidential/restricted are withheld unless allow_restricted is true."""
     from .views.render import render_chart as _render
     import tempfile
     width = max(64, min(int(width), 4000))          # a bound, so a huge size cannot exhaust memory
     height = max(64, min(int(height), 4000))
-    with _frame(path, node_id, run) as (p, lf):
+    with _frame(path, node_id, run, allow_restricted) as (p, lf):
         params = hl.chart_params(p.nodes[node_id], kind, x, y, column, title)
         if out_png:
             out = _inside_project(p, out_png)
@@ -807,16 +813,17 @@ def render_chart(path: str, node_id: str, out_png: str | None = None, kind: str 
 def render_map(path: str, node_id: str, out_png: str | None = None, lat: str | None = None, lon: str | None = None,
                color_by: str | None = None, size_by: str | None = None, label: str | None = None,
                cell_size: str | None = None, title: str | None = None, basemap: bool = True,
-               width: int = 1200, height: int = 800, run: bool = True) -> Image:
+               width: int = 1200, height: int = 800, run: bool = True, allow_restricted: bool = False) -> Image:
     """Render a map of a node's output to PNG and return the image. If the node is a map node its settings are
     used and any argument given here overrides them; otherwise give lat and lon (and optionally color_by, size_by,
     cell_size). Country outlines come from the app's offline basemap. out_png (optional) must be inside the
-    pipeline file's folder; otherwise the PNG goes to the cache."""
+    pipeline file's folder; otherwise the PNG goes to the cache.
+    Rows labelled confidential/restricted are withheld unless allow_restricted is true."""
     from .views.render import render_map as _render
     import tempfile
     width = max(64, min(int(width), 4000))          # a bound, so a huge size cannot exhaust memory
     height = max(64, min(int(height), 4000))
-    with _frame(path, node_id, run) as (p, lf):
+    with _frame(path, node_id, run, allow_restricted) as (p, lf):
         params = dict(p.nodes[node_id].params) if p.nodes[node_id].type == "map" else {}
         for k, v in (("lat", lat), ("lon", lon), ("color_by", color_by), ("size_by", size_by),
                      ("label", label), ("cell_size", cell_size), ("title", title)):
@@ -839,10 +846,11 @@ def render_map(path: str, node_id: str, out_png: str | None = None, lat: str | N
 
 @mcp.tool()
 @friendly
-def export_node(path: str, node_id: str, out_path: str, run: bool = True) -> str:
-    """Write a node's full output to a .csv, .tsv, .parquet, .xlsx or .geojson file inside the pipeline file's folder."""
+def export_node(path: str, node_id: str, out_path: str, run: bool = True, allow_restricted: bool = False) -> str:
+    """Write a node's full output to a .csv, .tsv, .parquet, .xlsx or .geojson file inside the pipeline file's
+    folder. Rows labelled confidential/restricted are withheld unless allow_restricted is true."""
     from .core.nodes.outputs import write_table
-    with _frame(path, node_id, run) as (p, lf):
+    with _frame(path, node_id, run, allow_restricted) as (p, lf):
         out = _inside_project(p, out_path)
         write_table(lf, out)
     return _dump({"ok": True, "path": str(out)})

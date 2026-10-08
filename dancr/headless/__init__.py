@@ -431,10 +431,14 @@ def registry_get(p: Pipeline, node_id: str):
 
 
 @contextmanager
-def result_frame(p: Pipeline, ex: Executor, node_id: str, run: bool) -> Iterator[pl.LazyFrame]:
+def result_frame(p: Pipeline, ex: Executor, node_id: str, run: bool, allow_restricted: bool = False) -> Iterator[pl.LazyFrame]:
     """A step's output, running it first when `run` is set and it is not computed yet. The frame reads the stored
     result lazily, so the result is held (see ``Executor.hold``) until the block ends: another process's cache
-    sweep must not delete it while it is being read."""
+    sweep must not delete it while it is being read.
+
+    Rows labelled confidential/restricted are withheld unless ``allow_restricted`` — this is the gate for every
+    surface that reads a result to an agent, the command line or an export (the window shows the owner's own
+    data and is not gated)."""
     require_node(p, node_id)
     # a step that stores nothing (a chart, a Save to file) is read from the result of a step above it: hold every
     # step it depends on, so a cache sweep elsewhere cannot delete that result while it is read
@@ -452,7 +456,8 @@ def result_frame(p: Pipeline, ex: Executor, node_id: str, run: bool) -> Iterator
             res = ex.run(targets=[node_id])
             if res[node_id].status != "done":
                 raise StepFailed(f"{node_id} failed: {res[node_id].error}")
-        yield ex.frame(node_id)
+        from ..core.sensitivity import withhold
+        yield withhold(ex.frame(node_id), allow_restricted=allow_restricted)
     finally:
         ex.release(lease)
 

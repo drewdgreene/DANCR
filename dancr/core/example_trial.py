@@ -419,7 +419,9 @@ decimal corrected and the plots with no yield dropped. Two `Check data contract`
 An offline, deterministic search index over the programme's SOPs, notes and one restricted regulatory
 dossier. Run it: the hybrid retriever answers "canonical trait code for grain yield" with the source
 passages, and the **restricted dossier is withheld by default** — the report says how many were
-withheld. Turn on *Include restricted* on the Search step to reveal it.
+withheld. Turn on *Include restricted* on the Search step to reveal it. The same guard withholds
+restricted rows from an agent's reads (`get_sample`, `get_stats`, a rendered chart or map), the command
+line, and every export, unless `allow_restricted` is passed.
 
 ## 5. Prove it, package it, map it (command line)
 

@@ -982,7 +982,7 @@ def _frame(a: argparse.Namespace, p: Pipeline, ex: Executor, node: str):
     _check_node(p, node)
     if ex.state(node).status != "done" and not getattr(a, "run", False):
         raise CliError(f"{node} hasn't been run yet (it's {ex.state(node).status}). Run dancr run {p.path} {node}, or add --run")
-    return hl.result_frame(p, ex, node, run=True)
+    return hl.result_frame(p, ex, node, run=True, allow_restricted=bool(getattr(a, "allow_restricted", False)))
 
 
 def cmd_schema(a: argparse.Namespace) -> None:
@@ -1402,17 +1402,17 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--manifest", help="write a JSON manifest here"); s.set_defaults(fn=cmd_scenarios)
     s = sub.add_parser("status", help="step status, messages and reports"); s.add_argument("pipeline"); s.add_argument("node", nargs="?"); s.set_defaults(fn=cmd_status)
     s = sub.add_parser("schema", help="columns of a step's output"); s.add_argument("pipeline"); s.add_argument("node"); s.set_defaults(fn=cmd_schema)
-    s = sub.add_parser("sample", help="print rows of a step's output"); s.add_argument("pipeline"); s.add_argument("node"); s.add_argument("--rows", type=int, default=20); s.add_argument("--offset", type=int, default=0); s.add_argument("--csv", action="store_true"); s.add_argument("--run", action="store_true", help="run first if needed"); s.set_defaults(fn=cmd_sample)
-    s = sub.add_parser("stats", help="summary statistics of a step's output"); s.add_argument("pipeline"); s.add_argument("node"); s.add_argument("--columns"); s.add_argument("--run", action="store_true"); s.set_defaults(fn=cmd_stats)
+    s = sub.add_parser("sample", help="print rows of a step's output"); s.add_argument("pipeline"); s.add_argument("node"); s.add_argument("--rows", type=int, default=20); s.add_argument("--offset", type=int, default=0); s.add_argument("--csv", action="store_true"); s.add_argument("--run", action="store_true", help="run first if needed"); s.add_argument("--allow-restricted", action="store_true", help="include rows labelled confidential/restricted"); s.set_defaults(fn=cmd_sample)
+    s = sub.add_parser("stats", help="summary statistics of a step's output"); s.add_argument("pipeline"); s.add_argument("node"); s.add_argument("--columns"); s.add_argument("--run", action="store_true"); s.add_argument("--allow-restricted", action="store_true"); s.set_defaults(fn=cmd_stats)
     s = sub.add_parser("chart", help="draw a chart of a step's output to a PNG file"); s.add_argument("pipeline"); s.add_argument("node"); s.add_argument("--out", required=True)
     s.add_argument("--kind", choices=["line", "scatter", "histogram", "bar"]); s.add_argument("--x"); s.add_argument("--y", help="comma-separated columns"); s.add_argument("--column"); s.add_argument("--title")
-    s.add_argument("--width", type=int, default=1400); s.add_argument("--height", type=int, default=700); s.add_argument("--run", action="store_true"); s.set_defaults(fn=cmd_chart)
+    s.add_argument("--width", type=int, default=1400); s.add_argument("--height", type=int, default=700); s.add_argument("--run", action="store_true"); s.add_argument("--allow-restricted", action="store_true"); s.set_defaults(fn=cmd_chart)
     s = sub.add_parser("map", help="draw a map of a step's output to a PNG file"); s.add_argument("pipeline"); s.add_argument("node"); s.add_argument("--out", required=True)
     s.add_argument("--lat"); s.add_argument("--lon"); s.add_argument("--color"); s.add_argument("--size", dest="size_by"); s.add_argument("--label")
     s.add_argument("--cell", dest="cell_size", help="draw grid squares of this size (e.g. 0.1 or 5km)")
     s.add_argument("--title"); s.add_argument("--no-basemap", action="store_true", dest="no_basemap")
-    s.add_argument("--width", type=int, default=1200); s.add_argument("--height", type=int, default=800); s.add_argument("--run", action="store_true"); s.set_defaults(fn=cmd_map)
-    s = sub.add_parser("export", help="write a step's output to csv/parquet/xlsx/geojson"); s.add_argument("pipeline"); s.add_argument("node"); s.add_argument("out"); s.add_argument("--run", action="store_true"); s.set_defaults(fn=cmd_export)
+    s.add_argument("--width", type=int, default=1200); s.add_argument("--height", type=int, default=800); s.add_argument("--run", action="store_true"); s.add_argument("--allow-restricted", action="store_true"); s.set_defaults(fn=cmd_map)
+    s = sub.add_parser("export", help="write a step's output to csv/parquet/xlsx/geojson"); s.add_argument("pipeline"); s.add_argument("node"); s.add_argument("out"); s.add_argument("--run", action="store_true"); s.add_argument("--allow-restricted", action="store_true"); s.set_defaults(fn=cmd_export)
     s = sub.add_parser("clear-cache", help="delete cached outputs"); s.add_argument("pipeline"); s.set_defaults(fn=cmd_clear_cache)
     s = sub.add_parser("gui", help="run the window in this process"); s.add_argument("pipeline", nargs="?"); s.set_defaults(fn=cmd_gui)
     s = sub.add_parser("open", help="open the window, optionally on a project"); s.add_argument("pipeline", nargs="?"); s.add_argument("--wait", action="store_true"); s.set_defaults(fn=cmd_open)
