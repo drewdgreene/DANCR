@@ -90,17 +90,23 @@ class WindowActions:
         self._refresh_recent()
 
         edit_m = mb.addMenu("&Edit")
+        self.a_palette = self._act("Command &palette…", "magnifying-glass", "Ctrl+Shift+P", self.open_palette,
+                                   "Search every action, step, answer and recent project (Ctrl+Shift+P)")
+        edit_m.addAction(self.a_palette)
+        edit_m.addSeparator()
         self.a_undo = self._act("&Undo", "arrow-u-up-left", QKeySequence.Undo, self.doc.undo.undo, "Undo (Ctrl+Z)")
         self.a_redo = self._act("&Redo", "arrow-u-up-right", [QKeySequence.Redo, "Ctrl+Y"], self.doc.undo.redo, "Redo (Ctrl+Y)")
         self.doc.undo.canUndoChanged.connect(self.a_undo.setEnabled); self.doc.undo.canRedoChanged.connect(self.a_redo.setEnabled)
         self.doc.undo.undoTextChanged.connect(self._undo_text); self.doc.undo.redoTextChanged.connect(self._redo_text)
         self.a_undo.setEnabled(False); self.a_redo.setEnabled(False)
         self.a_add = self._act("Add &step…", "plus", ["Ctrl+K", "Insert"], lambda: self.open_picker(), "Add a step after the current table (Ctrl+K)")
-        self.a_ask = self._act("&Auto", "sparkle", "Ctrl+J", self.focus_ask,
-                                  "Ask a question in plain words, or pick an answer DANCR offers (Ctrl+J)")
-        self.a_assistant = self._act("Assistant", "magic-wand", "Ctrl+Shift+J", self.focus_assistant,
-                                     "Talk to the Assistant: it builds real steps you approve (Ctrl+Shift+J)")
+        self.a_ask = self._act("&Ask", "sparkle", "Ctrl+J", self.focus_ask,
+                                  "Ask in plain words, answered by rules with no model (Ctrl+J)")
+        self.a_assistant = self._act("Assistant", "magic-wand", "Ctrl+Shift+J", None,
+                                     "Chat with a model that proposes steps you approve (Ctrl+Shift+J)")
         self.a_assistant.setCheckable(True)
+        # The action owns the checked state; the handler must not toggle it again or the two cancel out.
+        self.a_assistant.toggled.connect(self._on_assistant_toggled)
         self.a_delete = self._act("&Delete step", "trash", None, self.delete_current, "Delete the selected step (Delete in the project list or the map)")
         self.a_dup = self._act("D&uplicate step", "copy", "Ctrl+D", lambda: self.doc.duplicate_nodes(self.scene.selected_node_ids()))
         self.a_note = self._act("Add &note to the map", "note-pencil", "Ctrl+Shift+N", lambda: self._add_note(self.view.mapToScene(self.view.viewport().rect().center())))
@@ -158,10 +164,10 @@ class WindowActions:
         self.a_dataset = self._act("&Dataset details…", "article", None, self.dataset_details,
                                    "Who made the data, the license, how to cite it — the header of a FAIR record")
         export_m = share_m.addMenu("Export metadata as")
-        for fmt, label in (("schema.org", "schema.org / JSON-LD (Dataset Search)"),
-                           ("frictionless", "Frictionless Data Package"),
-                           ("manifest", "Run manifest (provenance)"),
-                           ("rocrate", "RO-Crate (metadata graph)")):
+        for fmt, label in (("schema.org", "Publish to Google Dataset Search…"),
+                           ("frictionless", "Data package (Frictionless)…"),
+                           ("manifest", "How it was made (run manifest)…"),
+                           ("rocrate", "Whole study as a crate (RO-Crate)…")):
             export_m.addAction(self._act(label, None, None, lambda _=False, f=fmt: self.export_metadata(f)))
         self.a_package = self._act("Package as RO-Crate…", None, None, self.package_crate,
                                    "Write a self-contained RO-Crate: the FAIR descriptors, the project and its run manifest")
@@ -170,6 +176,8 @@ class WindowActions:
 
         help_m = mb.addMenu("&Help")
         help_m.addAction(self._act("&Getting started", "hand", None, self.show_onboarding))
+        help_m.addAction(self._act("&Keyboard shortcuts", "keyboard", "Ctrl+/", self.show_shortcuts))
+        help_m.addAction(self._act("Command &palette…", "magnifying-glass", None, self.open_palette))
         help_m.addSeparator()
         help_m.addAction(self._act("&User guide", "question", "F1", self.show_help))
         help_m.addAction(self._act("&What DANCR can read…", None, None, lambda: self.show_help("formats")))
@@ -197,6 +205,48 @@ class WindowActions:
             if isinstance(btn, QToolButton):
                 btn.setToolButtonStyle(Qt.ToolButtonIconOnly)
         self.toolbar = tb
+
+    # ------------------------------------------------------------ command palette
+    def open_palette(self) -> None:
+        """A searchable list of everything the window can do, plus the project's own steps and answers."""
+        from .commandpalette import Command, CommandPalette
+        if getattr(self, "_palette", None) is None:
+            self._palette = CommandPalette(self)
+        self._palette.open_center(self._palette_entries(Command))
+
+    def _palette_entries(self, Command) -> list:
+        entries: list = []
+        for menu_action in self.menuBar().actions():
+            menu = menu_action.menu()
+            if menu is None:
+                continue
+            group = menu_action.text().replace("&", "")
+            for action in menu.actions():
+                self._collect_action(entries, group, action, Command)
+        # The menus already carry the templates, examples and recent files; add what they do not: every step
+        # type, the project's own steps, and its answers.
+        for nt in sorted(registry.all(), key=lambda t: t.label):
+            entries.append(Command("Add step", nt.label, "", lambda k=nt.key: self.add_node(k)))
+        for nid in self.doc.pipeline.topological_order():
+            node = self.doc.pipeline.nodes[nid]
+            entries.append(Command("Go to step", node.title, "",
+                                   lambda n=nid: (self.show_node(n), self.view.focus_node(n))))
+        for ans in self.doc.pipeline.answers:
+            entries.append(Command("Open answer", ans.title, "", lambda a=ans.id: self.show_answer(a)))
+        return entries
+
+    def _collect_action(self, entries: list, group: str, action, Command) -> None:
+        if action.isSeparator():
+            return
+        submenu = action.menu()
+        if submenu is not None:
+            name = action.text().replace("&", "")
+            for a in submenu.actions():
+                self._collect_action(entries, f"{group} › {name}", a, Command)
+            return
+        if not action.isEnabled():
+            return
+        entries.append(Command(group, action.text().replace("&", ""), action.shortcut().toString(), action.trigger))
 
     # ------------------------------------------------------------ appearance / rebuild
     def _set_theme(self, value: str) -> None:

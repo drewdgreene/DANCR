@@ -22,6 +22,13 @@ NODE_ICONS = {
     "compare_groups": "columns", "check_data": "warning-circle", "associations": "chart-scatter", "contribution": "sigma",
     "compare_periods": "clock-counter-clockwise", "forecast": "trend-up", "unpivot": "rows",
     "make_point": "map-pin", "distance": "line-segment", "points_grid": "grid-four", "map": "map-trifold",
+    # the readers and the steps that had no icon and fell back to a dashed circle
+    "load_url": "download-simple", "load_sql": "table", "load_netcdf": "wave-sine", "load_hdf5": "grid-four",
+    "load_document": "article", "load_sequences": "file", "load_variants": "columns", "load_features": "list-bullets",
+    "load_genbank": "article", "load_markers": "grid-four", "pivot": "columns", "describe_dataset": "article",
+    "check_contract": "check-circle", "diff_tables": "copy-simple", "project": "line-segment",
+    "build_index": "magnifying-glass", "retrieve": "magnifying-glass", "label_sensitivity": "warning-circle",
+    "redact": "pencil-simple",
 }
 
 

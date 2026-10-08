@@ -166,9 +166,11 @@ class UserCard(QFrame):
         super().__init__(parent)
         self.setStyleSheet(f"QFrame {{ background:{T.panel}; border:1px solid {T.border_soft}; border-radius:{RADIUS}px; }}")
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
-        v = QVBoxLayout(self); v.setContentsMargins(10, 6, 10, 6)
+        v = QVBoxLayout(self); v.setContentsMargins(10, 5, 8, 5); v.setSpacing(2)
         lab = QLabel(text); lab.setWordWrap(True); lab.setTextInteractionFlags(Qt.TextSelectableByMouse)
         v.addWidget(lab)
+        row = QHBoxLayout(); row.setContentsMargins(0, 0, 0, 0); row.addStretch(1); row.addWidget(_copy_button(text))
+        v.addLayout(row)
 
 
 class SuggestionRow(QFrame):
@@ -420,7 +422,7 @@ class WorkingCard(QFrame):
 
 
 class EmptyState(QFrame):
-    def __init__(self, on_ask, parent=None) -> None:
+    def __init__(self, on_ask, on_settings=None, parent=None) -> None:
         super().__init__(parent)
         self.setStyleSheet("QFrame { background:transparent; border:none; }")
         v = QVBoxLayout(self); v.setContentsMargins(14, 14, 14, 10); v.setSpacing(7)
@@ -434,8 +436,16 @@ class EmptyState(QFrame):
             row.addWidget(b)
         row.addStretch(1)
         v.addLayout(row)
-        v.addWidget(_plain(QLabel("Commands:  /profile  /connections  /explain  /clean  /report"), T.faint, size=9))
-        v.addWidget(_plain(QLabel("First time? Add a model key from the ⋮ menu above."), T.faint, size=9))
+        cmds = _plain(QLabel("Commands:  /profile  /connections  /explain  /clean  /report"), T.faint, size=9)
+        cmds.setWordWrap(True)
+        v.addWidget(cmds)
+        self.connect_line = QLabel(f"First time? <a href='#connect' style='color:{T.accent};text-decoration:none'>"
+                                   "Connect a model</a> so the Assistant can answer.")
+        self.connect_line.setObjectName("faint"); self.connect_line.setTextFormat(Qt.RichText)
+        self.connect_line.setWordWrap(True); self.connect_line.setOpenExternalLinks(False)
+        if on_settings:
+            self.connect_line.linkActivated.connect(lambda _: on_settings())
+        v.addWidget(self.connect_line)
         v.addStretch(2)
 
 
@@ -477,6 +487,7 @@ class AssistantPanel(QFrame):
         self._history: list[str] = []
         self._hist = -1
         self._last_text = ""
+        self._connect_shown = False
         self._build_ui()
         listen(self, doc.reloaded, self._project_replaced)
         listen(self, doc.nodeAdded, self._on_node_added)
@@ -513,7 +524,7 @@ class AssistantPanel(QFrame):
         sb.valueChanged.connect(self._on_scroll_moved)
         v.addWidget(self.scroll, 1)
 
-        self.empty = EmptyState(self._ask_again)
+        self.empty = EmptyState(self._ask_again, self._open_settings)
         v.addWidget(self.empty, 1)
 
         self.cost = _plain(QLabel(""), T.faint, size=9)
@@ -522,9 +533,15 @@ class AssistantPanel(QFrame):
 
         comp = QFrame(); comp.setStyleSheet(f"QFrame {{ border-top: 1px solid {T.border}; }}")
         cl = QHBoxLayout(comp); cl.setContentsMargins(10, 7, 10, 7); cl.setSpacing(7)
+        self.cmd_hint = QLabel(""); self.cmd_hint.setObjectName("faint")
+        self.cmd_hint.setContentsMargins(12, 2, 12, 2); self.cmd_hint.setTextFormat(Qt.RichText)
+        self.cmd_hint.setWordWrap(True)
+        self.cmd_hint.linkActivated.connect(self._insert_command); self.cmd_hint.setVisible(False)
+        v.addWidget(self.cmd_hint)
         self.edit = QPlainTextEdit(); self.edit.setPlaceholderText("Ask, or tell me to build…")
         self.edit.setFixedHeight(54); self.edit.setTabChangesFocus(True)
         self.edit.installEventFilter(self); self.edit.textChanged.connect(self._grow)
+        self.edit.textChanged.connect(self._update_commands)
         self.send_btn = _primary("Send"); self.send_btn.setMinimumWidth(62)
         self.send_btn.clicked.connect(self._send_or_stop)
         cl.addWidget(self.edit, 1); cl.addWidget(self.send_btn, 0, Qt.AlignBottom)
@@ -534,6 +551,23 @@ class AssistantPanel(QFrame):
     def _grow(self) -> None:
         lines = self.edit.toPlainText().count("\n") + 1
         self.edit.setFixedHeight(max(54, min(54 + (lines - 1) * 17, 150)))
+
+    def _update_commands(self) -> None:
+        """While the box holds a bare /word, show the matching commands as clickable links."""
+        text = self.edit.toPlainText()
+        if text.startswith("/") and " " not in text:
+            hits = [k for k in self.COMMANDS if k.startswith(text[1:].lower())]
+            if hits:
+                links = " · ".join(f"<a href='/{k}' style='color:{T.accent};text-decoration:none'>/{k}</a>" for k in hits)
+                self.cmd_hint.setText(f"Commands: {links}")
+                self.cmd_hint.setVisible(True)
+                return
+        self.cmd_hint.setVisible(False)
+
+    def _insert_command(self, link: str) -> None:
+        self.edit.setPlainText(link + " ")
+        self.edit.moveCursor(QTextCursor.MoveOperation.End)
+        self.edit.setFocus()
 
     # ---------------------------------------------------------------- settings / key
     def _settings_obj(self) -> ModelSettings:
@@ -563,17 +597,19 @@ class AssistantPanel(QFrame):
     def _refresh_dot(self) -> None:
         ok = self._configured()
         self.dot.setText("●" if ok else "○")
-        self.dot.setToolTip("Connected" if ok else "No model key set — open the menu to add one")
+        self.dot.setToolTip("Connected" if ok else "No model key set — open the ⋮ menu to add one")
         if not self._busy:
             self.status_line.setText("Ready" if ok else "No key")
+        if ok:
+            self._connect_shown = False            # a key was added: the connect prompt may show again if it is removed
+        if hasattr(self, "empty"):
+            self.empty.connect_line.setVisible(not ok)
 
     def _show_menu(self) -> None:
         m = QMenu(self)
         s = self._settings_obj()
-        m.addAction(f"Model: {s.model}" if s.model else "Model").setEnabled(False)
-        m.addAction("Set API key…", self._set_key)
-        m.addAction("Set endpoint URL…", self._set_base)
-        m.addAction("Set model id…", self._set_model)
+        m.addAction(f"Model: {s.model}" if s.model else "No model key set").setEnabled(False)
+        m.addAction("Assistant settings…", self._open_settings)
         m.addSeparator()
         samples = m.addAction("Send sample rows to the model")
         samples.setCheckable(True); samples.setChecked(self.allow_samples())
@@ -587,24 +623,10 @@ class AssistantPanel(QFrame):
         m.exec(self.menu_btn.mapToGlobal(self.menu_btn.rect().bottomLeft()))
         m.deleteLater()                    # a parented QMenu is not freed by dropping the Python reference
 
-    def _set_key(self) -> None:
-        s = self._settings_obj()
-        text, ok = QInputDialog.getText(self, "Model API key", "API key (stored on this machine, never in the project):",
-                                        QLineEdit.Password, s.api_key)
-        if ok:
-            self.settings.setValue(SETTING_KEY, text.strip()); self._refresh_dot()
-
-    def _set_base(self) -> None:
-        s = self._settings_obj()
-        text, ok = QInputDialog.getText(self, "Endpoint URL", "OpenAI-style endpoint (…/v1):", text=s.base_url)
-        if ok:
-            self.settings.setValue(SETTING_BASE, text.strip()); self._refresh_dot()
-
-    def _set_model(self) -> None:
-        s = self._settings_obj()
-        text, ok = QInputDialog.getText(self, "Model id", "Model id:", text=s.model)
-        if ok:
-            self.settings.setValue(SETTING_MODEL, text.strip()); self._refresh_dot()
+    def _open_settings(self) -> None:
+        """One dialog for the key, endpoint, model and consent (the setup dialog the tour also opens)."""
+        from .setup import AssistantSetupDialog
+        AssistantSetupDialog(self, on_saved=self._refresh_dot).exec()
 
     # ---------------------------------------------------------------- context chips
     def _rebuild_chips(self) -> None:
@@ -935,6 +957,9 @@ class AssistantPanel(QFrame):
             self.edit.clear(); return
         if not text or self._busy:
             return
+        if not self._configured():
+            self._show_connect()
+            return
         if not self._ensure_consent():
             return
         self._last_text = text
@@ -977,6 +1002,17 @@ class AssistantPanel(QFrame):
             self._remove_widget(self._working)
             self._working = None
 
+    def _show_connect(self) -> None:
+        """No model key: offer the setup instead of firing a request that is certain to fail."""
+        if not self._connect_shown:
+            self._connect_shown = True
+            self._add_widget(_action_card(
+                "Connect the Assistant",
+                "It needs a model key. Add one in Assistant settings; the key stays on this machine, never in the "
+                "project.",
+                [("Assistant settings…", self._open_settings)]))
+        self._set_busy(False, "")
+
     def _failed(self, msg: str) -> None:
         if not alive(self):                  # the window was disposed (a theme switch) while the turn ran
             return
@@ -994,7 +1030,7 @@ class AssistantPanel(QFrame):
         self._update_cost()
         if reply.kind == "paused":
             self._add_widget(_action_card("Paused", reply.text or "The model is not available.",
-                                          [("Add a key…", self._set_key), ("Dismiss", lambda: None)], tone="warn"))
+                                          [("Assistant settings…", self._open_settings), ("Dismiss", lambda: None)], tone="warn"))
             return
         if reply.kind == "error":
             self._add_widget(_action_card("The model could not be reached", reply.error or reply.text,

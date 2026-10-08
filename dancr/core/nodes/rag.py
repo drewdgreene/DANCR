@@ -140,7 +140,7 @@ def _build_index(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[s
 
 
 registry.register(NodeType(
-    key="build_index", label="Build search index", category="AI", icon="⌕",
+    key="build_index", label="Build search index", category="Search", icon="⌕",
     description="Turn tables and documents into a searchable index: one row per passage, each with an offline "
                 "vector. Feed it to 'Search index' to find passages by meaning, with citations back to the source row.",
     apply=_build_index,
@@ -208,7 +208,7 @@ def _retrieve(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str,
 
 
 registry.register(NodeType(
-    key="retrieve", label="Search index", category="AI", icon="🔎",
+    key="retrieve", label="Search index", category="Search", icon="⌕",
     description="Search an index built by 'Build search index': give a query, get the closest passages ranked, "
                 "each with its source columns. Use it to ground a summary or feed a report.",
     apply=_retrieve,

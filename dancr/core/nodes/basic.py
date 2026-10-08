@@ -663,7 +663,7 @@ def _describe(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str,
 
 
 registry.register(NodeType(
-    key="describe_dataset", label="Describe dataset", category="Describe", icon="📖",
+    key="describe_dataset", label="Describe dataset", category="Describe", icon="▤",
     description="Build a data dictionary for a table: every column's role, type, unit, how many values are blank, "
                 "distinct count, range and an example. A steward's first deliverable, and the input a scientist reads.",
     apply=_describe,

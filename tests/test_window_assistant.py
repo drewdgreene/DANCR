@@ -1,5 +1,6 @@
 """The Assistant in the window: the dock tab, a build request, and the engine doing the work."""
 import polars as pl
+from PySide6.QtWidgets import QPushButton
 
 from helpers import settle, wait_run
 from dancr.core.assistant.client import ChatResult, FakeProvider, Message, ToolCall, Usage
@@ -35,6 +36,43 @@ def test_assistant_tab_shows_in_the_dock(window, app, tmp_path):
     window.a_assistant.setChecked(False)
     window._apply_side_panels()
     assert window.side.stack.currentWidget() is window.inspector
+
+
+def test_the_assistant_button_opens_and_closes_the_chat(window, app, tmp_path):
+    # clicking the toolbar button triggers the action; it must reveal the Assistant, not cancel itself out
+    _load(window, app, tmp_path)
+    window.a_assistant.setChecked(False); window._apply_side_panels()
+    window.a_assistant.trigger()
+    assert window.a_assistant.isChecked()
+    assert window.side.isVisible() and window.side.stack.currentWidget() is window.assistant
+    window.a_assistant.trigger()
+    assert not window.a_assistant.isChecked()
+    assert window.side.stack.currentWidget() is window.inspector
+
+
+def test_send_without_a_key_offers_setup(window, app, tmp_path, monkeypatch):
+    _load(window, app, tmp_path)
+    monkeypatch.delenv("DANCR_ASSISTANT_API_KEY", raising=False)
+    monkeypatch.delenv("FIREWORKS_API_KEY", raising=False)
+    from dancr.ui.assistant import SETTING_KEY, SETTING_BASE, SETTING_MODEL
+    s = window.settings
+    for k in (SETTING_KEY, SETTING_BASE, SETTING_MODEL):
+        s.remove(k)
+    panel = window.assistant
+    panel.edit.setPlainText("total amount by region")
+    panel.send()
+    buttons = [b.text() for b in panel.body.findChildren(QPushButton)]
+    assert "Assistant settings…" in buttons                 # a clear way forward, not a doomed request
+    assert not panel._busy and not panel._thread.turns
+
+
+def test_command_hint_lists_matches(window, app, tmp_path):
+    _load(window, app, tmp_path)
+    panel = window.assistant
+    panel.edit.setPlainText("/pro")
+    assert panel.cmd_hint.isVisibleTo(panel) and "/profile" in panel.cmd_hint.text()
+    panel.edit.setPlainText("hello")
+    assert not panel.cmd_hint.isVisibleTo(panel)
 
 
 def test_assistant_builds_and_runs_a_proposed_answer(window, app, tmp_path):

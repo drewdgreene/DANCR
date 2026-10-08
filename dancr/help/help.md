@@ -76,7 +76,7 @@ sample file. When you're ready, swap in your own file in the loader's Settings.
 
 ## Answers: ask, or pick one DANCR offers
 
-Press **Auto** (Ctrl+J). A bar opens above the table with answers
+Press **Ask** (Ctrl+J). A bar opens above the table with answers
 DANCR can build right away, such as *Total sales by region*, *Average pressure
 per hour*, *probe B minus probe A*, *Gaps in the log* or *Top 10 customers*.
 Each card has a small preview.
@@ -211,7 +211,7 @@ build and change is one undo step.
 
 ## Assistant (AI)
 
-**Assistant** sits next to **Auto** (Ctrl+Shift+J). It is the same
+**Assistant** sits next to **Ask** (Ctrl+Shift+J). It is the same
 idea, but conversational: you talk to it in plain English, and it builds the
 same kind of steps and Answer cards for you to approve.
 
@@ -476,9 +476,10 @@ recomputes every step and replaces the stored results.
 
 | Keys | Action |
 |---|---|
+| Ctrl+Shift+P | Command palette (anything, searchable) |
 | Ctrl+I | Open data file |
 | Ctrl+K / Insert | Add step |
-| Ctrl+J | Auto: ask a question about your data |
+| Ctrl+J | Ask: a question in plain words, answered by rules |
 | Ctrl+Shift+J | Open the Assistant (the conversational version) |
 | Ctrl+F | Find in the table / jump to a time |
 | Ctrl+R / F5 | Run everything |
@@ -493,6 +494,7 @@ recomputes every step and replaces the stored results.
 | Ctrl+Shift+I | Inputs |
 | Ctrl+0 | Fit the canvas in view |
 | F1 | This guide |
+| Ctrl+/ | Keyboard and mouse sheet |
 
 ## Troubleshooting
 

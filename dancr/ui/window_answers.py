@@ -56,16 +56,15 @@ class WindowAnswers:
         self.a_assistant.setChecked(assistant_on)
         self._apply_side_panels()
 
-    def focus_assistant(self) -> None:
-        """Open the Assistant in the side column (or go back to Settings when it is already showing)."""
-        if not self.doc.pipeline.nodes:
-            self.add_data_files(); return
-        if self.a_assistant.isChecked():
-            self.a_assistant.setChecked(False)
-        else:
-            self.a_assistant.setChecked(True)
+    def _on_assistant_toggled(self, on: bool) -> None:
+        """The Assistant action's checked state changed: show or hide the side column to match. The action
+        already holds the new state, so this only applies it and never flips it back (which cancelled out)."""
+        if on and not self.doc.pipeline.nodes:
+            self.add_data_files()
+            self.a_assistant.setChecked(False)     # nothing to chat about yet; asking for data is the useful thing
+            return
         self._apply_side_panels()
-        if self.a_assistant.isChecked():
+        if on:
             self.assistant.edit.setFocus()
 
     def _preview_proposal(self, proposal: dict) -> None:

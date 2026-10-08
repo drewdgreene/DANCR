@@ -79,6 +79,10 @@ class WindowHelp:
         from .setup import CapabilitiesDialog
         CapabilitiesDialog(self).exec()
 
+    def show_shortcuts(self) -> None:
+        from .shortcuts import ShortcutDialog
+        ShortcutDialog(self).exec()
+
     def show_log(self) -> None:
         from ..logsetup import log_path
         lp = log_path()

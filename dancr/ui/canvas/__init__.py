@@ -549,8 +549,8 @@ class CanvasView(QGraphicsView):
         self.empty.setStyleSheet(f"QLabel {{ color: {T.muted}; border: 1.5px dashed {T.border}; border-radius: 10px; padding: 24px 32px; background: transparent; }}")
         self.empty.setText("<b style='font-size:13pt'>Drop your spreadsheets here</b><br>"
                            "<span style='color:%s'>CSV, Excel, Parquet, JSON, a folder, a database or a URL</span><br><br>"
-                           "or use <b>Auto</b> to ask a question in plain words.<br>"
-                           "<span style='color:%s'>Drag to move · scroll to zoom</span>" % (T.muted, T.faint))
+                           "or use <b>Ask</b> to type a question in plain words.<br>"
+                           "<span style='color:%s'>Drag to pan · Shift-drag to select · scroll to zoom</span>" % (T.muted, T.faint))
         self.empty.adjustSize()
 
     def resizeEvent(self, e) -> None:

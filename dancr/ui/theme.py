@@ -11,6 +11,7 @@ from PySide6.QtWidgets import QApplication
 CATEGORY_COLORS = {
     "Get data": "#2563eb", "Filter & sort": "#7c3aed", "Calculate": "#9333ea", "Clean up": "#d97706", "Combine": "#db2777",
     "Time": "#059669", "Analyse & model": "#0891b2", "Location": "#0d9488", "Share": "#475569",
+    "Check": "#0284c7", "Describe": "#64748b", "Search": "#6d28d9", "Governance": "#b91c1c",
 }
 STATUS_COLORS = {"idle": "#8b8b92", "stale": "#d97706", "running": "#2563eb", "done": "#16a34a", "failed": "#dc2626", "preview": "#7c3aed"}
 
