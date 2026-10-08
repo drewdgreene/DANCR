@@ -198,7 +198,8 @@ class AssistantCard(QFrame):
     """A reply: the model's words, with a note when it named a number the engine never produced."""
 
     def __init__(self, text: str, flags: list[str] | None = None, next_questions: list[str] | None = None,
-                 on_question=None, unverified: list[str] | None = None, parent=None, on_regenerate=None) -> None:
+                 on_question=None, unverified: list[str] | None = None, parent=None, on_regenerate=None,
+                 on_interpret=None) -> None:
         super().__init__(parent)
         self.setStyleSheet(f"QFrame {{ background:{T.panel}; border:1px solid {T.border_soft}; border-radius:{RADIUS}px; }}")
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
@@ -222,6 +223,11 @@ class AssistantCard(QFrame):
             v.addWidget(_plain(QLabel(msg), T.warn))
         if "truncated" in flags:
             v.addWidget(_plain(QLabel("The reply was cut off. Ask me to carry on."), T.warn))
+        if on_interpret:
+            b = _quiet("Interpret with the model")
+            b.setToolTip("Ask the model for a plain-language synthesis of these findings")
+            b.clicked.connect(lambda: on_interpret())
+            row = QHBoxLayout(); row.addWidget(b); row.addStretch(1); v.addLayout(row)
         if next_questions:
             v.addWidget(_plain(QLabel("You could ask"), T.faint, size=9))
             for q in next_questions[:3]:
@@ -272,11 +278,12 @@ class ProposalCard(QFrame):
         row.addWidget(self.build_btn); row.addWidget(self.discard_btn); row.addStretch(1)
         v.addLayout(row)
 
-    def built(self, finding: str = "", on_reveal=None, on_save=None, on_replace=None) -> None:
+    def built(self, finding: str = "", on_reveal=None, on_save=None, on_replace=None, on_interpret=None) -> None:
         self.build_btn.setVisible(False); self.discard_btn.setVisible(False)
         self._show_finding(finding)
         row = QHBoxLayout(); row.setSpacing(2)
-        for text, tip, cb in (("Canvas", "Show these steps on the canvas", on_reveal),
+        for text, tip, cb in (("Interpret", "Ask the model to explain these findings", on_interpret),
+                              ("Canvas", "Show these steps on the canvas", on_reveal),
                               ("Save…", "Save these steps as a new project", on_save),
                               ("Replace", "Replace the canvas with these steps", on_replace)):
             if cb is None:
@@ -510,6 +517,7 @@ class AssistantPanel(QFrame):
         self._last_text = ""
         self._connect_shown = False
         self._regenerating = False
+        self._last_finding = ""
         self._build_ui()
         listen(self, doc.reloaded, self._project_replaced)
         listen(self, doc.nodeAdded, self._on_node_added)
@@ -1049,6 +1057,37 @@ class AssistantPanel(QFrame):
             self._remove_widget(self._working)
             self._working = None
 
+    def _interpret(self) -> None:
+        """Ask the model for a plain-language synthesis over the engine's findings (opt-in, one click)."""
+        findings = self._last_finding
+        if not findings or self._busy or self._session is None or not self._configured():
+            return
+        session = self._session
+        self._working = WorkingCard("Interpreting")
+        self._add_widget(self._working)
+        self._set_busy(True, "Interpreting")
+        task = Task(lambda: session.synthesize(findings, on_event=self._progress.event.emit))
+        task.waits_for_run = False
+        task.signals.done.connect(lambda reply, t=task: self._got_synthesis(reply) if t is self._task and not t.cancelled else None)
+        task.signals.failed.connect(lambda msg, t=task: self._failed(msg) if t is self._task and not t.cancelled else None)
+        task.signals.finished.connect(lambda t=task: self._set_busy(False, "") if t is self._task else None)
+        self._task = task
+        view_pool().start(task)
+
+    def _got_synthesis(self, reply) -> None:
+        if not alive(self) or self._session is None:
+            return
+        self._finish_working()
+        self._session.record("", reply, new_user=False)
+        self.doc.set_thread(self._session.thread.to_dict())
+        self._thread = self._session.thread
+        self._update_cost()
+        if reply.kind == "error":
+            self._add_widget(NoteCard(reply.error or "Could not interpret the results.", error=True))
+            return
+        nxt = (reply.proposal or {}).get("next_questions") or []
+        self._add_widget(AssistantCard(reply.text, reply.flags, nxt, self._ask_again, unverified=reply.unverified))
+
     def _show_connect(self) -> None:
         """No model key: offer the setup instead of firing a request that is certain to fail."""
         if not self._connect_shown:
@@ -1129,14 +1168,18 @@ class AssistantPanel(QFrame):
 
     def built(self, finding: str = "", message: str = "", terminal: str | None = None, answer_id: str | None = None,
               multi: bool = False) -> None:
+        self._last_finding = finding
         card = self._pending_card
         if card is not None:
             # a set of answers gets only "Canvas" (reveal the first): Save/Replace act on one answer, which would
             # hide the others, so they are left off for a multi-answer investigation
+            has_finding = bool(finding) and finding != "Ran over every row."
+            interp = (lambda: self._interpret()) if (has_finding and self._configured()) else None
             card.built(finding,
                        on_reveal=(lambda t=terminal: self.revealRequested.emit(t)) if terminal else None,
                        on_save=(None if multi else (lambda t=terminal: self.saveProjectRequested.emit(t)) if terminal else None),
-                       on_replace=(None if multi else (lambda t=terminal: self.replaceCanvasRequested.emit(t)) if terminal else None))
+                       on_replace=(None if multi else (lambda t=terminal: self.replaceCanvasRequested.emit(t)) if terminal else None),
+                       on_interpret=interp)
             self._pending_card = None
         self._note_built(finding=finding, terminal=terminal, answer_id=answer_id)
         if message:

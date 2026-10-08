@@ -222,6 +222,35 @@ class AssistantSession:
                              flags=list(reply.flags), unverified=list(reply.unverified),
                              allowed=list(reply.allowed), usage=dict(reply.usage)))
 
+    def synthesize(self, findings: str, *,
+                   on_event: Callable[[dict[str, Any]], None] | None = None) -> AssistantReply:
+        """A short, plain-language synthesis over the engine's findings after a build: what the data shows and the
+        hypotheses it supports. The model writes it, but every figure is checked against the findings text."""
+        emit = on_event or (lambda _s: None)
+        if isinstance(self.provider, OpenAIProvider) and not self.settings.configured:
+            return AssistantReply(kind="paused", text="No model key is set.")
+        prompt = ("These analyses were just built and run. The engine's finding for each is below. Write a short "
+                  "synthesis for the person: what the data shows and which hypotheses it supports, in three to "
+                  "five sentences, then up to three next questions. Use only figures that appear below or in the "
+                  "profile.\n\n" + findings)
+        messages = self._messages(prompt)
+        allowed = [_profile_stats_text(self.profile()), findings]
+        allowed += [t.text for t in self.thread.turns[-MAX_PRIOR_TURNS:] if t.role == "user"]
+        try:
+            emit({"status": "Interpreting the results"})
+            result: ChatResult = self.provider.chat(messages, [], self.settings,
+                                                    on_delta=lambda piece: emit({"delta": piece}))
+        except ProviderPaused as e:
+            return AssistantReply(kind="paused", text=str(e), usage=self._usage())
+        except ProviderError as e:
+            return AssistantReply(kind="error", text="", error=str(e), usage=self._usage())
+        self.usage.add(result.usage)
+        text = (result.message.content or "").strip()[:MAX_REPLY]
+        allowed_set = _allowed_numbers(allowed)
+        flags, unverified = _flags_for(text, allowed_set, self._prior_allowed())
+        return AssistantReply(text=text, kind="text", flags=flags, unverified=unverified,
+                              allowed=sorted(allowed_set)[:800], usage=self._usage())
+
     def _prior_allowed(self) -> set[str]:
         """The figures earlier turns' tools backed, so a model restating a verified number is not flagged."""
         out: set[str] = set()

@@ -140,19 +140,18 @@ class WindowAnswers:
             return
         self._assistant_terminals = None
         answer_ids, self._assistant_answers = getattr(self, "_assistant_answers", []) or [], None
-        findings: list[str] = []
+        items: list[dict[str, str]] = []
         for t in terminals:
             st = states.get(t) or self.doc.state(t)
             if st.status == "failed":
                 self.assistant.built(message=f"That step failed: {st.error}", terminal=t)
                 return
-            if st.status == "done":
-                f = ((st.report or {}).get("finding") or {}).get("statement") or ""
-                if f:
-                    findings.append(f)
+            finding = ((st.report or {}).get("finding") or {}).get("statement") or "" if st.status == "done" else ""
+            a = next((x for x in self.doc.pipeline.answers if x.terminal == t), None)
+            title = a.title if a is not None else self.doc.pipeline.nodes[t].title
+            items.append({"title": title, "finding": finding})
         multi = len(terminals) > 1
-        self.assistant.built(finding=" ".join(findings) or "Ran over every row.",
-                             terminal=terminals[0],
+        self.assistant.built(finding=_findings_summary(items), terminal=terminals[0],
                              answer_id=(None if multi else (answer_ids[0] if answer_ids else None)),
                              multi=multi)
 
@@ -503,3 +502,14 @@ class WindowAnswers:
         self.toast.show_message(f"Deleted {titles[0] if len(titles) == 1 else f'{len(titles)} steps'}", "Undo",
                                 lambda: self.doc.undo.undo() if self.doc.undo.index() == idx else None)
 
+
+
+def _findings_summary(items: list[dict[str, str]]) -> str:
+    """The Assistant's own report of a build, from the engine's findings: one line per analysis, so several
+    results read as a short summary rather than a run-on sentence (and nothing the model made up)."""
+    if not items:
+        return "Ran over every row."
+    if len(items) == 1:
+        return items[0].get("finding") or "Ran over every row."
+    lines = [f"\u2022 {it['title']} \u2014 {it.get('finding') or 'ran over every row'}" for it in items]
+    return f"Built and ran {len(items)} analyses. What the engine found:\n" + "\n".join(lines)

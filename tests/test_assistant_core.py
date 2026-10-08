@@ -231,6 +231,17 @@ def test_headless_turn_can_build_and_run(project):
     assert p.meta.get("assistant", {}).get("turns")          # the thread is saved into the project
 
 
+def test_synthesize_reads_findings_and_flags_unbacked(project):
+    p, ex, m = project
+    good = AssistantSession(p, ex, m, FakeProvider([_say("Shade area is 20% higher than Sun (p < 0.001).")]),
+                            ModelSettings(api_key="k"))
+    r = good.synthesize("Shade area 20% higher than Sun (p < 0.001)")
+    assert r.kind == "text" and "Shade" in r.text and "unverified-figure" not in r.flags
+    bad = AssistantSession(p, ex, m, FakeProvider([_say("The total is 987654.")]), ModelSettings(api_key="k"))
+    r2 = bad.synthesize("Shade area 20% higher than Sun")
+    assert "unverified-figure" in r2.flags and "987654" in r2.unverified
+
+
 def test_headless_turn_builds_several_answers(project):
     p, _ex, _m = project
     from dancr import headless as hl

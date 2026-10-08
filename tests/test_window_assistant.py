@@ -1,6 +1,6 @@
 """The Assistant in the window: the dock tab, a build request, and the engine doing the work."""
 import polars as pl
-from PySide6.QtWidgets import QPushButton, QToolButton
+from PySide6.QtWidgets import QLabel, QPushButton, QToolButton
 
 from helpers import settle, wait_run
 from dancr.core.assistant.client import ChatResult, FakeProvider, Message, ToolCall, Usage
@@ -281,6 +281,9 @@ def test_assistant_builds_several_answers_in_one_go(window, app, tmp_path):
     assert panel._pending_card is None
     texts = [b.text() for b in card.findChildren(QToolButton)]
     assert "Replace" not in texts and "Save…" not in texts  # they act on one answer, so a set leaves them off
+    labels = [lab.text() for lab in card.findChildren(QLabel)]
+    assert any("What the engine found" in t for t in labels)   # the findings are summarised, not just glued
+    assert "Interpret" in texts                                # and the model can add prose on request
 
 
 def test_regenerate_replaces_the_reply_without_duplicating_the_question(window, app, tmp_path):
