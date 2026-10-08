@@ -198,14 +198,19 @@ class AssistantCard(QFrame):
     """A reply: the model's words, with a note when it named a number the engine never produced."""
 
     def __init__(self, text: str, flags: list[str] | None = None, next_questions: list[str] | None = None,
-                 on_question=None, unverified: list[str] | None = None, parent=None) -> None:
+                 on_question=None, unverified: list[str] | None = None, parent=None, on_regenerate=None) -> None:
         super().__init__(parent)
         self.setStyleSheet(f"QFrame {{ background:{T.panel}; border:1px solid {T.border_soft}; border-radius:{RADIUS}px; }}")
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
         v = QVBoxLayout(self); v.setContentsMargins(10, 7, 10, 8); v.setSpacing(6)
         head = QHBoxLayout(); head.setSpacing(4)
         head.addWidget(_plain(QLabel("Assistant"), T.muted, size=9))
-        head.addStretch(1); head.addWidget(_copy_button(text))
+        head.addStretch(1)
+        if on_regenerate:
+            regen = _quiet("Regenerate"); regen.setToolTip("Ask the model again for this reply")
+            regen.clicked.connect(lambda: on_regenerate())
+            head.addWidget(regen)
+        head.addWidget(_copy_button(text))
         v.addLayout(head)
         body = _plain(QLabel(text or "(no words)"), T.text)
         body.setTextInteractionFlags(Qt.TextSelectableByMouse)
@@ -393,9 +398,13 @@ class WorkingCard(QFrame):
         self.elapsed = _plain(QLabel(""), T.faint, size=9)
         top.addWidget(self.dots, 0, Qt.AlignTop); top.addWidget(self.status, 1); top.addWidget(self.elapsed, 0, Qt.AlignTop)
         v.addLayout(top)
+        self.preview = _plain(QLabel(""), T.text); self.preview.setWordWrap(True)
+        self.preview.setVisible(False); self.preview.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        v.addWidget(self.preview)
         self.log = _plain(QLabel(""), T.muted, size=9); self.log.setVisible(False)
         v.addWidget(self.log)
         self._steps: list[str] = []
+        self._text = ""
         self._frame = 0
         self._t0 = time.monotonic()
         self._timer = QTimer(self); self._timer.setInterval(420); self._timer.timeout.connect(self._tick)
@@ -416,6 +425,12 @@ class WorkingCard(QFrame):
         self._steps.append(phrase)
         self.log.setText("\n".join(self._steps[-5:]))
         self.log.setVisible(True)
+
+    def append_text(self, chunk: str) -> None:
+        """Show the reply as it streams in; keep the tail so a very long answer cannot grow the card without end."""
+        self._text = (self._text + chunk)[-4000:]
+        self.preview.setText(self._text)
+        self.preview.setVisible(True)
 
     def stop(self) -> None:
         self._timer.stop()
@@ -488,6 +503,7 @@ class AssistantPanel(QFrame):
         self._hist = -1
         self._last_text = ""
         self._connect_shown = False
+        self._regenerating = False
         self._build_ui()
         listen(self, doc.reloaded, self._project_replaced)
         listen(self, doc.nodeAdded, self._on_node_added)
@@ -848,6 +864,8 @@ class AssistantPanel(QFrame):
             return
         if "tool" in event:
             self._working.add_tool(TOOL_TEXT.get(str(event["tool"]), str(event["tool"])))
+        elif "delta" in event:
+            self._working.append_text(str(event["delta"]))
         elif "status" in event:
             self._working.set_status(str(event["status"]))
 
@@ -916,6 +934,7 @@ class AssistantPanel(QFrame):
                 self._session.provider.cancel()
             except Exception:  # noqa: BLE001
                 pass
+        self._regenerating = False
         self._finish_working()
         self._set_busy(False, "")
 
@@ -968,11 +987,33 @@ class AssistantPanel(QFrame):
             del self._history[:-100]
         self.edit.clear(); self._grow()
         self._add_user(text)
+        self._dispatch(text)
+
+    def _dispatch(self, text: str) -> None:
+        """Run a turn on the latest data model, waiting for it to be read if it is still being understood."""
         self._set_busy(True, "Reading the tables first" if not self.understanding.full else "Thinking")
         if self.understanding.full and self.understanding.model is not None:
             self._start(text, self.understanding.model)
         else:
             self.understanding.when_full(lambda model: self._start(text, model))
+
+    def _regenerate(self) -> None:
+        """Ask the model again for the last reply, keeping the question and replacing the answer."""
+        if self._busy or not self._thread.turns:
+            return
+        if self._thread.turns[-1].role == "assistant":
+            self._thread.turns.pop()
+        text = next((t.text for t in reversed(self._thread.turns) if t.role == "user"), "")
+        if not text:
+            return
+        self.proposalCleared.emit()
+        self._pending_card = None
+        self._pending_edits_card = None
+        self.doc.set_thread(self._thread.to_dict())
+        self._reload_cards()
+        self._last_text = text
+        self._regenerating = True
+        self._dispatch(text)
 
     def _start(self, text: str, model) -> None:
         ex = self.doc.snapshot_executor()
@@ -1024,7 +1065,8 @@ class AssistantPanel(QFrame):
         if self._session is None or not alive(self):
             return
         self._finish_working()
-        self._session.record(text, reply)
+        self._session.record(text, reply, new_user=not self._regenerating)
+        self._regenerating = False
         self.doc.set_thread(self._session.thread.to_dict())
         self._thread = self._session.thread
         self._update_cost()
@@ -1042,7 +1084,8 @@ class AssistantPanel(QFrame):
                                            ("Try a different way", lambda: self._ask_again("Try a different approach."))], tone="warn"))
             return
         nxt = (reply.proposal or {}).get("next_questions") or []
-        self._add_widget(AssistantCard(reply.text, reply.flags, nxt, self._ask_again, unverified=reply.unverified))
+        self._add_widget(AssistantCard(reply.text, reply.flags, nxt, self._ask_again, unverified=reply.unverified,
+                                       on_regenerate=self._regenerate))
         prop = reply.proposal
         if prop and prop.get("kind") in ("answer", "steps"):
             card = ProposalCard(prop, self._build, self._discard)

@@ -99,11 +99,12 @@ def test_escape_does_not_stop_a_run(window):
     assert window.a_stop.shortcut() != QKeySequence("Escape")
 
 
-def test_waiting_for_a_run_to_stop_shows_why_and_takes_the_clicks(window, app):
-    from PySide6.QtCore import Qt
+def test_waiting_for_a_run_to_stop_shows_a_banner_and_pauses_actions(window, app):
+    window.add_node("enter_data", None)          # a run only exists off the start page, where the banner lives
     window.doc.busy.emit("Stopping the current step…")
-    dlg = window._busy_dlg
-    assert dlg is not None and dlg.isVisible() and dlg.windowModality() == Qt.WindowModal
-    assert dlg.labelText() == "Stopping the current step…"
+    assert window.busy_bar.isVisibleTo(window)
+    assert window.busy_label.text() == "Stopping the current step…"
+    assert not window.menuBar().isEnabled() and not window.toolbar.isEnabled()
     window.doc.busy.emit(None)
-    assert window._busy_dlg is None and not dlg.isVisible()
+    assert not window.busy_bar.isVisibleTo(window)
+    assert window.menuBar().isEnabled() and window.toolbar.isEnabled()

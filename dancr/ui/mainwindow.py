@@ -57,7 +57,6 @@ class MainWindow(WindowActions, WindowPages, WindowAnswers, WindowSession, Windo
         self.steps = StepFactory(self)
         self._terminating = False
         self._disposed = False
-        self._busy_dlg: QProgressDialog | None = None
         self._toast_index = -1
         self.scene = CanvasScene(self.doc, self)          # parented: it goes when the window goes (theme switch)
         self.view = CanvasView(self.scene)
@@ -117,13 +116,20 @@ class MainWindow(WindowActions, WindowPages, WindowAnswers, WindowSession, Windo
         self.stop_btn = QPushButton("Stop"); self.stop_btn.setIcon(icon("stop", T.text, 14)); self.stop_btn.clicked.connect(self.stop)
         pl_.addWidget(self.progress_label, 1); pl_.addWidget(self.progress_bar, 2); pl_.addWidget(self.stop_btn)
         self.progress.hide()
+        # a run being torn down: a non-blocking banner, not a modal dialog (the window keeps repainting)
+        self.busy_bar = QFrame(); self.busy_bar.setStyleSheet(f"QFrame {{ background: {T.panel}; border-bottom: 1px solid {T.border}; }}")
+        bl = QHBoxLayout(self.busy_bar); bl.setContentsMargins(12, 4, 12, 4); bl.setSpacing(10)
+        self.busy_label = QLabel("")
+        self.busy_progress = QProgressBar(); self.busy_progress.setTextVisible(False); self.busy_progress.setFixedHeight(4); self.busy_progress.setRange(0, 0)
+        bl.addWidget(self.busy_label, 1); bl.addWidget(self.busy_progress, 2)
+        self.busy_bar.hide()
         self.outer_split = QSplitter(Qt.Vertical)          # canvas on top, result drawer below
         self.outer_split.addWidget(self.top_split)
         self.outer_split.addWidget(self.result_box)
         self.outer_split.setStretchFactor(0, 4); self.outer_split.setStretchFactor(1, 1); self.outer_split.setSizes([660, 240])
         self.outer_split.setCollapsible(0, False); self.outer_split.setCollapsible(1, True)
         self.workspace = QWidget(); cw = QVBoxLayout(self.workspace); cw.setContentsMargins(0, 0, 0, 0); cw.setSpacing(0)
-        cw.addWidget(self.outer_split, 1); cw.addWidget(self.result_handle); cw.addWidget(self.progress)
+        cw.addWidget(self.busy_bar); cw.addWidget(self.outer_split, 1); cw.addWidget(self.result_handle); cw.addWidget(self.progress)
         self.root = QStackedWidget()
         self.root.addWidget(self.start); self.root.addWidget(self.workspace)
         self._entered = False                              # False until the person leaves the start page for good

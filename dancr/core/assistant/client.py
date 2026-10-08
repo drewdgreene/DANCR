@@ -125,7 +125,10 @@ class Provider:
         # happens-before visible, so a provider on another runtime cannot miss the write.
         self._cancelled = threading.Event()
 
-    def chat(self, messages: Sequence[Message], tools: Sequence[ToolSpec], settings: ModelSettings) -> ChatResult:
+    def chat(self, messages: Sequence[Message], tools: Sequence[ToolSpec], settings: ModelSettings,
+             on_delta: Callable[[str], None] | None = None) -> ChatResult:
+        """One call. ``on_delta`` receives the reply's text as it streams in (a provider may ignore it and
+        return the whole reply at once)."""
         raise NotImplementedError
 
     def cancel(self) -> None:
@@ -165,11 +168,15 @@ class FakeProvider(Provider):
             return ChatResult(r)
         return ChatResult(Message("assistant", str(r)))
 
-    def chat(self, messages: Sequence[Message], tools: Sequence[ToolSpec], settings: ModelSettings) -> ChatResult:
+    def chat(self, messages: Sequence[Message], tools: Sequence[ToolSpec], settings: ModelSettings,
+             on_delta: Callable[[str], None] | None = None) -> ChatResult:
         self.calls.append(list(messages))
         if self.cancelled:
             raise ProviderError("stopped")
-        return self.next_reply(messages, tools)
+        result = self.next_reply(messages, tools)
+        if on_delta and result.message.content:
+            on_delta(result.message.content)          # the scripted reply, as one delta: tests the streaming path
+        return result
 
 
 MAX_ATTEMPTS = 3                # a transient network error or a 5xx is retried this many times
@@ -205,7 +212,21 @@ class OpenAIProvider(Provider):
                                 "Reinstall DANCR (or, in a source checkout, run 'uv sync').") from None
         return httpx.Client(timeout=settings.timeout)          # the call's settings, not the constructor's
 
-    def chat(self, messages: Sequence[Message], tools: Sequence[ToolSpec], settings: ModelSettings) -> ChatResult:
+    @staticmethod
+    def _raise_status(resp: Any) -> None:
+        """A non-2xx reply as the right error. Call ``resp.read()`` first for a streamed response."""
+        code = resp.status_code
+        if code in (401, 403):
+            raise ProviderError("The model rejected the key. Check the key in the Assistant settings")
+        if code == 402:
+            raise ProviderPaused("The key is out of funds. Add funds or use your own key to continue")
+        if code == 429:
+            raise ProviderPaused("The model is rate-limited right now. Wait a moment and try again")
+        if code >= 400:
+            raise ProviderError(f"The model returned an error ({code}): {_short(resp.text)}")
+
+    def chat(self, messages: Sequence[Message], tools: Sequence[ToolSpec], settings: ModelSettings,
+             on_delta: Callable[[str], None] | None = None) -> ChatResult:
         import time
 
         import httpx
@@ -221,32 +242,57 @@ class OpenAIProvider(Provider):
         if tools:
             body["tools"] = [t.to_wire() for t in tools]
             body["tool_choice"] = "auto"
+        if on_delta is not None:
+            body["stream"] = True
         url = settings.base_url.rstrip("/") + "/chat/completions"
         headers = {"Authorization": f"Bearer {settings.api_key}", "Content-Type": "application/json"}
         client = self._client(settings)
         with self._active_lock:
             self._active = client
         try:
-            resp = None
             for attempt in range(MAX_ATTEMPTS):
                 if self.cancelled:
                     raise ProviderError("stopped")
+                state = {"emitted": False}          # did anything stream out? never retry after partial text
                 try:
+                    if on_delta is not None:
+                        with client.stream("POST", url, json=body, headers=headers) as resp:
+                            if resp.status_code >= 500 and attempt < MAX_ATTEMPTS - 1:
+                                resp.read()
+                                time.sleep(RETRY_DELAY * (attempt + 1))   # a transient server error: try again
+                                continue
+                            if resp.status_code >= 400:
+                                resp.read()
+                                self._raise_status(resp)
+                            if "event-stream" not in resp.headers.get("content-type", "").lower():
+                                resp.read()                  # a server that ignored `stream` and sent one JSON reply
+                                try:
+                                    return _parse(resp.json())
+                                except ValueError as e:
+                                    raise ProviderError(f"The model returned a reply that is not JSON: "
+                                                        f"{_short(resp.text)}") from e
+                            return _consume_stream(resp, on_delta, state)
                     resp = client.post(url, json=body, headers=headers)
+                    if resp.status_code >= 500 and attempt < MAX_ATTEMPTS - 1:
+                        time.sleep(RETRY_DELAY * (attempt + 1))
+                        continue
+                    self._raise_status(resp)
+                    try:
+                        data = resp.json()
+                    except ValueError as e:
+                        raise ProviderError(f"The model returned a reply that is not JSON: {_short(resp.text)}") from e
+                    return _parse(data)
                 except (httpx.HTTPError, RuntimeError) as e:     # a closed client raises RuntimeError
                     if self.cancelled:
                         raise ProviderError("stopped") from e
-                    if attempt < MAX_ATTEMPTS - 1:
+                    if attempt < MAX_ATTEMPTS - 1 and not state["emitted"]:
                         time.sleep(RETRY_DELAY * (attempt + 1))
                         continue
                     if isinstance(e, httpx.TimeoutException):
                         raise ProviderError("The model took too long to answer. Try again, or raise the timeout in "
                                             "settings") from e
                     raise ProviderError(f"Could not reach the model at {settings.base_url}: {e}") from e
-                if resp.status_code >= 500 and attempt < MAX_ATTEMPTS - 1:
-                    time.sleep(RETRY_DELAY * (attempt + 1))      # a transient server error: try again
-                    continue
-                break
+            raise ProviderError(f"Could not reach the model at {settings.base_url}")     # the attempts ran out
         finally:
             with self._active_lock:
                 self._active = None
@@ -254,20 +300,6 @@ class OpenAIProvider(Provider):
                 client.close()
             except Exception:  # noqa: BLE001
                 pass
-        assert resp is not None
-        if resp.status_code in (401, 403):
-            raise ProviderError("The model rejected the key. Check the key in the Assistant settings")
-        if resp.status_code == 402:
-            raise ProviderPaused("The key is out of funds. Add funds or use your own key to continue")
-        if resp.status_code == 429:
-            raise ProviderPaused("The model is rate-limited right now. Wait a moment and try again")
-        if resp.status_code >= 400:
-            raise ProviderError(f"The model returned an error ({resp.status_code}): {_short(resp.text)}")
-        try:
-            data = resp.json()
-        except ValueError as e:
-            raise ProviderError(f"The model returned a reply that is not JSON: {_short(resp.text)}") from e
-        return _parse(data)
 
 
 def _parse(data: dict[str, Any]) -> ChatResult:
@@ -276,24 +308,77 @@ def _parse(data: dict[str, Any]) -> ChatResult:
         raise ProviderError("The model returned no reply")
     choice = choices[0]
     msg = choice.get("message") or {}
-    calls: list[ToolCall] = []
-    for tc in msg.get("tool_calls") or []:
-        fn = tc.get("function") or {}
-        raw = fn.get("arguments") or "{}"
-        try:
-            args = json.loads(raw) if isinstance(raw, str) else dict(raw)
-            if not isinstance(args, dict):
-                args = {"value": args}
-        except (ValueError, TypeError):
-            args = {}
-        calls.append(ToolCall(id=str(tc.get("id") or f"call_{len(calls)}"), name=str(fn.get("name") or ""),
-                              arguments=args, raw_arguments=raw if isinstance(raw, str) else json.dumps(args)))
+    calls = [_tool_call(tc.get("id") or f"call_{i}", (tc.get("function") or {}).get("name"),
+                        (tc.get("function") or {}).get("arguments") or "{}")
+             for i, tc in enumerate(msg.get("tool_calls") or [])]
     message = Message("assistant", str(msg.get("content") or ""), calls)
     u = data.get("usage") or {}
     details = u.get("prompt_tokens_details") or {}
     usage = Usage(int(u.get("prompt_tokens") or 0), int(u.get("completion_tokens") or 0),
                   int(u.get("total_tokens") or 0), int(details.get("cached_tokens") or 0))
     return ChatResult(message, usage, str(choice.get("finish_reason") or ""))
+
+
+def _tool_call(call_id: Any, name: Any, raw: Any) -> ToolCall:
+    if not isinstance(raw, str):
+        raw = json.dumps(raw)
+    try:
+        args = json.loads(raw)
+        if not isinstance(args, dict):
+            args = {"value": args}
+    except (ValueError, TypeError):
+        args = {}
+    return ToolCall(id=str(call_id), name=str(name or ""), arguments=args, raw_arguments=raw)
+
+
+def _consume_stream(resp: Any, on_delta: Callable[[str], None], state: dict[str, bool]) -> ChatResult:
+    """Read an OpenAI-style SSE stream: content deltas go to ``on_delta`` as they arrive; the tool calls,
+    finish reason and usage (if the server sends it) are assembled into the one reply the session expects."""
+    content: list[str] = []
+    slots: dict[int, dict[str, str]] = {}          # tool-call index -> {id, name, args}
+    finish = ""
+    usage = Usage()
+    for line in resp.iter_lines():
+        line = line.strip()
+        if not line or line.startswith(":") or not line.startswith("data:"):
+            continue
+        payload = line[5:].strip()
+        if payload == "[DONE]":
+            break
+        try:
+            chunk = json.loads(payload)
+        except ValueError:
+            continue
+        u = chunk.get("usage")
+        if isinstance(u, dict):
+            details = u.get("prompt_tokens_details") or {}
+            usage = Usage(int(u.get("prompt_tokens") or 0), int(u.get("completion_tokens") or 0),
+                          int(u.get("total_tokens") or 0), int(details.get("cached_tokens") or 0))
+        choices = chunk.get("choices") or []
+        if not choices:
+            continue
+        choice = choices[0]
+        if choice.get("finish_reason"):
+            finish = str(choice["finish_reason"])
+        delta = choice.get("delta") or {}
+        piece = delta.get("content")
+        if piece:
+            content.append(str(piece)); state["emitted"] = True; on_delta(str(piece))
+        for tc in delta.get("tool_calls") or []:
+            slot = slots.setdefault(int(tc.get("index", 0) or 0), {"id": "", "name": "", "args": ""})
+            if tc.get("id"):
+                slot["id"] = str(tc["id"])
+            fn = tc.get("function") or {}
+            if fn.get("name"):
+                slot["name"] = str(fn["name"])
+            if fn.get("arguments"):
+                slot["args"] += str(fn["arguments"])
+            state["emitted"] = True
+    if not content and not slots and not finish:
+        raise ProviderError("The model returned no reply")
+    calls = [_tool_call(slots[i]["id"] or f"call_{i}", slots[i]["name"], slots[i]["args"] or "{}")
+             for i in sorted(slots)]
+    return ChatResult(Message("assistant", "".join(content), calls), usage, finish)
 
 
 def _short(text: str, limit: int = 300) -> str:

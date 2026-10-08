@@ -129,7 +129,8 @@ class AssistantSession:
                     self.provider.cancel()
                     return AssistantReply(kind="paused", text="Stopped.", flags=["stopped"], usage=self._usage())
                 emit({"status": "Thinking" if _round else "Reviewing what the engine returned"})
-                result: ChatResult = self.provider.chat(messages, schemas, self.settings)
+                result: ChatResult = self.provider.chat(
+                    messages, schemas, self.settings, on_delta=lambda piece: emit({"delta": piece}))
                 self.usage.add(result.usage)
                 finish = result.finish_reason or finish
                 msg = result.message
@@ -206,12 +207,14 @@ class AssistantSession:
                               usage=self._usage(), tool_calls=called)
 
     def record(self, user_text: str, reply: AssistantReply, *, finding: str = "", node: str | None = None,
-               answer: str | None = None) -> None:
-        """Keep the turn in the thread (the caller saves the project)."""
+               answer: str | None = None, new_user: bool = True) -> None:
+        """Keep the turn in the thread (the caller saves the project). ``new_user=False`` replaces an existing
+        reply — used by Regenerate, which keeps the user's question and discards the answer it is re-asking."""
         prop = reply.proposal or {}
         if self.last_connections:
             self.thread.connections = self.last_connections
-        self.thread.add(Turn("user", str(user_text)[:MAX_REPLY]))
+        if new_user:
+            self.thread.add(Turn("user", str(user_text)[:MAX_REPLY]))
         self.thread.add(Turn("assistant", reply.text, kind=reply.kind, proposal=reply.proposal,
                              finding=finding, node=node, answer=answer,
                              assumptions=[str(a) for a in (prop.get("assumptions") or [])],

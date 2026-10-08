@@ -140,6 +140,56 @@ def test_openai_provider_retries_a_transient_5xx():
         httpd.shutdown()
 
 
+def test_openai_provider_streams_text_and_assembles_a_tool_call():
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *a): pass
+
+        def do_POST(self):
+            n = int(self.headers.get("Content-Length") or 0)
+            self.rfile.read(n)
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.end_headers()
+            chunks = [
+                {"choices": [{"delta": {"content": "Hel"}}]},
+                {"choices": [{"delta": {"content": "lo"}}]},
+                {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "c1",
+                                                        "function": {"name": "get_stats", "arguments": "{\"node\""}}]}}]},
+                {"choices": [{"delta": {"tool_calls": [{"index": 0, "function": {"arguments": ": \"src\"}"}}]},
+                              "finish_reason": "tool_calls"}]},
+            ]
+            for ch in chunks:
+                self.wfile.write(b"data: " + json.dumps(ch).encode() + b"\n\n")
+            self.wfile.write(b"data: [DONE]\n\n")
+
+    httpd = HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{httpd.server_address[1]}/v1"
+    try:
+        s = ModelSettings(base_url=base, model="m", api_key="k")
+        pieces: list[str] = []
+        r = OpenAIProvider(s).chat([Message("user", "hi")], [ToolSpec("get_stats", "x", {"type": "object"})], s,
+                                  on_delta=pieces.append)
+        assert "".join(pieces) == "Hello" and r.message.content == "Hello"
+        assert r.message.tool_calls[0].name == "get_stats"
+        assert r.message.tool_calls[0].arguments == {"node": "src"}
+        assert r.finish_reason == "tool_calls"
+    finally:
+        httpd.shutdown()
+
+
+def test_openai_provider_falls_back_when_a_server_ignores_stream():
+    base, _seen, httpd = _server(REPLY)          # replies as application/json, ignoring stream=True
+    try:
+        s = ModelSettings(base_url=base, model="m", api_key="k")
+        pieces: list[str] = []
+        r = OpenAIProvider(s).chat([Message("user", "hi")], [], s, on_delta=pieces.append)
+        assert r.message.tool_calls[0].name == "get_stats"
+        assert pieces == []                      # it did not stream, but the reply still arrived
+    finally:
+        httpd.shutdown()
+
+
 def test_openai_provider_stops_when_cancelled():
     p = OpenAIProvider(ModelSettings(base_url="http://127.0.0.1:9/v1", model="m", api_key="k"))
     p.cancel()

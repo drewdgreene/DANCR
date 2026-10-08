@@ -101,14 +101,14 @@ class WindowSession:
         return True
 
     def _on_busy(self, why: str | None) -> None:
-        """While the document waits for a run to stop, a window-modal note says why; it takes every click, so
-        nothing can open, save or close the project while the run is torn down."""
-        if self._busy_dlg is not None:
-            self._busy_dlg.close(); self._busy_dlg.deleteLater(); self._busy_dlg = None
+        """While a run is torn down, a non-blocking banner says why and the structural actions are paused, so
+        nothing opens, saves or quits mid-teardown. No modal dialog: the window stays visible and animated."""
         if why:
-            dlg = self._busy_dlg = QProgressDialog(why, None, 0, 0, self)
-            dlg.setWindowTitle("DANCR"); dlg.setWindowModality(Qt.WindowModal); dlg.setMinimumDuration(0)
-            dlg.show(); dlg.setValue(0)
+            self.busy_label.setText(str(why)); self.busy_bar.show()
+            self.menuBar().setEnabled(False); self.toolbar.setEnabled(False)
+        else:
+            self.busy_bar.hide()
+            self.menuBar().setEnabled(True); self.toolbar.setEnabled(True)
 
     def new_pipeline(self) -> None:
         if self._confirm_stop_run("start a new project") and self.maybe_save():

@@ -426,6 +426,15 @@ def test_propose_steps_rejects_an_id_that_already_exists(project):
     assert out.content.get("ok") is False and "already exists" in out.content["error"]
 
 
+def test_streaming_deltas_are_forwarded_to_the_events(project):
+    p, ex, m = project
+    events: list[dict] = []
+    s = AssistantSession(p, ex, m, FakeProvider([_say("Hello there.")]), ModelSettings(api_key="k"))
+    r = s.turn("hi", on_event=events.append)
+    assert any(e.get("delta") == "Hello there." for e in events)   # the reply streamed through
+    assert r.text == "Hello there."
+
+
 def test_loading_a_thread_caps_oversized_fields():
     from dancr.core.assistant.store import Thread
     big = {"turns": [{"role": "assistant", "text": "x" * 9000,

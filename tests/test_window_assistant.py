@@ -264,6 +264,20 @@ def test_connection_map_card(window, app, tmp_path):
     assert len(panel.body.findChildren(AssistantCard)) == before + 1
 
 
+def test_regenerate_replaces_the_reply_without_duplicating_the_question(window, app, tmp_path):
+    _load(window, app, tmp_path)
+    panel = window.assistant
+    panel.set_provider(FakeProvider([_say("First answer."), _say("Second answer.")]))
+    panel.edit.setPlainText("what is this?"); panel.send()
+    settle(app, lambda: not panel._busy, 20)
+    assert panel._thread.turns[-1].text == "First answer."
+    assert len([t for t in panel._thread.turns if t.role == "user"]) == 1
+    panel._regenerate()
+    settle(app, lambda: not panel._busy and panel._thread.turns[-1].text == "Second answer.", 20)
+    assert panel._thread.turns[-1].text == "Second answer."
+    assert len([t for t in panel._thread.turns if t.role == "user"]) == 1      # the question is kept, once
+
+
 def test_assistant_text_reply_changes_nothing(window, app, tmp_path):
     _load(window, app, tmp_path)
     before = set(window.doc.pipeline.nodes)
