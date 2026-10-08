@@ -18,7 +18,7 @@ from typing import Any, Callable
 from PySide6.QtCore import Qt, Signal, QTimer, QRectF, QPointF, QStringListModel
 from PySide6.QtGui import QPainter, QColor, QPen, QPainterPath
 from PySide6.QtWidgets import (QWidget, QHBoxLayout, QVBoxLayout, QLabel, QLineEdit, QPushButton, QToolButton, QFrame,
-                               QScrollArea, QMenu, QCompleter, QSizePolicy)
+                               QScrollArea, QMenu, QCompleter, QSizePolicy, QGraphicsDropShadowEffect)
 
 from ..core import Pipeline
 from ..core.executor import Executor
@@ -503,14 +503,15 @@ class AskOverlay(QFrame):
         super().__init__(parent)
         self._askbar = askbar
         self.setObjectName("askoverlay")
-        self.setAttribute(Qt.WA_StyledBackground, True)
-        self.setStyleSheet("QFrame#askoverlay { background: rgba(20, 22, 28, 110); }")
         outer = QVBoxLayout(self); outer.setContentsMargins(24, 24, 24, 24); outer.addStretch(1)
         row = QHBoxLayout(); row.addStretch(1)
         self._card = QFrame(); self._card.setObjectName("askcard")
         self._card.setAttribute(Qt.WA_StyledBackground, True)
         self._card.setStyleSheet(f"QFrame#askcard {{ background: {T.panel}; border: 1px solid {T.border};"
                                  " border-radius: 12px; }}")
+        shadow = QGraphicsDropShadowEffect(self._card)       # so the card reads as floating over the canvas
+        shadow.setBlurRadius(34); shadow.setOffset(0, 8); shadow.setColor(QColor(0, 0, 0, 150))
+        self._card.setGraphicsEffect(shadow)
         self._card.setMinimumWidth(460); self._card.setMaximumWidth(880)
         cl = QVBoxLayout(self._card); cl.setContentsMargins(0, 0, 0, 0); cl.setSpacing(0)
         cl.addWidget(askbar)
