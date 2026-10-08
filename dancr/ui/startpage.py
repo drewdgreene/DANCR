@@ -20,7 +20,7 @@ MAX_RECENT = 8
 COLUMN_WIDTH = 880
 
 TEMPLATE_ICONS = {"compare": "chart-line", "limits": "check-circle", "fit": "chart-scatter", "report": "article"}
-EXAMPLE_ICONS = {"shop": "trend-up", "loggers": "wave-sine", "budget": "columns", "batches": "check-circle"}
+EXAMPLE_ICONS = {"trial": "grid-four", "shop": "trend-up", "budget": "columns", "batches": "check-circle"}
 
 
 def _folder(path: Path) -> str:

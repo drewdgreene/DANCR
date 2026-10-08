@@ -133,13 +133,16 @@ def build_template(key: str, pipe, data_path: Path) -> None:
 # Each is a finished project on its own realistic data: the files, the questions it answers, and any steps
 # added by hand. They open from the start page into ~/DANCR samples/<title>.
 EXAMPLES = [
+    {"key": "trial", "title": "Maize trial & data stewardship", "pack": "dancr.core.example_trial",
+     "blurb": "A multi-site maize yield trial and a breeding data registry. Compare the treatments with a real "
+              "statistical test, fit yield to plant height, audit the data, and search the programme's SOPs and "
+              "notes with an IP guardrail. Open the START-HERE walkthrough in its folder.",
+     "questions": ["t test grain yield rainfed vs drought_stress", "average grain yield by treatment",
+                   "relationship between grain yield and plant height", "top 5 lines by grain yield",
+                   "check the measurements", "grain yield per month"]},
     {"key": "shop", "title": "Shop sales",
      "blurb": "A year of orders and a customer list, linked by customer. Sales by region, month, customer and product.",
      "questions": ["total sales by region", "monthly sales", "top 10 customers by sales", "total sales by product"]},
-    {"key": "loggers", "title": "Two sensor logs",
-     "blurb": "A week of pressure and temperature from two loggers. Compared with each other, averaged per hour, "
-              "with the gaps and spikes found.",
-     "questions": ["compare logger_A and logger_B", "average pressure per hour", "gaps in logger_A", "spikes in pressure"]},
     {"key": "budget", "title": "Department budget",
      "blurb": "A spreadsheet with a column for each month. Turned into rows, then totalled by department, month and cost.",
      "questions": ["total value by department", "total value per month", "total value by cost"]},
@@ -191,6 +194,9 @@ def write_example(key: str, directory: Path | str) -> Path:
     for nid in items:
         p.connect(nid, report.id, "items")
     p.save(project)
+    if ex.get("pack"):                                  # a pack also writes sibling projects and a walkthrough
+        import importlib
+        importlib.import_module(ex["pack"]).build_siblings(p, directory)
     return project
 
 
@@ -234,24 +240,11 @@ def _write_shop(d: Path) -> list[str]:
     return ["orders.csv", "customers.csv"]
 
 
-def _write_loggers(d: Path) -> list[str]:
-    """A week at one reading a minute. B reads a little high, drifts and is noisier; A has a gap and a spike."""
-    rng = np.random.default_rng(3)
-    n = 7 * 24 * 60
-    t0 = datetime(2024, 5, 6)
-    secs = np.arange(n) * 60
-    daily = np.sin(2 * np.pi * secs / 86400)
-    pa = 4.2 + 0.15 * daily + rng.normal(0, 0.01, n)
-    pa[3000] += 1.5
-    keep = np.ones(n, bool)
-    keep[6000:6180] = False
-    pl.DataFrame({"time": [t0 + timedelta(seconds=int(s)) for s in secs], "pressure (bar)": np.round(pa, 4),
-                  "temperature (°C)": np.round(18 + 3 * daily + rng.normal(0, 0.05, n), 2)}
-                 ).filter(pl.Series(keep)).write_csv(d / "logger_A.csv")
-    pl.DataFrame({"time": [t0 + timedelta(seconds=int(s) + 13) for s in secs],
-                  "pressure (bar)": np.round(4.2 + 0.15 * daily + 0.0004 * np.arange(n) / 60 + rng.normal(0, 0.03, n), 4),
-                  "temperature (°C)": np.round(18.4 + 3 * daily + rng.normal(0, 0.08, n), 2)}).write_csv(d / "logger_B.csv")
-    return ["logger_A.csv", "logger_B.csv"]
+def _write_trial(d: Path) -> list[str]:
+    """The maize-trial starter pack's data (see ``example_trial``): the whole repository's files. Imported on
+    use so the pack module (which builds the sibling projects) stays out of this module's import graph."""
+    from .example_trial import write_data
+    return write_data(d)
 
 
 def _write_budget(d: Path) -> list[str]:
@@ -281,4 +274,4 @@ def _write_batches(d: Path) -> list[str]:
     return ["batch_tests.csv"]
 
 
-_EXAMPLE_DATA = {"shop": _write_shop, "loggers": _write_loggers, "budget": _write_budget, "batches": _write_batches}
+_EXAMPLE_DATA = {"trial": _write_trial, "shop": _write_shop, "budget": _write_budget, "batches": _write_batches}

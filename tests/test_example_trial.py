@@ -1,0 +1,67 @@
+"""The maize-trial starter pack: the main project, the stewardship audit and the guarded knowledge base.
+
+The pack is the example that shows DANCR end to end on domain-accurate (fictional) agricultural data, so
+these tests pin the parts a newcomer is meant to see: a real statistical comparison, the seeded data
+defects found, and the restricted document withheld from search by default.
+"""
+import polars as pl
+
+from dancr.core import Pipeline
+from dancr.core.executor import Executor
+from dancr.core.samples import write_example
+
+
+def _run(path):
+    return Executor(Pipeline.load(path)).run()
+
+
+def test_the_pack_writes_three_projects_and_a_walkthrough(tmp_path):
+    write_example("trial", tmp_path)
+    for name in ("Maize trial & data stewardship.json", "Stewardship audit.json",
+                 "Data cleanup.json", "Knowledge base.json", "START-HERE.md"):
+        assert (tmp_path / name).exists(), name
+
+
+def test_the_trial_project_answers_the_hero_question(tmp_path):
+    res = _run(write_example("trial", tmp_path))
+    hero = [s for s in res.values() if (s.report or {}).get("results")]
+    assert hero, "the comparison produced no result"
+    r = hero[0].report["results"][0]
+    assert r["test"].startswith("Welch") and r["p"] < 0.01           # the right test, chosen on its own
+    assert "rainfed" in r["sentence"] and "drought_stress" in r["sentence"] and "p < 0.001" in r["sentence"]
+
+
+def test_the_stewardship_audit_finds_the_seeded_defects(tmp_path):
+    write_example("trial", tmp_path)
+    res = _run(tmp_path / "Stewardship audit.json")
+    checks = set()
+    for s in res.values():
+        if s.node_id.startswith("check_contract") and s.output:
+            checks |= set(pl.read_parquet(s.output)["check"].to_list())
+    assert {"unique", "allowed values", "required", "reference"} <= checks
+
+
+def test_the_knowledge_base_withholds_the_restricted_dossier(tmp_path):
+    write_example("trial", tmp_path)
+    res = _run(tmp_path / "Knowledge base.json")
+    search = res["search"]
+    assert search.status == "done", search.error
+    assert search.report["hits"] >= 1 and search.report["withheld"] == 1
+    # the shareable copy drops the restricted row and keeps the rest
+    shareable = pl.read_csv(tmp_path / "ai_knowledge" / "corpus_shareable.csv")
+    raw = pl.read_csv(tmp_path / "ai_knowledge" / "corpus.csv")
+    assert shareable.height == raw.height - 1
+    assert "restricted" not in [str(v).lower() for v in shareable["sensitivity"].to_list()]
+
+
+def test_the_cleanup_repairs_the_defects_at_the_source(tmp_path):
+    write_example("trial", tmp_path)
+    res = _run(tmp_path / "Data cleanup.json")
+    assert all(s.status == "done" for s in res.values())
+    # the contract checks pass once the defects are repaired
+    assert pl.read_parquet(res["reg_check"].output).height == 0
+    assert pl.read_parquet(res["ev_check"].output).height == 0
+    # the clean table drops the blank yields and keeps the corrected one
+    clean = pl.read_csv(tmp_path / "trials" / "phenotype_measurements_clean.csv")
+    raw = pl.read_csv(tmp_path / "trials" / "phenotype_measurements.csv")
+    assert clean.height < raw.height and clean["grain_yield_q_ha"].max() < 200
