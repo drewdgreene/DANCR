@@ -70,7 +70,7 @@ def _write_trials(directory: Path, rng: np.random.Generator) -> None:
             meta.append({"trial_id": tid, "site": sid, "site_name": sname, "year": stated_year,
                          "design": design, "reps": 3})
     plots = {"plot_id": [], "trial_id": [], "site": [], "line": [], "rep": [], "plot_index": [], "treatment": []}
-    meas = {"plot_id": [], "trial_id": [], "site": [], "line": [], "treatment": [], "measured_on": [],
+    meas = {"plot_id": [], "trial_id": [], "site": [], "line": [], "rep": [], "treatment": [], "measured_on": [],
             "grain_yield_q_ha": [], "plant_height_cm": [], "days_to_anthesis": [],
             "disease_severity_pct": [], "lodging_pct": []}
     entries = LINES + CHECKS
@@ -90,7 +90,8 @@ def _write_trials(directory: Path, rng: np.random.Generator) -> None:
                 y = line_base[ln] * TREAT_MULT[treatment] + site_shift + rng.normal(0, 2.6)
                 h = line_height[ln] + rng.normal(0, 7.0)
                 meas["plot_id"].append(plot_id); meas["trial_id"].append(tid); meas["site"].append(sid)
-                meas["line"].append(ln); meas["treatment"].append(treatment); meas["measured_on"].append(season_date)
+                meas["line"].append(ln); meas["rep"].append(rep); meas["treatment"].append(treatment)
+                meas["measured_on"].append(season_date)
                 meas["grain_yield_q_ha"].append(round(float(y), 2))
                 meas["plant_height_cm"].append(round(float(h), 1))
                 meas["days_to_anthesis"].append(int(round(74 + rng.normal(0, 3))))
@@ -328,6 +329,28 @@ def _cleanup_project(directory: Path):
     return p
 
 
+def _trial_project(directory: Path):
+    """A genotype trial fitted as a randomised complete block design: BLUPs and heritability per trial."""
+    from .model import Pipeline
+    p = Pipeline("Trial analysis")
+    p.path = directory / "Trial analysis.json"
+    src = p.add_node("load_file", title="phenotype_measurements",
+                     params={"path": "trials/phenotype_measurements.csv"}, x=60.0, y=200.0, id="plots").id
+    ta = p.add_node("trial_analysis", title="BLUPs by trial", id="blups", x=380.0, y=200.0,
+                    params={"value": "grain_yield_q_ha", "genotype": "line", "block": "rep", "group": "trial_id"}).id
+    p.connect(src, ta)
+    rep = p.add_node("report", title="Trial analysis report", id="report", x=700.0, y=200.0,
+                     params={"title": "Trial analysis (randomised complete block design)",
+                             "path": "Trial analysis report.html", "pdf": False,
+                             "notes": "Each trial fitted as a randomised complete block design: the block (rep) "
+                                      "effects are accounted for, the genetic and residual variance are estimated, "
+                                      "and each line gets a BLUP with the trial's heritability. This is the analysis "
+                                      "a breeder runs before advancing a line."}).id
+    p.connect(ta, rep, "items")
+    p.save()
+    return p
+
+
 def _knowledge_project(directory: Path):
     from .model import Pipeline
     p = Pipeline("Knowledge base")
@@ -372,6 +395,8 @@ def build_siblings(main, directory: Path | str) -> None:
         _knowledge_project(directory)
     if not (directory / "Data cleanup.json").exists():
         _cleanup_project(directory)
+    if not (directory / "Trial analysis.json").exists():
+        _trial_project(directory)
     _write_walkthrough(directory)
 
 
@@ -414,7 +439,15 @@ The other half of stewardship: repair the defects **at the source**, then prove 
 decimal corrected and the plots with no yield dropped. Two `Check data contract` steps then report
 **zero** issues, and the clean table is saved beside the raw one. Open `Data cleanup report.html`.
 
-## 4. Knowledge base.json
+## 4. Trial analysis.json
+
+The breeder's question: which line is best, once the blocks are accounted for? This project fits each
+trial as a **randomised complete block design** — a mixed model with the block (rep) fixed and the line
+random — estimates the genetic and residual variance by REML, and gives every line a **BLUP** (a shrunken
+estimate) with the trial's **heritability**. Open `Trial analysis report.html`. This is the analysis a
+breeder runs before advancing a line, and for a balanced design it reproduces the exact ANOVA estimates.
+
+## 5. Knowledge base.json
 
 An offline, deterministic search index over the programme's SOPs, notes and one restricted regulatory
 dossier. Run it: the hybrid retriever answers "canonical trait code for grain yield" with the source
@@ -423,7 +456,7 @@ withheld. Turn on *Include restricted* on the Search step to reveal it. The same
 restricted rows from an agent's reads (`get_sample`, `get_stats`, a rendered chart or map), the command
 line, and every export, unless `allow_restricted` is passed.
 
-## 5. Prove it, package it, map it (command line)
+## 6. Prove it, package it, map it (command line)
 
 From this folder:
 

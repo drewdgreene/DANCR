@@ -15,11 +15,25 @@ def _run(path):
     return Executor(Pipeline.load(path)).run()
 
 
-def test_the_pack_writes_three_projects_and_a_walkthrough(tmp_path):
+def test_the_pack_writes_its_projects_and_a_walkthrough(tmp_path):
     write_example("trial", tmp_path)
     for name in ("Maize trial & data stewardship.json", "Stewardship audit.json",
-                 "Data cleanup.json", "Knowledge base.json", "START-HERE.md"):
+                 "Data cleanup.json", "Knowledge base.json", "Trial analysis.json", "START-HERE.md"):
         assert (tmp_path / name).exists(), name
+
+
+def test_the_trial_analysis_project_fits_an_rcbd(tmp_path):
+    write_example("trial", tmp_path)
+    res = _run(tmp_path / "Trial analysis.json")
+    assert res["blups"].status == "done", res["blups"].error
+    out = pl.read_parquet(res["blups"].output)
+    assert {"genotype", "n", "mean", "blup", "rank", "group"} <= set(out.columns)
+    assert out.height == 6 * 24                                  # 6 trials x 24 lines
+    # a rank within each trial, best BLUP first, and a heritability per trial
+    for g in out["group"].unique().to_list():
+        assert sorted(out.filter(pl.col("group") == g)["rank"].to_list()) == list(range(1, 25))
+    comps = res["blups"].report["components"]
+    assert len(comps) == 6 and all(c["heritability"] is not None for c in comps)
 
 
 def test_the_trial_project_answers_the_hero_question(tmp_path):

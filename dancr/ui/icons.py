@@ -28,7 +28,7 @@ NODE_ICONS = {
     "load_genbank": "article", "load_markers": "grid-four", "pivot": "columns", "describe_dataset": "article",
     "check_contract": "check-circle", "diff_tables": "copy-simple", "project": "line-segment",
     "build_index": "magnifying-glass", "retrieve": "magnifying-glass", "label_sensitivity": "warning-circle",
-    "redact": "pencil-simple",
+    "redact": "pencil-simple", "trial_analysis": "grid-four",
 }
 
 
