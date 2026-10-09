@@ -105,9 +105,12 @@
   dataset's identity is its project file's path relative to the repository root plus the step id, so **moving or
   renaming a project file inside the repository is a new identity** (its datasets and edges are re-created). The
   graph describes relations from a *sample* of each table (the same `understand` pass the answer engine uses);
-  row counts and key uniqueness may be estimates. Cross-project links are **by key name only** — two datasets in
-  different projects whose resolved key columns share a normalized name get a proposal edge, and the match
-  percentage is left unmeasured (0), so it is a hypothesis to check, not a measured join. The build reads each
+  row counts and key uniqueness may be estimates. Cross-project links are **measured from a capped sample** of
+  each key column's distinct values, stored with the graph so a carried-over project is compared without being
+  re-read: two datasets in different projects whose key columns share a normalized name get a link edge with the
+  measured match percentage, a cardinality and a confidence — or no edge at all when the values do not overlap.
+  It is an estimate from the sample, not a full join, and the cardinality is inferred from whether each key is
+  unique in its own table. The build reads each
   changed project's sources; it therefore takes longer the more data changed. It holds the repository lock while
   writing (one writer per repository) but never a project lock, because it does not change project files.
 - Hybrid retrieval (`docs/adr/0004-retrieval-embedder-policy.md`) keeps the deterministic offline embedder as the
