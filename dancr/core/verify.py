@@ -170,13 +170,17 @@ def load_attestation(reference: Any) -> dict[str, Any]:
     too: it verifies on plan hashes and findings, without the output content hashes."""
     if isinstance(reference, dict):
         return reference
-    text = ""
-    if isinstance(reference, (str, Path)):
-        p = Path(str(reference)).expanduser()
-        if p.is_file():
-            text = p.read_text(encoding="utf-8")
-        else:
-            text = str(reference)
+    candidate = str(reference)
+    text = candidate
+    if isinstance(reference, (str, Path)) and candidate.lstrip()[:1] not in ("{", "["):
+        # a path (not JSON text): read it when it names a file. Only a real path is stat'ed, so a long JSON
+        # string is never treated as a filename (which raises ENAMETOOLONG on Linux).
+        try:
+            p = Path(candidate).expanduser()
+            if p.is_file():
+                text = p.read_text(encoding="utf-8")
+        except OSError:
+            text = candidate
     try:
         data = json.loads(text)
     except ValueError as e:

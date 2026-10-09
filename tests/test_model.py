@@ -1,6 +1,7 @@
 """The project model: steps and connections, settings, inputs, saving, loading and versions."""
 import json
 import os
+import sys
 from pathlib import Path
 
 import polars as pl
@@ -199,6 +200,7 @@ def test_versions_list_newest_first_whatever_the_file_clock(tmp_path):
     assert [json.loads(v.read_text())["meta"]["i"] for v in p.versions()] == [3, 2, 1, 0]
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX directory permissions do not deny a write on Windows")
 def test_a_failed_save_as_leaves_the_project_as_it_was(tmp_path):
     a = tmp_path / "A"; a.mkdir()
     p = saved_table(a)

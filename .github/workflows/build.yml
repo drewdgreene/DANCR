@@ -13,6 +13,7 @@ on:
 
 env:
   PYTHON: "3.14"
+  PYTHONUTF8: "1"        # Windows CI: UTF-8 for stdio, subprocess text and open(), so non-cp1252 output is safe
 
 jobs:
   test:

@@ -84,7 +84,7 @@ def write_dataset(out_dir: Path, hours: float, rate: float, seed: int = 1, fmt: 
                 truth = df
                 break
             path = out_dir / f"probe_{name}.csv"
-            with open(path, "a" if not first[name] else "w", newline="") as f:
+            with open(path, "a" if not first[name] else "w", newline="", encoding="utf-8") as f:
                 df.with_columns(pl.col("time").dt.strftime("%Y-%m-%d %H:%M:%S%.3f")).write_csv(f, include_header=first[name])
             first[name] = False
     else:
@@ -101,7 +101,7 @@ def write_dataset(out_dir: Path, hours: float, rate: float, seed: int = 1, fmt: 
             for name, ps in parts.items():
                 if ps:
                     pl.scan_parquet(ps).sink_parquet(out_dir / f"probe_{name}.parquet")
-    (out_dir / "truth.json").write_text(json.dumps(truth, indent=2))
+    (out_dir / "truth.json").write_text(json.dumps(truth, indent=2), encoding="utf-8")
     return truth
 
 

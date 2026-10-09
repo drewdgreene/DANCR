@@ -129,6 +129,7 @@ def fake_cli(tmp_path: Path) -> Path:
     return exe
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="the fake MinerU CLI is a shebang script Windows cannot execute")
 def test_command_blocks(tmp_path):
     exe = fake_cli(tmp_path)
     (tmp_path / "report.pdf").write_bytes(b"%PDF x")
@@ -138,6 +139,7 @@ def test_command_blocks(tmp_path):
     assert st.report["engine"] == "command"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="the fake MinerU CLI is a shebang script Windows cannot execute")
 def test_command_tables(tmp_path):
     exe = fake_cli(tmp_path)
     (tmp_path / "report.pdf").write_bytes(b"%PDF x")
@@ -147,6 +149,7 @@ def test_command_tables(tmp_path):
     assert (tmp_path / got[0]["csv"]).is_file()
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="the fake MinerU CLI is a shebang script Windows cannot execute")
 def test_digest_tracks_tier_and_version(tmp_path):
     exe = fake_cli(tmp_path)
     (tmp_path / "r.pdf").write_bytes(b"%PDF")
@@ -172,6 +175,7 @@ def test_no_tool_names_how_to_install(tmp_path, monkeypatch):
     assert "MinerU" in (st.error or "") and "install" in (st.error or "").lower()
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="the fake MinerU CLI is a shebang script Windows cannot execute")
 def test_env_var_supplies_the_command(tmp_path, monkeypatch):
     exe = fake_cli(tmp_path)
     (tmp_path / "r.pdf").write_bytes(b"%PDF")
@@ -234,6 +238,7 @@ def test_add_files_routes_documents(tmp_path):
     assert [p.nodes[i].type for i in ids] == ["load_document", "load_document", "load_file"]
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="the fake MinerU CLI is a shebang script Windows cannot execute")
 def test_inspect_and_read_document(tmp_path, monkeypatch):
     exe = fake_cli(tmp_path)
     (tmp_path / "r.pdf").write_bytes(b"%PDF")
@@ -245,6 +250,7 @@ def test_inspect_and_read_document(tmp_path, monkeypatch):
     assert rd["rows"] and rd["rows"][0]["text"] == "Scanned text"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="the fake MinerU CLI is a shebang script Windows cannot execute")
 def test_mcp_read_document(tmp_path, monkeypatch):
     exe = fake_cli(tmp_path)
     (tmp_path / "r.pdf").write_bytes(b"%PDF")

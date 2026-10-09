@@ -1460,6 +1460,13 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> None:
     argv = list(sys.argv[1:] if argv is None else argv)
+    # A Windows console defaults to cp1252 and would crash printing the arrows and dashes the text uses: force
+    # UTF-8 on the CLI's own streams (the window manages its own encoding).
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8")        # type: ignore[union-attr]
+        except (AttributeError, ValueError):
+            pass
     if argv[:1] == ["pdf-helper"]:                      # internal: a report's PDF written in its own process
         from .views.pdf import _main
         sys.exit(_main(argv[1:]))

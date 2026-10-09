@@ -16,6 +16,15 @@ from dancr.core.verify import output_hash
 from dancr.headless import build_attestation, dump_attestation, verify_pipeline
 
 
+def test_load_attestation_accepts_json_text_not_only_a_path():
+    # the JSON text itself is a documented input: it must be read as JSON, never stat'ed as a filename (a long
+    # string would raise ENAMETOOLONG on Linux)
+    from dancr.core.verify import load_attestation
+    att = {"kind": "dancr.attestation", "version": 1, "sources": [{"path": "x" * 400}],
+           "nodes": [], "answers": []}
+    assert load_attestation(json.dumps(att))["kind"] == "dancr.attestation"
+
+
 def make_project(tmp_path):
     (tmp_path / "data").mkdir(exist_ok=True)
     src = tmp_path / "data" / "m.csv"

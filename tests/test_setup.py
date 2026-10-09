@@ -14,7 +14,9 @@ def test_mcp_snippets_are_valid_json_and_carry_the_root(tmp_path):
     snips = mcp_snippets(root)
     assert set(snips) == {"opencode", "claude-code", "claude-desktop"}
     for s in snips.values():
-        assert "mcp" in s["text"] and resolved in s["text"]
+        assert "mcp" in s["text"]
+        # the root appears plainly in the shell snippet, JSON-escaped (backslashes doubled) in the JSON ones
+        assert resolved in s["text"] or resolved.replace("\\", "\\\\") in s["text"]
     op = json.loads(snips["opencode"]["text"])
     assert op["mcp"]["dancr"]["type"] == "local" and op["mcp"]["dancr"]["enabled"] is True
     assert op["mcp"]["dancr"]["command"][-3:] == ["mcp", "--root", resolved]
