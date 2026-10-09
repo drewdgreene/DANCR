@@ -227,7 +227,10 @@ def test_events_of_a_replaced_run_are_ignored(app, tmp_path):
     doc._run = None                                          # the project was replaced; that run is over
     seen = []
     doc.nodeState.connect(lambda *a: seen.append(a))
-    old.event.emit({"type": "node_finished", "state": NodeState("ghost", status="failed")})
+    try:
+        old.event.emit({"type": "node_finished", "state": NodeState("ghost", status="failed")})
+    except RuntimeError:                                     # Windows may already have freed the old run's object,
+        pass                                                 # in which case it can no longer emit at all
     app.processEvents()
     assert seen == [] and "ghost" not in doc._states_cache
     doc.undo.setClean(); doc.shutdown()
