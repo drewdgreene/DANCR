@@ -690,8 +690,8 @@ class Executor:
                 tmp.unlink(missing_ok=True)      # someone else published the same result first
             else:
                 try:
-                    os.replace(tmp, out)
-                except PermissionError as e:     # Windows: another program has the old result open
+                    _replace_retrying(tmp, out)  # Windows: retry while a concurrent run closes the old result
+                except RuntimeError as e:
                     raise RuntimeError(f"The earlier result of '{self.pipeline.nodes[nid].title}' is open in another "
                                        "program or DANCR window, so it cannot be replaced. Close it and run again.") from e
         finally:
