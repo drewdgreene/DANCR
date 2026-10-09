@@ -336,10 +336,14 @@ def _trial_project(directory: Path):
     p.path = directory / "Trial analysis.json"
     src = p.add_node("load_file", title="phenotype_measurements",
                      params={"path": "trials/phenotype_measurements.csv"}, x=60.0, y=200.0, id="plots").id
-    ta = p.add_node("trial_analysis", title="BLUPs by trial", id="blups", x=380.0, y=200.0,
+    fix = p.add_node("fix_values", title="Fix the slipped decimal", id="fix",
+                     params={"fixes": [{"row": 4, "column": "grain_yield_q_ha", "value": 40.1, "was": 401.0,
+                                        "note": "10x too high"}]}, x=380.0, y=200.0).id
+    p.connect(src, fix)
+    ta = p.add_node("trial_analysis", title="BLUPs by trial", id="blups", x=700.0, y=200.0,
                     params={"value": "grain_yield_q_ha", "genotype": "line", "block": "rep", "group": "trial_id"}).id
-    p.connect(src, ta)
-    rep = p.add_node("report", title="Trial analysis report", id="report", x=700.0, y=200.0,
+    p.connect(fix, ta)
+    rep = p.add_node("report", title="Trial analysis report", id="report", x=1020.0, y=200.0,
                      params={"title": "Trial analysis (randomised complete block design)",
                              "path": "Trial analysis report.html", "pdf": False,
                              "notes": "Each trial fitted as a randomised complete block design: the block (rep) "

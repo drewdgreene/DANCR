@@ -156,10 +156,11 @@ def _trial_analysis(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dic
     mean_h2 = float(np.mean(h2s)) if h2s else None
     top = out.row(0, named=True) if out.height else None
     name = _label(ctx, value)
+    grand = next((f["grand"] for f in fits if f["group"] == (top or {}).get("group")), fits[0]["grand"] if fits else None)
     if top is not None and top.get("blup") is not None:
         where = f" in {top['group']}" if group and top.get("group") is not None else ""
         said = (f"{top['genotype']} has the highest {name} BLUP{where} "
-                f"({fmt_number(top['blup'])} vs a trial mean of {fmt_number(top['mean'])})"
+                f"({fmt_number(top['blup'])} vs a trial mean of {fmt_number(grand)})"
                 + (f"; heritability {mean_h2:.2f}" if mean_h2 is not None else ""))
     else:
         said = f"Fitted {plural(len(fits), 'trial')} of {name}"
