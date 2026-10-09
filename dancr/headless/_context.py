@@ -96,14 +96,14 @@ def build_context(p: Pipeline, executor: Executor | None = None, *, nodes: list[
                                         "content_hash": held.get(nid), "rows": entry.get("rows"),
                                         "source": entry.get("file")}
             if stats:
-                summary = _table_stats(ex, nid)
+                summary = _table_stats(ex, nid, allow_restricted)
                 if summary is not None:
                     entry["stats"] = summary
                     document["stats"] = summary
                 else:
                     entry["stats_note"] = "not computed; run the step first"
             if samples:
-                rows, origin = _table_sample(ex, nid, sample_rows)
+                rows, origin = _table_sample(ex, nid, sample_rows, allow_restricted)
                 entry["sample"] = rows
                 entry["sample_from"] = origin
                 document["sample"] = rows
@@ -307,23 +307,30 @@ def _descriptor_name(name: str) -> str:
             "dancr-attestation.json": "DANCR attestation", "context.jsonl": "Knowledge-base context"}.get(name, name)
 
 
-def _table_stats(ex: Executor, node_id: str) -> list[dict[str, Any]] | None:
+def _table_stats(ex: Executor, node_id: str, allow_restricted: bool = False) -> list[dict[str, Any]] | None:
     """Per-column summary statistics (count, missing, mean, std, min, quartiles, max) of a computed table, or
-    None when it has not been computed (statistics on a preview would be misleading)."""
+    None when it has not been computed (statistics on a preview would be misleading). Rows labelled
+    confidential/restricted (a ``sensitivity`` column travelling with the data) are withheld unless
+    ``allow_restricted``, so a shared stat never counts them."""
+    from ..core.sensitivity import withhold
     st = ex.state(node_id)
     if st.status != "done" or not st.output:
         return None
     from ..core.dtypes import json_safe
     from ..views.stats import column_summary
-    return json_safe(column_summary(pl.scan_parquet(st.output)).to_dicts())
+    lf = withhold(ex.frame(node_id), allow_restricted=allow_restricted)
+    return json_safe(column_summary(lf).to_dicts())
 
 
-def _table_sample(ex: Executor, node_id: str, rows: int) -> tuple[list[dict[str, Any]], str]:
+def _table_sample(ex: Executor, node_id: str, rows: int, allow_restricted: bool = False) -> tuple[list[dict[str, Any]], str]:
     """Up to ``rows`` rows of a table and where they came from: "cache" (a spread/head of a computed result)
-    or "preview" (the first rows of a table not computed yet)."""
+    or "preview" (the first rows of a table not computed yet). Rows labelled confidential/restricted are
+    withheld unless ``allow_restricted``, so a shared sample never carries them."""
     from ..core.dtypes import json_safe
+    from ..core.sensitivity import withhold
     n = max(1, min(int(rows), CONTEXT_MAX_SAMPLE_ROWS))
     lf, kind = ex.sample_frame(node_id, n)
+    lf = withhold(lf, allow_restricted=allow_restricted)
     return json_safe(lf.head(n).collect(engine="streaming").to_dicts()), ("cache" if kind in ("all", "spread") else "preview")
 
 
@@ -410,6 +417,10 @@ def context_changes(ctx: dict[str, Any], previous: Any) -> dict[str, Any]:
         old = prev_docs.get(did)
         if old is None:
             added.append(did)
+        elif d.get("content_hash") is None:
+            # a table whose hash could not be computed is treated as changed, never as unchanged: reporting it
+            # unchanged forever would leave a stale document in the index
+            changed.append(did)
         elif engine_changed or old.get("content_hash") != d.get("content_hash"):
             changed.append(did)
         else:

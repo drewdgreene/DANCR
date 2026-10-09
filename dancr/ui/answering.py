@@ -102,10 +102,17 @@ class Understanding:
         parts = []
         for nid in self._nodes():
             n = p.nodes[nid]
-            try:
-                h = ex.plan_hash(nid, memo)
-            except Exception:  # noqa: BLE001 - a step that cannot be hashed yet: its settings stand in
-                h = json.dumps(n.params, sort_keys=True, default=str)
+            # the background poll already computes each step's plan hash (its ``state().hash``) off the GUI
+            # thread; use it rather than re-hashing here, which would stat and sample every source on the GUI
+            # thread on each debounce. Fall back to a real hash only when the cache is still cold.
+            cached = self.doc.cached_state(nid)
+            if cached is not None and cached.hash:
+                h = memo[nid] = cached.hash
+            else:
+                try:
+                    h = ex.plan_hash(nid, memo)
+                except Exception:  # noqa: BLE001 - a step that cannot be hashed yet: its settings stand in
+                    h = json.dumps(n.params, sort_keys=True, default=str)
             parts.append([nid, n.title, h])
         return json.dumps([parts, p.columns], sort_keys=True, default=str)
 

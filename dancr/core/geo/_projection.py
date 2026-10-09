@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+from typing import Any
 
 # =================================================================== projected coordinates (UTM)
 # A dependency-free UTM inverse and forward (WGS84), good to about a metre — enough to bring projected
@@ -33,6 +34,32 @@ def utm_to_latlon(easting: float, northing: float, zone: int, south: bool) -> tu
            + (5 - 2 * c1 + 28 * t1 - 3 * c1 ** 2 + 8 * _EP2 + 24 * t1 ** 2) * d ** 5 / 120) / math.cos(phi1)
     lon0 = math.radians((zone - 1) * 6 - 180 + 3)
     return math.degrees(lat), math.degrees(lon0 + lon)
+
+
+def utm_to_latlon_arrays(easting: Any, northing: Any, zone: int, south: bool) -> tuple[Any, Any]:
+    """The inverse of the UTM series for arrays of eastings/northings, in one vectorized pass (NumPy).
+
+    The same series as :func:`utm_to_latlon`, applied elementwise, so a projected table of millions of rows is
+    reprojected without a Python loop. Non-finite inputs give non-finite outputs (the caller blanks them)."""
+    import numpy as np
+    x = np.asarray(easting, dtype=float) - 500000.0
+    y = np.asarray(northing, dtype=float) - (10_000_000.0 if south else 0.0)
+    m = y / _K0
+    mu = m / (_A * (1 - _E2 / 4 - 3 * _E2 ** 2 / 64 - 5 * _E2 ** 3 / 256))
+    phi1 = (mu + (3 * _E1 / 2 - 27 * _E1 ** 3 / 32) * np.sin(2 * mu)
+            + (21 * _E1 ** 2 / 16) * np.sin(4 * mu) + (151 * _E1 ** 3 / 96) * np.sin(6 * mu))
+    c1 = _EP2 * np.cos(phi1) ** 2
+    t1 = np.tan(phi1) ** 2
+    n1 = _A / np.sqrt(1 - _E2 * np.sin(phi1) ** 2)
+    r1 = n1 * (1 - _E2) / (1 - _E2 * np.sin(phi1) ** 2)
+    d = x / (n1 * _K0)
+    lat = phi1 - (n1 * np.tan(phi1) / r1) * (
+        d ** 2 / 2 - (5 + 3 * t1 + 10 * c1 - 4 * c1 ** 2 - 9 * _EP2) * d ** 4 / 24
+        + (61 + 90 * t1 + 298 * c1 + 45 * t1 ** 2 - 252 * _EP2 - 3 * c1 ** 2) * d ** 6 / 720)
+    lon = (d - (1 + 2 * t1 + c1) * d ** 3 / 6
+           + (5 - 2 * c1 + 28 * t1 - 3 * c1 ** 2 + 8 * _EP2 + 24 * t1 ** 2) * d ** 5 / 120) / np.cos(phi1)
+    lon0 = math.radians((zone - 1) * 6 - 180 + 3)
+    return np.degrees(lat), np.degrees(lon0 + lon)
 
 
 def latlon_to_utm(lat: float, lon: float, zone: int, south: bool) -> tuple[float, float]:

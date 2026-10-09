@@ -29,12 +29,13 @@ _ORDER = {name: i for i, name in enumerate(SENSITIVITY_LEVELS)}
 
 def sensitivity_at_least(level: str, threshold: str = "confidential") -> bool:
     """Whether ``level`` is at least as sensitive as ``threshold`` (ranked public < internal < confidential < restricted)."""
-    return _ORDER.get((level or "public").lower(), 0) >= _ORDER.get(threshold.lower(), 2)
+    return _ORDER.get((level or "public").strip().lower(), 0) >= _ORDER.get(threshold.strip().lower(), 2)
 
 
 def is_restricted(level: str | None) -> bool:
-    """Whether a dataset at this level is withheld from a default export or query."""
-    return (level or "public").lower() in RESTRICTED_LEVELS
+    """Whether a dataset at this level is withheld from a default export or query. A label is stripped first,
+    so ``" Restricted "`` counts, matching :func:`dancr.core.sensitivity.is_restricted`."""
+    return (level or "public").strip().lower() in RESTRICTED_LEVELS
 
 
 def restricted_nodes(pipe: Any, nodes: Any) -> set[str]:
@@ -45,7 +46,7 @@ def restricted_nodes(pipe: Any, nodes: Any) -> set[str]:
     restricted. Restrictedness then flows downstream: a step that reads a restricted table is withheld too, so a
     derived table is never exported as if it were public. Pure; takes the pipeline and an iterable of node ids."""
     names = list(nodes)
-    project_level = str((getattr(pipe, "meta", None) or {}).get("sensitivity") or "public").lower()
+    project_level = str((getattr(pipe, "meta", None) or {}).get("sensitivity") or "public").strip().lower()
     seed: set[str] = set()
     for nid in names:
         node = pipe.nodes.get(nid)
@@ -54,7 +55,7 @@ def restricted_nodes(pipe: Any, nodes: Any) -> set[str]:
             if str(node.params.get("column") or "").strip():
                 level = "confidential"          # per-row labels: not all rows public, so withhold by default
             else:
-                own = str(node.params.get("level") or "").lower()
+                own = str(node.params.get("level") or "").strip().lower()
                 if own in SENSITIVITY_LEVELS:
                     level = own
         if is_restricted(level):

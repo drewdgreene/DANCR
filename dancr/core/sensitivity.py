@@ -27,7 +27,7 @@ def restricted_expr(column: str = COLUMN, levels: tuple[str, ...] = RESTRICTED) 
 
     A null label compares to null and ``~null`` is null, which a filter would drop — so the ``is_not_null``
     guard is what keeps an unlabelled row visible."""
-    level = pl.col(column).cast(pl.Utf8).str.to_lowercase()
+    level = pl.col(column).cast(pl.Utf8).str.strip_chars().str.to_lowercase()
     return level.is_not_null() & level.is_in([s.lower() for s in levels])
 
 

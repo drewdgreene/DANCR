@@ -27,6 +27,7 @@ import polars as pl
 
 from .model import Pipeline, PipelineError
 from .registry import registry, Ctx, NodeResult, NodeType, resolve_path
+from .repo import _replace_retrying
 from .params import inputs_named
 from .dtypes import json_safe
 from .secrets import redact
@@ -132,10 +133,13 @@ def _temp_owner_alive(name: str) -> bool:
     """Whether a temp file name embeds the pid of a live process (a writer still holding it)."""
     for part in name.split("."):
         if part.isdigit():
+            pid = int(part)
+            if pid > 2**31 - 1:                       # too large to be a pid: do not call os.kill with it
+                continue
             try:
-                if _pid_alive(int(part)):
+                if _pid_alive(pid):
                     return True
-            except (OSError, ValueError):
+            except (OSError, ValueError, OverflowError):
                 pass
     return False
 
@@ -699,7 +703,10 @@ class Executor:
         tmp = path.with_name(f"{path.stem}.{os.getpid()}.{uuid.uuid4().hex[:6]}.tmp.json")
         try:
             tmp.write_text(json.dumps(data, default=str, indent=1))
-            os.replace(tmp, path)
+            try:
+                _replace_retrying(tmp, path)     # Windows: retry while a reader closes the old record
+            except RuntimeError as e:            # give up after retrying, as an OSError the callers already handle
+                raise OSError(str(e)) from e
         finally:
             tmp.unlink(missing_ok=True)          # a failed write must not leave a temp file in the cache
 
@@ -777,8 +784,11 @@ class Executor:
             elif not _pid_alive(pid):
                 f.unlink(missing_ok=True)
                 continue
-            for nid, h in (data.get("hashes") or {}).items():
-                held.setdefault(nid, set()).add(h)
+            hashes = data.get("hashes")
+            if not isinstance(hashes, dict):          # a hand-edited or foreign lease: its shape is not trusted
+                continue
+            for nid, h in hashes.items():
+                held.setdefault(str(nid), set()).add(str(h))
         return held
 
     def gc(self, only: list[str] | None = None, keep_per_node: int = 1, grace_seconds: float = 900.0,

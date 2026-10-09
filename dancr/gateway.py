@@ -55,31 +55,61 @@ def is_loopback(host: str) -> bool:
         return False
 
 
-_PROJECT_ARGS = ("path", "file_path", "file", "root")   # argument names that name what a tool acts on
+# Every path-like argument a tool may act on, so the scope check sees them *all*. Missing one is a real
+# authorization hole: a principal scoped to a.json could otherwise name "../../etc/hosts" in `files` (which
+# read tools resolve against the root without confinement) and read it. `_SCALAR_PATH_ARGS` names a single
+# path; `_LIST_PATH_ARGS` names a list of them.
+_SCALAR_PATH_ARGS = ("path", "file_path", "file", "root", "reference_path", "spec_path", "cases_path",
+                     "changed", "manifest")
+_LIST_PATH_ARGS = ("files",)
 MAX_BODY_BYTES = 8 * 1024 * 1024                 # a tool call never needs a bigger body than this; refuse it early
 
 
-def _project_from_args(args: Any, root: Path) -> str | None:
-    """The project a tool call names, from whichever path-like argument it uses (a pipeline `path`, a file, a
-    repository `root`), **resolved against the repository root**. Resolution is what makes a project scope a
-    real boundary: a raw string scope could be slipped past with ``..`` or a symlink. A path outside the root is
-    returned as its resolved absolute form, so an absolute scope pattern still matches. ``None`` when the call
-    names nothing."""
+def _scope_one(value: str, root: Path) -> str:
+    """One path argument as a scope path, **resolved against the repository root**. Resolution is what makes a
+    project scope a real boundary: a raw string scope could be slipped past with ``..`` or a symlink. A path
+    outside the root is returned as its resolved absolute form, so an absolute scope pattern still matches."""
+    p = Path(str(value).strip()).expanduser()
+    try:
+        p = (p if p.is_absolute() else root / p).resolve()
+    except (OSError, RuntimeError):
+        return str(value).strip()
+    try:
+        return p.relative_to(root).as_posix()
+    except ValueError:
+        return str(p)
+
+
+def _project_scopes(args: Any, root: Path) -> list[str]:
+    """Every path a tool call names, as scope paths (see :func:`_scope_one`), de-duplicated in order of the
+    arguments above. The first is what the call is *about* (for audit and approval); the whole list is what the
+    scope check must cover, so a call naming an out-of-scope ``files`` entry is refused too."""
     if not isinstance(args, dict):
-        return None
-    for key in _PROJECT_ARGS:
+        return []
+    out: list[str] = []
+    for key in _SCALAR_PATH_ARGS:
         value = args.get(key)
         if isinstance(value, str) and value.strip():
-            p = Path(value.strip()).expanduser()
-            try:
-                p = (p if p.is_absolute() else root / p).resolve()
-            except (OSError, RuntimeError):
-                return value.strip()
-            try:
-                return p.relative_to(root).as_posix()
-            except ValueError:
-                return str(p)
-    return None
+            out.append(_scope_one(value, root))
+    for key in _LIST_PATH_ARGS:
+        value = args.get(key)
+        if isinstance(value, (list, tuple)):
+            for item in value:
+                if isinstance(item, str) and item.strip():
+                    out.append(_scope_one(item, root))
+    seen: set[str] = set()
+    unique: list[str] = []
+    for s in out:
+        if s not in seen:
+            seen.add(s)
+            unique.append(s)
+    return unique
+
+
+def _project_from_args(args: Any, root: Path) -> str | None:
+    """The project a tool call names (its first path-like argument), or ``None`` when it names nothing."""
+    scopes = _project_scopes(args, root)
+    return scopes[0] if scopes else None
 
 
 def _jsonrpc_error(status: int, rid: Any, message: str, data: str = "") -> JSONResponse:
@@ -128,14 +158,20 @@ class GatewayMiddleware(BaseHTTPMiddleware):
             params = message.get("params") or {}
             name = str(params.get("name") or "")
             args = params.get("arguments") if isinstance(params.get("arguments"), dict) else {}
-            project = _project_from_args(args, self.root)
-            # A principal scoped to particular projects must name one; otherwise a tool keyed on `root` or
-            # `file_path` (or nothing) would pass project=None and slip past the scope.
+            scopes = _project_scopes(args, self.root)
+            project = scopes[0] if scopes else None
+            # A principal scoped to particular projects must name one, and *every* path it names must be inside
+            # that scope; otherwise a tool keyed on `root`/`file_path` (or nothing) would slip past, and a read
+            # tool's `files` list (resolved without confinement) could reach any file on the machine.
             who = self.policy.resolve(principal)
-            scoped = who is not None and who.projects and "*" not in who.projects
-            if scoped and not project:
-                return _jsonrpc_error(403, message.get("id"), "denied",
-                                      "This principal is limited to particular projects; the call names none.")
+            if who is not None and who.projects and "*" not in who.projects:
+                if not scopes:
+                    return _jsonrpc_error(403, message.get("id"), "denied",
+                                          "This principal is limited to particular projects; the call names none.")
+                outside = [s for s in scopes if not who.may_touch(s)]
+                if outside:
+                    return _jsonrpc_error(403, message.get("id"), "denied",
+                                          f"This principal may not touch {outside[0]}.")
             # policy + audit touch the filesystem: keep them off the event loop
             decision = await run_in_threadpool(
                 hl.authorize, self.root, principal, name,

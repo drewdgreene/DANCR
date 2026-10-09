@@ -8,6 +8,14 @@ from dancr.core import Pipeline, geo
 
 
 # ---------------------------------------------------------------- maths
+def test_utm_arrays_match_the_scalar_series():
+    es, ns = [500000.0, 400000.0, 612345.0], [4500000.0, 5000000.0, 4600000.0]
+    la, lo = geo.utm_to_latlon_arrays(es, ns, 37, False)
+    for e, n, a, o in zip(es, ns, la, lo):
+        sa, so = geo.utm_to_latlon(e, n, 37, False)
+        assert abs(a - sa) < 1e-9 and abs(o - so) < 1e-9
+
+
 def test_haversine_known_distances():
     # London (51.5074, -0.1276) to Paris (48.8566, 2.3522): about 343.5 km great circle
     lf = pl.LazyFrame({"a_lat": [51.5074], "a_lon": [-0.1276], "b_lat": [48.8566], "b_lon": [2.3522]})

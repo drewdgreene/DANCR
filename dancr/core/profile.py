@@ -122,7 +122,7 @@ def data_block(tag: str, payload: str) -> str:
     carrying attributes such as ``tool_result name="…"`` is still safe) is escaped wherever it appears — matched
     case-insensitively and across stray spaces, so ``</TOOL_RESULT>`` and ``</ tool_result >`` cannot break out."""
     name = (tag.split() or [tag])[0]
-    safe = re.sub(rf"</\s*{re.escape(name)}\s*>", f"<\\/{name}>", payload, flags=re.IGNORECASE)
+    safe = re.sub(rf"</\s*{re.escape(name)}\b[^>]*>", f"<\\/{name}>", payload, flags=re.IGNORECASE)
     return f"<{tag}>\n{safe}\n</{tag}>"
 
 

@@ -73,6 +73,31 @@ def test_restricted_rows_are_withheld_from_reads_and_exports(tmp_path):
     assert "secret dossier" in got
 
 
+def test_a_label_from_a_column_reusing_its_name_is_text(tmp_path):
+    p = Pipeline("g"); p.path = tmp_path / "g.json"
+    p.add_node("enter_data", params={"columns": [{"name": "level", "type": "number"}], "rows": [[1], [2]]}, id="d")
+    p.add_node("label_sensitivity", params={"column": "level", "name": "level"}, id="lab"); p.connect("d", "lab", "in")
+    out, _ = run(p, "lab")
+    assert out.schema["level"] == pl.Utf8          # the label column is plain text, even when it reuses the name
+
+
+def test_a_padded_sensitivity_label_is_still_restricted(tmp_path):
+    # a label written with surrounding whitespace (" Restricted ") must be treated the same as "restricted"
+    from dancr import headless as hl
+    from dancr.core.graph import is_restricted
+    from dancr.core.sensitivity import is_restricted as row_is_restricted
+    p = Pipeline("g"); p.path = tmp_path / "g.json"
+    p.add_node("enter_data", params={
+        "columns": [{"name": "note", "type": "text"}, {"name": "sensitivity", "type": "text"}],
+        "rows": [["public note", "public"], ["secret", " Restricted "]]}, id="d")
+    p.save()
+    ex = Executor(p)
+    with hl.result_frame(p, ex, "d", run=True) as lf:
+        got = lf.collect()["note"].to_list()
+    assert got == ["public note"]
+    assert is_restricted(" Restricted ") and row_is_restricted(" Restricted ")
+
+
 def test_mcp_get_sample_withholds_restricted_rows(tmp_path, mcp_root):
     import dancr.mcp_server as srv
     pj = tmp_path / "p.json"

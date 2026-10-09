@@ -21,6 +21,8 @@ Pure core, no Qt.
 from __future__ import annotations
 
 import difflib
+import threading
+from collections import OrderedDict
 from datetime import datetime, timedelta
 import re
 from dataclasses import dataclass, field
@@ -138,18 +140,28 @@ def _matched(model: DataModel, out: Asked, bank: "Bank | None") -> Asked:
     return out
 
 
-_BANKS: dict[int, tuple[DataModel, bool, Any]] = {}
+_BANKS: "OrderedDict[int, tuple[DataModel, bool, Any]]" = OrderedDict()
+_BANKS_LOCK = threading.Lock()
+_BANKS_MAX = 8
 
 
 def _bank_of(model: DataModel):
-    """The question bank of a data model, built once (it plans every answer the recipes can build)."""
+    """The question bank of a data model, built once (it plans every answer the recipes can build). A small LRU,
+    so a caller keeping many live models does not rebuild the whole bank on every question."""
     from ..bank import Bank
-    hit = _BANKS.get(id(model))
-    if hit is None or hit[0] is not model or hit[1] != model.deep:
-        if len(_BANKS) > 4:
-            _BANKS.clear()
-        hit = _BANKS[id(model)] = (model, model.deep, Bank.from_model(model))
-    return hit[2]
+    key = id(model)
+    with _BANKS_LOCK:
+        hit = _BANKS.get(key)
+        if hit is not None and hit[0] is model and hit[1] == model.deep:
+            _BANKS.move_to_end(key)
+            return hit[2]
+    bank = Bank.from_model(model)                   # built outside the lock: it is slow, and it is idempotent
+    with _BANKS_LOCK:
+        _BANKS[key] = (model, model.deep, bank)
+        _BANKS.move_to_end(key)
+        while len(_BANKS) > _BANKS_MAX:
+            _BANKS.popitem(last=False)
+    return bank
 
 
 Item = tuple[str, Meaning]                      # the words, and what they were read as
@@ -214,7 +226,10 @@ def _iso_date(tok: str) -> str:
     when the question is put together)."""
     m = re.fullmatch(r"(\d{4})[-/](\d{1,2})(?:[-/](\d{1,2}))?(.*)", tok)
     if m:
-        return f"{m.group(1)}-{int(m.group(2)):02d}" + (f"-{int(m.group(3)):02d}{m.group(4)}" if m.group(3) else "")
+        # the question is lowercased before it is read, so an ISO 'T' between date and time arrives as a
+        # lowercase 't'; the date/time parser wants a space, so normalise it rather than pass it through
+        rest = re.sub(r"^t", " ", m.group(4), count=1)
+        return f"{m.group(1)}-{int(m.group(2)):02d}" + (f"-{int(m.group(3)):02d}{rest}" if m.group(3) else "")
     a, b, y = (int(x) for x in tok.split("/"))
     y += 2000 if y < 100 else 0
     if a > 12 >= b:
@@ -581,6 +596,9 @@ def _assemble(model: DataModel, items: list[Item], out: Asked) -> dict[str, Any]
             if nxt.kind == "unit":
                 q.every = _one_step(q.every, f"1{nxt.value}"); used |= {i, i + 1}; i += 2; continue
             if nxt.kind == "num" and i + 2 < len(items) and items[i + 2][1].kind == "unit":
+                if float(nxt.value) != int(nxt.value) or int(nxt.value) <= 0:
+                    # a fractional or zero step would be truncated to a wrong bucket (or 0, which can't run)
+                    raise PlanError(f"A step has to be a whole number of {items[i + 2][0]}, not {nxt.value:g}")
                 q.every = f"{int(nxt.value)}{items[i + 2][1].value}"; used |= {i, i + 1, i + 2}; i += 3; continue
             if nxt.kind == "col":
                 if q.by is not None:
@@ -1145,8 +1163,12 @@ UNIT_SECONDS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 7 * 86400, "mo": 28
 
 
 def _unit_noun(every: str) -> str:
+    """The noun for a step like “1h” or “15m” (a two-digit step is not the unit on its own, so the number is
+    split off rather than assumed to be a leading “1”)."""
+    m = re.fullmatch(r"(\d+)([a-z]+)", every or "")
+    unit = m.group(2) if m else every
     return {"s": "second", "m": "minute", "h": "hour", "d": "day", "w": "week", "mo": "month", "q": "quarter",
-            "y": "year"}[every[1:]] if every[:1] == "1" else every
+            "y": "year"}.get(unit, every)
 
 
 def _unit_step(word: str) -> str | None:
@@ -1316,14 +1338,18 @@ def _span_of(p: dict, extent: tuple[datetime, datetime] | None, w: dict) -> tupl
     unit, n = p["unit"], p["n"]
     if n is not None and n <= 0:
         raise PlanError(f"“{p['text']}” is no time at all. Ask for one or more")
-    if p["rel"] == "past":                           # "the last 7 days": that long up to the latest date
-        start = _shift(latest, unit, -(n or 1))
-        return _fmt(start), _fmt(latest, True), f"in the {p['text']} (after {_fmt(start)})"
-    start = _floor(latest, unit)                     # "this month", "last week": calendar periods
-    if p["rel"] == "last":
-        start = _shift(start, unit, -1)
-    end = _shift(start, unit, 1) - timedelta(microseconds=1)
-    return _fmt(start), _fmt(end, True), f"{p['text']} ({_period_text(start, unit)})"
+    try:
+        if p["rel"] == "past":                       # "the last 7 days": that long up to the latest date
+            start = _shift(latest, unit, -(n or 1))
+            return _fmt(start), _fmt(latest, True), f"in the {p['text']} (after {_fmt(start)})"
+        start = _floor(latest, unit)                 # "this month", "last week": calendar periods
+        if p["rel"] == "last":
+            start = _shift(start, unit, -1)
+        end = _shift(start, unit, 1) - timedelta(microseconds=1)
+        return _fmt(start), _fmt(end, True), f"{p['text']} ({_period_text(start, unit)})"
+    except (OverflowError, ValueError):
+        # a typed span can run off the end of the calendar (year 1 or 9999); refuse it in plain words
+        raise PlanError(f"“{p['text']}” reaches past the calendar. Ask for a shorter span") from None
 
 
 def _floor(t: datetime, unit: str) -> datetime:

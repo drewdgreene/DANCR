@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from .registry import registry
+from .repo import _replace_retrying
 
 FORMAT_VERSION = 2
 
@@ -608,6 +609,10 @@ class Pipeline:
             tmp = target.with_name(f".{target.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp")   # unique per writer
             try:
                 tmp.write_text(text, encoding="utf-8")
+                try:
+                    os.chmod(tmp, 0o600)          # a project file may hold a typed-in password: keep it private
+                except OSError:
+                    pass
                 if expected_text is not None and target.exists():
                     try:
                         current = target.read_text(encoding="utf-8")
@@ -624,7 +629,7 @@ class Pipeline:
                             self._keep_version(target)
                     except OSError:
                         pass
-                os.replace(tmp, target)
+                _replace_retrying(tmp, target)        # Windows: retry while a reader closes the old file
             finally:
                 tmp.unlink(missing_ok=True)
         except Exception:

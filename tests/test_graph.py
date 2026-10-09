@@ -115,6 +115,18 @@ def test_shared_keys_and_path_across_projects(tmp_path):
     assert path["found"] and path["hops"] == 1
 
 
+def test_a_partial_build_keeps_the_other_projects(tmp_path):
+    # rebuilding only one project must not drop the rest of the repository from the graph
+    make_repo(tmp_path)
+    build_graph(tmp_path)
+    rec = build_graph(tmp_path, projects=["a/a.json"])
+    assert rec["projects"] == 2 and rec["datasets"] == 4
+    from dancr.headless import load_graph
+    g = load_graph(tmp_path)
+    assert {"a/a.json", "b/b.json"} <= set(g.projects)
+    assert graph_shared_keys(tmp_path)["count"] >= 1     # cross-project edges are regenerated, not lost
+
+
 def test_a_reused_project_drops_a_stale_cross_project_edge(tmp_path):
     """A reused project must not carry over an old cross-project link when the *other* project's key changed."""
     make_repo(tmp_path)

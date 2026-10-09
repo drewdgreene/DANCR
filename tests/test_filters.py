@@ -105,6 +105,12 @@ def test_is_one_of_splits_numbers_on_commas():
     assert df.filter(rule_mask(df.schema, {"column": "n", "op": "in", "value": "1,000; 7"})).height == 1
 
 
+def test_whole_number_parsing_keeps_a_decimal_comma():
+    from dancr.core.conditions import _whole
+    assert _whole("1,000") == 1000 and _whole("1 000") == 1000      # thousands separators
+    assert _whole("1,5") is None and _whole("1 2") is None          # a decimal comma is not 15, nor "1 2" 12
+
+
 def test_nan_is_a_blank_in_filters_and_statistics():
     p = table([[1.0], [2.0], [3.0], [100.0], [-1.0]], [("v", "number")])
     p.add_node("calculate", params={"formulas": [{"name": "w", "expr": "IF([v] < 0, SQRT([v]), [v])"}]}, id="c0"); p.connect("d", "c0")

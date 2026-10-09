@@ -353,7 +353,6 @@ def _project(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, 
 
     UTM is built in (a metre-accurate series, no dependency); any other EPSG code uses pyproj when it is
     installed, with a plain message when it is not."""
-    from ..geo import utm_to_latlon
     lf = first_input(inputs)
     schema = schema_of(lf)
     ec = require_column(schema, params.get("easting"), "easting column", NUM)
@@ -408,20 +407,24 @@ def _project(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, 
     z = int(str(zone).strip())
     if not 1 <= z <= 60:
         raise ValueError("The UTM zone must be between 1 and 60")
+    import numpy as np
+    from ..geo import utm_to_latlon_arrays
     e = pl.col(ec).cast(pl.Float64)
     n = pl.col(nc).cast(pl.Float64)
-    lons, lats = [], []
+    # vectorized, so a projected table of millions of rows is reprojected without a Python loop
     pts = lf.select([e.alias("__e"), n.alias("__n")]).collect(engine="streaming")
-    for er, nr in zip(pts["__e"].to_list(), pts["__n"].to_list()):
-        if er is None or nr is None:
-            lons.append(None); lats.append(None); continue
-        la, lo = utm_to_latlon(er, nr, z, south)
-        lats.append(la); lons.append(lo)
-    out = lf.with_columns(pl.Series(lon_out, lons), pl.Series(lat_out, lats))
+    ev, nv = pts["__e"].to_numpy(), pts["__n"].to_numpy()
+    valid = np.isfinite(ev) & np.isfinite(nv)         # a blank (None/NaN/inf) coordinate stays blank
+    lo = np.full(ev.shape, np.nan)
+    la = np.full(ev.shape, np.nan)
+    if bool(valid.any()):
+        la_v, lo_v = utm_to_latlon_arrays(ev[valid], nv[valid], z, south)
+        la[valid], lo[valid] = la_v, lo_v
+    out = lf.with_columns(pl.Series(lon_out, lo).fill_nan(None), pl.Series(lat_out, la).fill_nan(None))
     msgs = [f"Reprojected {ec}, {nc} from UTM zone {z}{'S' if south else 'N'} to longitude/latitude"]
     report: dict[str, Any] = {}
     if not ctx.preview:
-        n_pts = sum(1 for v in lats if v is not None)
+        n_pts = int(valid.sum())
         report = {"points": n_pts, "zone": z, "south": south,
                   "finding": finding("summary", f"{n_pts:,} projected points read as longitude/latitude", magnitude=n_pts, exact=True)}
     return NodeResult(out, report=report, messages=msgs)

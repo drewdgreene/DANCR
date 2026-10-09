@@ -520,5 +520,6 @@ def vector_table(path: Path, layer: str | None = None) -> tuple["pl.DataFrame", 
 
 # extracted leaf modules, re-exported so `geo.world_outlines` etc. stay valid
 from ._geometry import parse_wkt_rings, point_in_polygon, ring_bounds  # noqa: E402
-from ._projection import latlon_to_utm, looks_projected, utm_to_latlon, utm_zone  # noqa: E402
+from ._projection import (latlon_to_utm, looks_projected, utm_to_latlon, utm_to_latlon_arrays,  # noqa: E402
+                         utm_zone)
 from ._world import world_bounds, world_outlines  # noqa: E402

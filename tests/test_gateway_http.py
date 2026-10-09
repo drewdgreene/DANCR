@@ -139,3 +139,24 @@ def test_gateway_scope_cannot_be_escaped_with_dotdot(tmp_path):
         # a file genuinely inside the scope passes
         allowed = call(base, token="t", tool="inspect_file", args={"file_path": "sub/a.json"})
         assert allowed.status_code not in (401, 403)
+
+
+def test_gateway_scope_covers_every_named_path_not_just_the_first(tmp_path):
+    # a read tool's `files` list is resolved against the root without confinement, so a principal scoped to a
+    # project must not be able to name a file outside it there and slip past on the in-scope `path`
+    save_policy(tmp_path, {"principals": {"alice": {"tokens": ["t"], "projects": ["sub/*"]}}})
+    port = free_port()
+    with running(build_app(tmp_path, port=port), "127.0.0.1", port) as base:
+        denied = call(base, token="t", tool="understand_data",
+                      args={"path": "sub/p.json", "files": ["../secret.csv"]})
+        assert denied.status_code == 403
+        denied_abs = call(base, token="t", tool="understand_data",
+                          args={"path": "sub/p.json", "files": [str(tmp_path / "elsewhere.csv")]})
+        assert denied_abs.status_code == 403
+
+
+def test_project_scopes_lists_every_path_argument(tmp_path):
+    from dancr.gateway import _project_scopes
+    scopes = _project_scopes({"path": "a.json", "files": ["d/x.csv", "d/../y.csv"], "out_path": "r.csv"},
+                             tmp_path)
+    assert scopes == ["a.json", "d/x.csv", "y.csv"]        # resolved, de-duped, out_path not a read

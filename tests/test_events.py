@@ -39,6 +39,17 @@ def test_event_log_uses_a_last_seq_sidecar(tmp_path):
     assert fresh.append("source_changed", project="q.json")["seq"] == 3
 
 
+def test_event_log_recovers_a_stale_seq_sidecar(tmp_path):
+    # a crash between appending the event and updating the sidecar leaves the sidecar behind the log; the log is
+    # authoritative, so the next append must not reissue a sequence number
+    log = EventLog(tmp_path / "events.jsonl")
+    log.append("source_changed", project="p.json")     # seq 1
+    log.append("graph_updated", root=".")              # seq 2
+    (tmp_path / "events.jsonl.seq").write_text("1")    # sidecar now stale
+    fresh = EventLog(tmp_path / "events.jsonl")
+    assert fresh.append("source_changed", project="q.json")["seq"] == 3
+
+
 def test_event_log_without_a_sidecar_still_numbers_correctly(tmp_path):
     from dancr.core.repo import append_jsonl
     path = tmp_path / "events.jsonl"
@@ -74,6 +85,23 @@ def test_invalidate_ripples_across_projects(tmp_path):
     # the changed project's datasets and the cross-project dependents (b) are invalidated
     assert {"a/a.json#customers", "a/a.json#orders"} <= invalidated
     assert any(d.startswith("b/b.json#") for d in invalidated)
+
+
+def test_invalidate_ripples_down_a_chain_not_just_one_hop(tmp_path):
+    # a -> b -> c across projects: a change to a must invalidate c as well, not only its direct neighbour
+    for folder in ("a", "b", "c"):
+        (tmp_path / folder).mkdir()
+    pl.DataFrame({"client_id": [1, 1, 2, 3]}).write_csv(tmp_path / "a" / "x.csv")
+    pl.DataFrame({"client_id": [1, 2, 3], "ticket_id": [10, 10, 11]}).write_csv(tmp_path / "b" / "x.csv")
+    pl.DataFrame({"ticket_id": [10, 11, 12]}).write_csv(tmp_path / "c" / "x.csv")
+    for folder in ("a", "b", "c"):
+        p = Pipeline(folder); p.path = tmp_path / folder / f"{folder}.json"
+        p.add_node("load_file", "X", {"path": "x.csv"}, id="x")
+        p.save()
+    build_graph(tmp_path)
+    events = invalidate(tmp_path, [str(tmp_path / "a" / "a.json")])
+    invalidated = {e["dataset"] for e in events if e["type"] == "dataset_invalidated"}
+    assert "b/b.json#x" in invalidated and "c/c.json#x" in invalidated
 
 
 def test_append_and_read_events_roundtrip(tmp_path):

@@ -27,11 +27,14 @@ _READ = {"inspect_file", "get_schema", "get_sample", "get_stats", "describe_pipe
          "list_node_types", "formula_reference", "search_knowledge", "get_events", "graph_query",
          "graph_neighbors", "graph_path", "graph_shared_keys", "get_trace", "catalog", "understand_data",
          "profile", "suggest_answers", "connections", "policy_check", "list_approvals", "get_audit",
-         "read_document", "lineage", "get_proof"}
+         "lineage", "get_proof"}
 _RUN = {"run_pipeline", "run_batch", "ask", "assistant", "run_eval", "verify_pipeline", "record_attestation"}
 _WRITE_INSIDE = {"create_pipeline", "add_node", "set_params", "connect_nodes", "disconnect_nodes",
                  "remove_node", "rename_node", "set_input", "remove_input", "set_column_label",
-                 "set_dataset_meta", "apply_edits", "build_template"}
+                 "set_dataset_meta", "apply_edits", "build_template",
+                 # read_document with what=tables writes one CSV per extracted table under the root, so it is a
+                 # write, not a read: a policy that denies writes must not let it through as a read
+                 "read_document"}
 _WRITE_OUTSIDE = {"render_chart", "render_map", "open_in_gui"}
 _EXPORT = {"export_node", "export_fair", "package_project"}
 _GRAPH_WRITE = {"graph_build"}

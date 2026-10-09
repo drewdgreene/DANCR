@@ -69,11 +69,26 @@ def invalidate(root: Path | str, projects: list[str], *, files: Iterable[str] = 
                 changed.add(d.id)
                 events.append(make_event("dataset_invalidated", dataset=d.id, reason="its source changed"))
     if g is not None:
-        for e in sorted(g.edges.values(), key=lambda x: x.id):
-            if e.left in changed and e.right not in changed:
-                events.append(make_event("dataset_invalidated", dataset=e.right, reason=f"upstream {e.left} changed"))
-            elif e.right in changed and e.left not in changed:
-                events.append(make_event("dataset_invalidated", dataset=e.left, reason=f"upstream {e.right} changed"))
+        edges = sorted(g.edges.values(), key=lambda x: x.id)
+        origin = set(changed)
+        # close over the edges to a fixed point: a change ripples down a *chain* (A -> B -> C), not just one
+        # hop, so a dependent of a dependent is invalidated too
+        frontier = set(changed)
+        while frontier:
+            nxt: set[str] = set()
+            for e in edges:
+                if e.left in frontier and e.right not in changed:
+                    changed.add(e.right)
+                    nxt.add(e.right)
+                elif e.right in frontier and e.left not in changed:
+                    changed.add(e.left)
+                    nxt.add(e.left)
+            frontier = nxt
+        for d in sorted(changed - origin):              # deterministic: by dataset id, citing a changed neighbour
+            other = next((e.left for e in edges if e.right == d and e.left in changed and e.left != d),
+                         next((e.right for e in edges if e.left == d and e.right in changed and e.right != d), None))
+            events.append(make_event("dataset_invalidated", dataset=d,
+                                     reason=f"upstream {other} changed" if other else "an upstream dataset changed"))
     return events
 
 
@@ -155,13 +170,22 @@ def watch_repo(root: Path | str, *, interval: float = 2.0, once: bool = False, r
         return changed
 
     emit({"type": "watch_started", "root": str(root)})
-    previous = snapshot()
+    previous = snapshot()                               # the last state seen
+    trigger = previous                                  # the last state acted on (the baseline for a diff)
     if once:
         return record
+    # Act only on a quiet poll, like the single-project watcher: a file another tool is still writing would
+    # otherwise be read at a partial size and its project recomputed from truncated data.
+    pending = False
     while not stop.wait(max(0.1, float(interval))):
         snap = snapshot()
-        if snap != previous:
-            act(previous, snap)
+        if snap == previous:
+            if pending:                                 # changed, then a quiet poll: act on it now
+                pending = False
+                act(trigger, snap)
+                trigger = snap
+        else:
+            pending = True
             previous = snap
     record["stopped"] = True
     return record

@@ -27,7 +27,9 @@ def _label(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, An
     level = str(params.get("level") or "internal")
     if col:
         require_column(schema, col, "label column")
-        out = lf.with_columns(pl.col(col).cast(pl.Utf8).alias(name)) if name != col else lf
+        # always cast to text, even when the label reuses the source column name, so the sensitivity column is
+        # the plain-text labels the withholding and graph checks expect
+        out = lf.with_columns(pl.col(col).cast(pl.Utf8).alias(name))
         said = f"Labelled rows from '{col}' into a '{name}' column"
         detail: dict[str, Any] = {"column": col, "label": name}
     else:

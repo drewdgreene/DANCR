@@ -55,7 +55,7 @@ class InspectorPanel(QWidget):
         listen(self, doc.nodeRemoved, lambda nid: self.set_node(None) if nid == self.nid else None)
         listen(self, doc.reloaded, lambda: self.set_node(None))
         listen(self, doc.statesChanged, self._refresh_status)
-        listen(self, doc.nodeState, lambda nid, st: self._refresh_status() if nid == self.nid else None)
+        listen(self, doc.nodeState, lambda nid, st: self._refresh_status(st) if nid == self.nid else None)
         listen(self, doc.runStarted, self._refresh_status)
         listen(self, doc.runFinished, lambda ok, res: self._refresh_status())
         listen(self, doc.edgeAdded, lambda e: self._refresh_schema() if self.nid in (e.source, e.target) else None)
@@ -334,10 +334,15 @@ class InspectorPanel(QWidget):
         self.adv_btn.setText("Fewer options" if on else "More options")
 
     # ------------------------------------------------------------ status
-    def _refresh_status(self) -> None:
+    def _refresh_status(self, st=None) -> None:
         if self.nid is None or not hasattr(self, "status_label") or self.nid not in self.doc.pipeline.nodes:
             return
-        st = self.doc.state(self.nid)
+        # the run's own nodeState carries the state; otherwise use the poll's cached one. Both avoid reading
+        # files (a source is stat'ed and sampled) on the GUI thread; only a cold cache falls back to a real read.
+        if st is None or getattr(st, "node_id", None) != self.nid:
+            st = self.doc.cached_state(self.nid)
+        if st is None:
+            st = self.doc.state(self.nid)
         if st.status == "done":
             txt = f"{st.rows:,} rows × {len(st.columns)} columns" + (f" · {st.elapsed:.1f} s" if st.elapsed and not st.from_cache else "")
         elif st.status == "failed":

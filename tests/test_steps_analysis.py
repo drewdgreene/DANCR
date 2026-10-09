@@ -87,6 +87,14 @@ def test_summarize_and_group_summary(small_csv, tmp_path):
     assert df.filter(pl.col("name") == "a")["rows"][0] == 5
 
 
+def test_count_and_n_unique_treat_nan_as_blank(tmp_path):
+    # NaN is a blank everywhere else (COUNT(), ISBLANK, filters), so it must not be counted as filled here either
+    p = _pipe(pl.DataFrame({"g": ["a", "a", "a"], "v": pl.Series([1.0, float("nan"), 3.0], dtype=pl.Float64)}), tmp_path)
+    nd = _step(p, "group_summary", {"by": ["g"], "default_stats": ["count", "n_unique"]})
+    df = run_one(p, nd)
+    assert df["v_count"][0] == 2 and df["v_n_unique"][0] == 2
+
+
 @pytest.mark.parametrize("values", [[5.0] * 8, [0.0] * 8, [0.1] * 7 + [None], [1e9 + 0.1] * 8, [3.0]])
 @pytest.mark.parametrize("method", ["zscore", "iqr"])
 def test_a_constant_column_has_no_outliers(tmp_path, values, method):

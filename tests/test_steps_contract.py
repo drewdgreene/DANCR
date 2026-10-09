@@ -94,3 +94,19 @@ def test_diff_tables_reports_added_removed_changed(tmp_path):
     changed = kinds["changed"][0]
     assert changed["column"] == "v" and changed["before"] == "2.0" and changed["after"] == "9.0"
     assert changed["delta"] == 7.0
+
+
+def test_diff_tables_survives_an_after_column_that_looks_suffixed(tmp_path):
+    # the after table already has a real "v_after": the join's own suffix must not collide with it
+    p = Pipeline("c"); p.path = tmp_path / "c.json"
+    p.add_node("enter_data", params={"columns": [{"name": "id", "type": "text"}, {"name": "v", "type": "number"}],
+                                     "rows": [["A", 1.0]]}, id="a")
+    p.add_node("enter_data", params={"columns": [{"name": "id", "type": "text"}, {"name": "v", "type": "number"},
+                                                 {"name": "v_after", "type": "number"}],
+                                     "rows": [["A", 9.0, 100.0]]}, id="b")
+    p.add_node("diff_tables", params={"key": ["id"]}, id="df")
+    p.connect("a", "df", "a"); p.connect("b", "df", "b")
+    df, st = run(p, "df")
+    assert st.report["changed"] == 1
+    row = next(r for r in df.iter_rows(named=True) if r["column"] == "v")
+    assert row["before"] == "1.0" and row["after"] == "9.0"

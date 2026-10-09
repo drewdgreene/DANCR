@@ -45,8 +45,10 @@ def stat_expr(col: str, stat: str, order_by: str | None = None) -> pl.Expr:
     c = pl.col(col)
     if order_by is not None and stat in ("first", "last"):
         c = c.sort_by(order_by)
-    if stat in ("mean", "median", "min", "max", "std", "sum"):
-        c = c.fill_nan(None)                  # NaN is a blank, as everywhere else: it does not poison or skew a statistic
+    if stat in ("mean", "median", "min", "max", "std", "sum", "count", "n_unique", "first", "last"):
+        # NaN is a blank, as everywhere else (COUNT(), ISBLANK, filters): it must not be counted, listed as a
+        # value, or returned as a first/last reading
+        c = c.fill_nan(None)
     if stat == "mean":
         return c.mean()
     if stat == "median":
@@ -66,7 +68,7 @@ def stat_expr(col: str, stat: str, order_by: str | None = None) -> pl.Expr:
     if stat == "last":
         return c.last()
     if stat == "n_unique":
-        return c.n_unique()
+        return c.drop_nulls().n_unique()      # distinct values, blanks (and NaN) not counted, as in the stats view
     if stat == "rows":
         return pl.len()                       # every row of the group, whatever its values
     raise ValueError(f"Unknown statistic {stat!r}")

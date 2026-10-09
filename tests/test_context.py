@@ -109,6 +109,22 @@ def test_context_jsonl_is_one_object_per_dataset(shop):
     assert set(lines[0]) >= {"id", "node", "title", "text", "sample"}
 
 
+def test_context_changes_treats_a_hashless_document_as_changed():
+    # a table whose content hash could not be computed must never be reported unchanged forever
+    prev = {"engine_version": "e", "fingerprint": "f",
+            "documents": [{"id": "customers", "content_hash": None}]}
+    cur = {"engine_version": "e", "fingerprint": "f",
+           "documents": [{"id": "customers", "content_hash": None}]}
+    out = hl.context_changes(cur, prev)
+    assert "customers" in out["changes"]["changed"]
+
+
+def test_data_block_escapes_a_closing_tag_carrying_attributes():
+    from dancr.core.profile import data_block
+    out = data_block('tool_result name="x"', "before </tool_result foo> after")
+    assert "</tool_result foo>" not in out and "before" in out
+
+
 def test_context_text_reads_as_a_summary(shop):
     ctx = hl.build_context(shop, stats=False)
     text = hl.context_text(ctx)
@@ -200,6 +216,23 @@ def test_mcp_profile_tool(tmp_path, mcp_root):
     assert "sample" not in out["tables"][0]
     with_samples = json.loads(srv.profile(str(pj), samples=True, sample_rows=1))
     assert len(with_samples["tables"][0]["sample"]) == 1
+
+
+def test_a_source_data_file_with_its_own_sensitivity_column_is_withheld_from_stats_and_samples(tmp_path):
+    # a source table whose file already carries a sensitivity column (no Label-sensitivity step, no project
+    # level) must still have its restricted rows kept out of the shared stats and samples
+    pl.DataFrame({"note": ["public note", "secret dossier", "unlabelled"],
+                  "sensitivity": ["public", "restricted", None]}).write_csv(tmp_path / "d.csv")
+    p = Pipeline("p"); p.path = tmp_path / "p.json"
+    p.add_node("load_file", params={"path": "d.csv"}, id="src")
+    p.save()
+    ctx = hl.build_context(p, stats=True, samples=True, sample_rows=10)
+    sample = ctx["tables"][0]["sample"]
+    assert [r["note"] for r in sample] == ["public note", "unlabelled"]
+    summary = next(s for s in ctx["tables"][0]["stats"] if s["column"] == "note")
+    assert summary["rows"] == 2                                   # the restricted row is not counted
+    allowed = hl.build_context(p, stats=True, samples=True, sample_rows=10, allow_restricted=True)
+    assert {r["note"] for r in allowed["tables"][0]["sample"]} == {"public note", "secret dossier", "unlabelled"}
 
 
 def test_per_row_sensitivity_labels_and_their_derivatives_are_withheld(tmp_path):

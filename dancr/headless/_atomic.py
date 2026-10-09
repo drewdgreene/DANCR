@@ -5,6 +5,8 @@ import os
 import uuid
 from pathlib import Path
 
+from ..core.repo import _replace_retrying
+
 
 def write_text_atomic(path: Path | str, text: str, encoding: str = "utf-8") -> Path:
     """Write text to ``path`` atomically: a unique temp file beside it, then one replace. A crash or a full disk
@@ -15,7 +17,11 @@ def write_text_atomic(path: Path | str, text: str, encoding: str = "utf-8") -> P
     tmp = target.with_name(f".{target.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp")
     try:
         tmp.write_text(text, encoding=encoding)
-        os.replace(tmp, target)
+        try:
+            os.chmod(tmp, 0o600)                     # a report or export may hold data: keep it private
+        except OSError:
+            pass
+        _replace_retrying(tmp, target)               # Windows: retry while a reader closes the old file
     finally:
         tmp.unlink(missing_ok=True)
     return target

@@ -29,6 +29,7 @@ def test_category_classification():
     assert category_for("export_node") == "export"
     assert category_for("render_chart") == "write_outside"
     assert category_for("graph_build") == "graph_write"
+    assert category_for("read_document") == "write_inside"      # it writes one CSV per extracted table
     assert category_for("something_new") == "write_outside"     # cautious default
 
 
@@ -80,6 +81,37 @@ def test_an_approved_action_counts_against_the_quota(tmp_path):
     decide_approval(tmp_path, rec2["id"], True, by="drew")
     second = authorize(tmp_path, "alice", "export_node", project="a.json")
     assert second["verdict"] == "deny" and "quota" in second["reason"]
+
+
+def test_concurrent_approved_actions_do_not_overspend_the_quota(tmp_path):
+    # enforce does not count an 'approve' verdict, so without a single check-consume-count lock two approved
+    # calls could both pass and both count, spending a quota of 1 twice
+    save_policy(tmp_path, {"principals": {"alice": {}}, "quotas": {"alice": {"export": 1}},
+                           "default": dict(POLICY["default"])})
+    from dancr.headless import authorize
+    for _ in range(4):
+        rec = request_approval(tmp_path, "alice", "export_node", project="a.json")
+        decide_approval(tmp_path, rec["id"], True, by="drew")
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        results = list(pool.map(lambda _: authorize(tmp_path, "alice", "export_node", project="a.json")["verdict"],
+                                range(4)))
+    assert results.count("allow") == 1
+
+
+def test_an_approved_action_over_quota_leaves_its_approval_unused(tmp_path):
+    save_policy(tmp_path, {"principals": {"alice": {}}, "quotas": {"alice": {"export": 1}},
+                           "default": dict(POLICY["default"])})
+    from dancr.headless._gateway import _consume_and_count
+    for _ in range(2):
+        rec = request_approval(tmp_path, "alice", "export_node", project="a.json")
+        decide_approval(tmp_path, rec["id"], True, by="drew")
+    assert _consume_and_count(tmp_path, "alice", "export_node", "a.json", "export")[0] == "consumed"
+    outcome, _, reason = _consume_and_count(tmp_path, "alice", "export_node", "a.json", "export")
+    assert outcome == "over" and "quota" in reason
+    from dancr.headless import consume_approval
+    # the refused action left its approval unused, so raising the quota later can still use it
+    assert consume_approval(tmp_path, "alice", "export_node", project="a.json") is True
 
 
 def test_an_approval_cannot_be_decided_twice(tmp_path):

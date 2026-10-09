@@ -362,7 +362,7 @@ def search_knowledge(pipe, query: str, *, node: str | None = None, k: int = 5, m
     if "sensitivity" in df.columns and not allow_restricted:
         # a null label means "not marked", i.e. visible: only rows explicitly labelled at a restricted level are
         # withheld. (A null compared with is_in gives null, and ~null is null, which filter would drop.)
-        level = df["sensitivity"].cast(pl.Utf8).str.to_lowercase()
+        level = df["sensitivity"].cast(pl.Utf8).str.strip_chars().str.to_lowercase()
         restricted = level.is_not_null() & level.is_in([s.lower() for s in restricted_levels])
         withheld = int(restricted.sum())
         df = df.filter(~restricted)

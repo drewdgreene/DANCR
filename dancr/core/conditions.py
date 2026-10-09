@@ -1,6 +1,7 @@
 """Plain-English filter conditions -> Polars boolean masks."""
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import polars as pl
@@ -42,12 +43,15 @@ def ops_for_kind(kind: str) -> list[tuple[str, str]]:
 
 def _whole(value: Any) -> int | None:
     """A typed-in whole number exactly (1234567890123456789, "1,000"), or None: compared as a float it would
-    also match its neighbours above 2^53."""
+    also match its neighbours above 2^53. Thousands separators are removed only when they group in threes, so a
+    decimal-comma "1,5" is not silently read as 15."""
     if isinstance(value, bool):
         return None
     if isinstance(value, int):
         return value
-    text = str(value).strip().replace(",", "").replace(" ", "")
+    text = str(value).strip()
+    if re.fullmatch(r"[+-]?\d{1,3}(,\d{3})+", text) or re.fullmatch(r"[+-]?\d{1,3}( \d{3})+", text):
+        text = text.replace(",", "").replace(" ", "")       # "1,000" / "1 000": a thousands separator
     return int(text) if text.lstrip("+-").isdigit() else None
 
 

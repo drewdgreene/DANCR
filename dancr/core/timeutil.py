@@ -196,7 +196,8 @@ def settle_day_month(lf: pl.LazyFrame, column: str, fmt: str, sample: pl.Series,
     if not day_month_ambiguous(sample, fmt):
         return fmt, None
     twin = swap_day_month(fmt)
-    assert twin is not None
+    if twin is None:                                 # no day/month twin (a guard that never uses assert at runtime)
+        return fmt, None
     if whole:
         raw = pl.col(column).cast(pl.Utf8).str.strip_chars()
         a, b = lf.select(raw.str.to_datetime(fmt, strict=False).is_not_null().sum().alias("a"),

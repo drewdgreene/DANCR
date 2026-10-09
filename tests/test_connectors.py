@@ -110,6 +110,12 @@ def test_redact_handles_passwords_with_slash_or_at():
     assert secrets.redact("postgresql://user:p@ss@host/db").endswith("@host/db")
 
 
+def test_redact_handles_a_password_with_no_username():
+    # a DSN may carry only a password ("redis://:pw@host"), which must not survive redaction
+    assert secrets.redact("redis://:s3cr3tPASS@host:6379/0") == "redis://:****@host:6379/0"
+    assert "onlypass" not in secrets.redact("amqp://:onlypass@broker")
+
+
 def test_connector_secrets_are_redacted_in_describe(tmp_path, mcp_root):
     import dancr.mcp_server as srv
     pj = tmp_path / "p.json"

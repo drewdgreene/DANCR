@@ -185,30 +185,60 @@ def principal_for_request(root: Path | str, token: str) -> tuple[str | None, Pol
     return principal_for_token(policy, token), policy
 
 
+def _consume_locked(root: Path | str, principal: str, tool: str, project: str | None) -> str | None:
+    """Find a matching approved-but-unused approval and mark it consumed, returning its id or None. The caller
+    holds the repository lock, so two callers can never spend the same approval."""
+    records = list(read_jsonl(_approvals_file(root)))
+    consumed = {r.get("id") for r in records if r.get("event") == "consumed"}
+    items: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for r in records:
+        aid = str(r.get("id"))
+        if aid not in items:
+            items[aid] = dict(r)
+            order.append(aid)
+        if r.get("event") == "decided":
+            items[aid]["status"] = r.get("status", "pending")
+    match = next((items[a] for a in order if items[a].get("status") == "approved" and a not in consumed
+                  and items[a].get("principal") == principal and items[a].get("tool") == tool
+                  and items[a].get("project") == project), None)
+    if match is None:
+        return None
+    append_jsonl(_approvals_file(root), {"id": match["id"], "event": "consumed"})
+    return str(match["id"])
+
+
 def consume_approval(root: Path | str, principal: str, tool: str, *, project: str | None = None) -> bool:
     """Take a matching approved-but-unused approval for (principal, tool, project), marking it consumed. True if
     one was found. Matching the project too means an approval for one project never authorises another; the read
     and the consume happen under the repository lock, so two callers cannot spend the same approval."""
     from . import repo_lock
     with repo_lock(root):
-        records = list(read_jsonl(_approvals_file(root)))
-        consumed = {r.get("id") for r in records if r.get("event") == "consumed"}
-        items: dict[str, dict[str, Any]] = {}
-        order: list[str] = []
-        for r in records:
-            aid = str(r.get("id"))
-            if aid not in items:
-                items[aid] = dict(r)
-                order.append(aid)
-            if r.get("event") == "decided":
-                items[aid]["status"] = r.get("status", "pending")
-        match = next((items[a] for a in order if items[a].get("status") == "approved" and a not in consumed
-                      and items[a].get("principal") == principal and items[a].get("tool") == tool
-                      and items[a].get("project") == project), None)
-        if match is None:
-            return False
-        append_jsonl(_approvals_file(root), {"id": match["id"], "event": "consumed"})
-    return True
+        return _consume_locked(root, principal, tool, project) is not None
+
+
+def _consume_and_count(root: Path | str, principal: str, tool: str, project: str | None,
+                       category: str) -> tuple[str, str | None, str | None]:
+    """Satisfy an ``approve`` verdict: under **one** repository lock, re-check the quota, consume a matching
+    approval and count it. Returns ``(outcome, approval_id, reason)``.
+
+    Checking the quota and counting the approved action in the same critical section is what stops two approved
+    calls from both passing the earlier check (in :func:`enforce`, which does not count an ``approve``) and both
+    spending: the second sees the first's count. When the quota is already reached the approval is left unconsumed
+    so it can be used later, and the action is denied."""
+    from . import repo_lock
+    with repo_lock(root):
+        policy = load_policy(root)
+        if policy is not None:
+            over = _quota_over(policy, quota_used(root, principal, category), principal, category)
+            if over:
+                return "over", None, over
+        approval_id = _consume_locked(root, principal, tool, project)
+        if approval_id is None:
+            return "none", None, None
+        if policy is not None:
+            _quota_bump(root, principal, category)
+        return "consumed", approval_id, None
 
 
 def authorize(root: Path | str, principal: str, tool: str, *, category: str | None = None,
@@ -222,11 +252,14 @@ def authorize(root: Path | str, principal: str, tool: str, *, category: str | No
     dec = enforce(root, principal, tool, category=category, project=project, args=args)
     if dec["verdict"] != "approve":
         return dec
-    if consume_approval(root, principal, tool, project=project):
-        # an approved action still counts against the principal's quota, or approvals would be an unlimited bypass
-        _quota_bump(root, principal, dec["category"])
+    # re-check quota, consume the approval and count it under one lock: an approved action still counts against
+    # the principal's quota, and two concurrent approved calls must not both overspend it
+    outcome, approval_id, reason = _consume_and_count(root, principal, tool, project, dec["category"])
+    if outcome == "consumed":
         audit(root, {"principal": principal, "tool": tool, "category": dec["category"],
-                     "verdict": "allowed-after-approval", "project": project})
+                     "verdict": "allowed-after-approval", "project": project, "approval": approval_id})
         return {**dec, "verdict": "allow", "reason": "approved"}
+    if outcome == "over":
+        return {**dec, "verdict": "deny", "reason": reason}
     rec = request_approval(root, principal, tool, category=dec["category"], project=project, args=args)
     return {**dec, "verdict": "approve", "approval": rec["id"], "reason": f"queued for approval ({rec['id']})"}

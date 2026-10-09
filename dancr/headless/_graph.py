@@ -260,8 +260,9 @@ def build_graph(root: Path | str, *, projects: list[str] | None = None, force: b
     repo = Repo(root).ensure()
     with repo_lock(root):
         wanted = _project_files(root, projects)
-        existing = None if force else load_graph(root)
-        reusable = (existing is not None and existing.meta.get("code_fingerprint") == CODE_FINGERPRINT
+        existing = load_graph(root)                  # kept both for reuse and to carry over the projects not named now
+        reusable = (not force and existing is not None
+                    and existing.meta.get("code_fingerprint") == CODE_FINGERPRINT
                     and existing.meta.get("identity_version") == IDENTITY_VERSION
                     and existing.meta.get("graph_version") == GRAPH_VERSION)
         graph = Graph()
@@ -309,6 +310,15 @@ def build_graph(root: Path | str, *, projects: list[str] | None = None, force: b
             else:
                 pid, why = payload
                 skipped[pid] = why
+
+        # Building a *subset* of projects (``projects=[…]``) must not drop the rest of the repository from the
+        # graph: carry over every stored project the build did not name, so the result is the whole repository.
+        if existing is not None:
+            wanted_ids = {project_id(root, p) for p in wanted}
+            for pid in sorted(existing.projects):
+                if pid not in wanted_ids and pid not in graph.projects:
+                    _carry_over(existing, graph, pid)
+                    reused.append(pid)
 
         generated = _now()
         cross = add_cross_project_keys(graph)

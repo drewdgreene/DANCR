@@ -299,14 +299,20 @@ def _diff_tables(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[s
 
     ja = a.with_columns(pl.lit(1).alias("__a"))
     jb = b.with_columns(pl.lit(1).alias("__b"))
-    joined = ja.join(jb, on=keys, how="full", suffix="_after", coalesce=True)
+    # a suffix that cannot collide with a column either table already has (e.g. a real "x_after"), so the diff
+    # never reads the wrong column
+    taken = set(sa) | set(sb)
+    suffix = "_after"
+    while any(nm.endswith(suffix) for nm in taken):
+        suffix += "_"
+    joined = ja.join(jb, on=keys, how="full", suffix=suffix, coalesce=True)
     pieces: list[pl.LazyFrame] = []
 
     def key_cols(col: str | None = None) -> list[pl.Expr]:
         return [pl.col(k) for k in keys]
 
     for c in compare:
-        ca, cb = c, f"{c}_after"
+        ca, cb = c, f"{c}{suffix}"
         if cb not in joined.collect_schema().names():
             continue
         both_null = pl.col(ca).is_null() & pl.col(cb).is_null()

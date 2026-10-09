@@ -21,6 +21,8 @@ Pure core, no Qt.
 from __future__ import annotations
 
 import difflib
+import threading
+from collections import OrderedDict
 from datetime import datetime, timedelta
 import re
 from dataclasses import dataclass, field
@@ -209,22 +211,29 @@ def _tokens(text: str) -> list[str]:
     return re.findall(_DATE + r"|>=|<=|!=|[<>=]|" + _NUMBER + r"|[\w'%/]+(?:[.\-][\w]+)*", text.lower())
 
 
-_VOCABS: dict[int, tuple[DataModel, bool, dict]] = {}
+_VOCABS: "OrderedDict[int, tuple[DataModel, bool, dict]]" = OrderedDict()
+_VOCABS_LOCK = threading.Lock()
+_VOCABS_MAX = 8
 
 
 def vocabulary(model: DataModel) -> dict[tuple[str, ...], list[Meaning]]:
     """Every phrase this project understands, to its meanings (fixed words first, then the project's own). Built
     once per data model (a model is replaced, not changed, when the tables change), so each question typed does
-    not build it again."""
-    hit = _VOCABS.get(id(model))
-    if hit is not None and hit[0] is model and hit[1] == model.deep:
-        return hit[2]
-    voc = _vocabulary(model)
-    if len(_VOCABS) > 8:
-        _VOCABS.clear()
-    # the model is kept with it, so its id is not reused; deepen() completes a model in place, so a vocabulary read
-    # from the sample model is not used for the deep one
-    _VOCABS[id(model)] = (model, model.deep, voc)
+    not build it again. A small LRU, so a caller that keeps many live models does not thrash the cache."""
+    key = id(model)
+    with _VOCABS_LOCK:
+        hit = _VOCABS.get(key)
+        if hit is not None and hit[0] is model and hit[1] == model.deep:
+            _VOCABS.move_to_end(key)
+            return hit[2]
+    voc = _vocabulary(model)                        # built outside the lock: it can be slow, and it is idempotent
+    with _VOCABS_LOCK:
+        # the model is kept with it, so its id is not reused; deepen() completes a model in place, so a vocabulary
+        # read from the sample model is not used for the deep one
+        _VOCABS[key] = (model, model.deep, voc)
+        _VOCABS.move_to_end(key)
+        while len(_VOCABS) > _VOCABS_MAX:
+            _VOCABS.popitem(last=False)
     return voc
 
 

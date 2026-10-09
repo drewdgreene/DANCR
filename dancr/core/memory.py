@@ -50,6 +50,7 @@ def remember_alias(pipeline: Any, typed: Any, means: Any) -> None:
     if not isinstance(store.get("aliases"), dict):       # a hand-edited/damaged project: start the map afresh
         store["aliases"] = {}
     aliases = store["aliases"]
+    aliases.pop(k, None)                                 # re-learning a word moves it to the newest end
     aliases[k] = v
     if len(aliases) > MAX_ALIASES:                       # drop the oldest learned words, not the newest
         for old in list(aliases)[:len(aliases) - MAX_ALIASES]:

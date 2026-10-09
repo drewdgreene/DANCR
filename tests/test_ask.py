@@ -479,3 +479,29 @@ def test_compare_applies_a_filter_to_the_first_log(probes):
     pl_ = plan(m, spec)
     assert "keep_rows" in [s.type for s in pl_.steps]
     assert " where " in pl_.title
+
+
+# ---------------------------------------------------------------- typed spans the grammar must refuse, not crash
+def test_a_fractional_step_is_refused_not_truncated(probes):
+    _, m, _ = probes
+    a = ask(m, "average pressure per 1.5 hours")
+    assert not a.ok and "whole" in a.message
+
+
+def test_a_two_digit_step_does_not_crash(probes):
+    _, m, _ = probes
+    a = ask(m, "the best hour per 15 minutes")
+    assert a.ok, a.message
+
+
+def test_a_date_span_past_the_calendar_is_refused(probes):
+    _, m, _ = probes
+    a = ask(m, "readings in the last 999999 days")
+    assert not a.ok and "calendar" in a.message
+
+
+def test_an_iso_t_between_date_and_time_is_read(probes):
+    _, m, _ = probes
+    a = ask(m, "average pressure after 2024-06-01t09:30:00")
+    assert a.ok, a.message
+    assert "t09" not in str(a.spec)

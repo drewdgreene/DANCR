@@ -239,7 +239,9 @@ def verify_pipeline(pipe, reference: Any, *, mode: str = "stored", strict_source
     targets = [nid for nid in ref_nodes if nid in pipe.nodes and ref_nodes[nid].get("materialize", True)]
     try:
         if mode == "rerun":
-            ex.run(targets=targets or None, force=True)
+            # an empty target list means the attestation names no materializing node: recompute nothing, not the
+            # whole project (``targets=[]`` and ``targets=None`` are not the same request)
+            ex.run(targets=targets, force=True)
         else:
             need = [nid for nid in targets if ex.state(nid).status != "done"]
             if need:

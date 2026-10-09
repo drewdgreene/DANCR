@@ -133,7 +133,12 @@ def append_jsonl(path: Path | str, record: dict[str, Any]) -> None:
     data = line.encode("utf-8")
     fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
     try:
-        os.write(fd, data)
+        view = memoryview(data)
+        while view:                                  # os.write may write fewer bytes; loop so the line never truncates
+            written = os.write(fd, view)
+            if written <= 0:
+                raise OSError("could not append to the log")
+            view = view[written:]
     finally:
         os.close(fd)
 
@@ -164,8 +169,12 @@ def write_json_atomic(path: Path | str, obj: Any) -> Path:
     try:
         tmp.write_text(json.dumps(obj, ensure_ascii=False, allow_nan=False, default=str, indent=1) + "\n",
                        encoding="utf-8")
+        try:
+            os.chmod(tmp, 0o600)                     # a sidecar may hold a credential: keep it private
+        except OSError:
+            pass
         _fsync_file(tmp)
-        os.replace(tmp, target)
+        _replace_retrying(tmp, target)               # Windows: retry while a reader closes the old file
     finally:
         tmp.unlink(missing_ok=True)
     return target

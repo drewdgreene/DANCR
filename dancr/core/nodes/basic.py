@@ -497,12 +497,16 @@ def _unpivot(ctx: Ctx, inputs: dict[str, list[pl.LazyFrame]], params: dict[str, 
     year = params.get("year")
     months = [month_of(c) for c in cols]
     if year not in (None, "") and all(months):
+        try:
+            year_n = int(year)
+        except (TypeError, ValueError):
+            raise ValueError(f"The year must be a number (for example 2024), not {year!r}") from None
         taken = set(keep) | {name_col, value_col}
         date_col = "date" if "date" not in taken else f"{name_col} date"
         order = pl.DataFrame({name_col: cols, "__m": months})
         out = (out.join(order.lazy(), on=name_col, how="left", maintain_order="left")
-                  .with_columns(pl.date(int(year), pl.col("__m"), 1).cast(pl.Datetime("us")).alias(date_col)).drop("__m"))
-        msgs.append(f"{name_col} as dates in {int(year)} in '{date_col}'")
+                  .with_columns(pl.date(year_n, pl.col("__m"), 1).cast(pl.Datetime("us")).alias(date_col)).drop("__m"))
+        msgs.append(f"{name_col} as dates in {year_n} in '{date_col}'")
     elif all(months):
         order = pl.DataFrame({name_col: cols, f"{name_col}_number": months})
         out = out.join(order.lazy(), on=name_col, how="left", maintain_order="left")
