@@ -12,6 +12,7 @@ file, so it takes only the repository lock (docs/adr/0003).
 """
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 from typing import Any
@@ -23,8 +24,10 @@ from ..core.graph import (GRAPH_VERSION, SENSITIVITY_LEVELS, Column, Dataset, Ed
 from ..core.events import EventLog
 from ..core.identity import (IDENTITY_VERSION, dataset_column_id, dataset_id, digest, file_digest, project_id,
                              source_id)
+from ..core.names import looks_like_key
 from ..core.repo import Repo, write_json_atomic
-from ..core.understand import default_tables, understand
+from ..core.understand import ID as ID_ROLE
+from ..core.understand import _vhash, default_tables, understand
 
 log = logging.getLogger("dancr.graph")
 
@@ -76,6 +79,7 @@ def _project_graph(root: Path, path: Path, pipe: Pipeline) -> tuple[Project, lis
     datasets: list[Dataset] = []
     version_of: dict[str, str] = {}
     sens_of: dict[str, str] = {}
+    understood: dict[str, Any] = {}          # graph column id -> the understand Column (for its key sketch)
     memo: dict[str, str] = {}
     for t in model.tables.values():
         dsid = dataset_id(pid, t.node)
@@ -87,7 +91,13 @@ def _project_graph(root: Path, path: Path, pipe: Pipeline) -> tuple[Project, lis
                      time_column=t.time or "", source=Path(t.source).name if t.source else "",
                      version=version, sensitivity=sens)
         for c in t.columns:
-            ds.columns.append(Column(dataset_column_id(dsid, c.name), dsid, c.name, c.role, c.kind, c.unit or ""))
+            cid = dataset_column_id(dsid, c.name)
+            col = Column(cid, dsid, c.name, c.role, c.kind, c.unit or "")
+            # a key-like column is an entity candidate even when no intra-project link used it, so two
+            # single-table projects that share a key can still be compared across projects
+            col.is_entity = bool(c.link_candidate and c._keys and (c.role == ID_ROLE or looks_like_key(c.name)))
+            ds.columns.append(col)
+            understood[cid] = c
         nt = registry.get(pipe.nodes[t.node].type)
         if nt.kind == "source" and t.source:
             fp = Path(t.source)
@@ -113,6 +123,12 @@ def _project_graph(root: Path, path: Path, pipe: Pipeline) -> tuple[Project, lis
                 col.is_entity = True
             if (col := col_by_dataset.get(e.right, {}).get(e.right_on)) is not None:
                 col.is_entity = True
+    # every entity column carries a capped key sketch, so a later build can measure cross-project overlap
+    # without re-reading the project (the incremental-build invariant)
+    for d in datasets:
+        for col in d.columns:
+            if col.is_entity and (c := understood.get(col.id)) is not None and c._keys:
+                col.sketch = json.dumps({"keys": sorted(c._keys), "cut": c._key_cut, "unique": bool(c.unique)})
     return proj, datasets, edges
 
 
@@ -140,38 +156,92 @@ def _carry_over(src: Graph, dst: Graph, project_id_: str) -> None:
             dst.add_edge(e)
 
 
+def _sketch(sketch: str) -> tuple[list[str], int | None, bool]:
+    """A stored key sketch as (values, hash cut, the key is unique in its table). A damaged sketch is empty."""
+    try:
+        d = json.loads(sketch or "{}")
+        return list(d.get("keys") or []), d.get("cut"), bool(d.get("unique"))
+    except (ValueError, TypeError):
+        return [], None, False
+
+
+def _comparable(a: tuple[list[str], int | None, bool], b: tuple[list[str], int | None, bool]) -> tuple[set[str], set[str]]:
+    """The two key sets on a consistent sample: if either was capped by hash, keep only values below the smaller
+    cut on both sides, so a big table cannot out-vote a small one (the same rule as intra-project links)."""
+    a_keys, a_cut, _ = a
+    b_keys, b_cut, _ = b
+    cuts = [c for c in (a_cut, b_cut) if c is not None]
+    if not cuts:
+        return set(a_keys), set(b_keys)
+    cut = min(cuts)
+    return {v for v in a_keys if _vhash(v) <= cut}, {v for v in b_keys if _vhash(v) <= cut}
+
+
+def _overlap(a: set[str], b: set[str]) -> float:
+    """Half containment (the smaller side found in the larger) and half Jaccard, so a tiny set that happens to
+    sit inside a big one does not score as a match. The same measure the intra-project links use."""
+    if not a or not b:
+        return 0.0
+    inter = len(a & b)
+    return 0.5 * inter / min(len(a), len(b)) + 0.5 * inter / len(a | b)
+
+
+def _cardinality(left_unique: bool, right_unique: bool) -> str:
+    """How two keys relate, from whether each side's values are unique in its own table: a unique key is one row
+    per value, so it is the standard one-to-one / one-to-many / many-to-one / many-to-many."""
+    if left_unique and right_unique:
+        return "one-to-one"
+    if left_unique:
+        return "one-to-many"
+    if right_unique:
+        return "many-to-one"
+    return "many-to-many"
+
+
 def add_cross_project_keys(graph: Graph) -> int:
-    """Add the deterministic cross-project links the entity columns imply: two datasets in *different* projects
-    whose resolved key columns have the same normalised name are the same key. No model and no value scan: the
-    match percentage is left unmeasured (0) and the confidence is a fixed, documented value, so the edge is a
-    *proposal* the person can check, never a silent join. Returns how many edges were added."""
+    """Add the cross-project links the entity columns imply, **measured** from the key sketches each column
+    carries.
+
+    Two datasets in *different* projects whose resolved key columns have the same normalised name and whose
+    sampled key values actually overlap get a ``link`` edge with a measured match percentage and a cardinality,
+    and a confidence derived from the overlap. A same-named key with no shared values is not a link. No model
+    and no re-read: the sketches were stored when the projects were built, so a carried-over project is compared
+    without being opened (the incremental-build invariant). Deterministic. Returns how many edges were added."""
     from itertools import combinations
     from ..core.identity import key_norm
-    by_key: dict[str, list[tuple[str, str, str, str]]] = {}
+    by_key: dict[str, list[tuple[str, str, str, str, str]]] = {}
     for d in sorted(graph.datasets.values(), key=lambda x: x.id):
         for c in sorted(d.columns, key=lambda x: x.id):
-            if c.is_entity:
-                by_key.setdefault(key_norm(c.name), []).append((d.id, c.name, d.project, d.version))
+            if c.is_entity and c.sketch:
+                by_key.setdefault(key_norm(c.name), []).append((d.id, c.name, d.project, d.version, c.sketch))
     added = 0
     for norm, items in sorted(by_key.items()):
-        if len({p for *_, p in items}) < 2:
+        if len({t[2] for t in items}) < 2:                 # need two different projects to compare
             continue
         seen: set[tuple[str, str]] = set()
-        for (da, na, pa, va), (db, nb, pb, vb) in combinations(sorted(items, key=lambda t: (t[2], t[0], t[1])), 2):
+        for a, b in combinations(sorted(items, key=lambda t: (t[2], t[0], t[1])), 2):
+            (da, na, pa, va, sa), (db, nb, pb, vb, sb) = a, b
             if pa == pb:
                 continue
             if da <= db:
-                left, lon, lv, right, ron, rv = da, na, va, db, nb, vb
+                left, lon, lv, right, ron, rv, ls, rs = da, na, va, db, nb, vb, sa, sb
             else:
-                left, lon, lv, right, ron, rv = db, nb, vb, da, na, va
+                left, lon, lv, right, ron, rv, ls, rs = db, nb, vb, da, na, va, sb, sa
             pair = (left, right)
             if pair in seen:
                 continue
             seen.add(pair)
+            la, ra = _sketch(ls), _sketch(rs)
+            lset, rset = _comparable(la, ra)
+            score = _overlap(lset, rset)
+            if score <= 0:
+                continue                                   # same name, no shared values: not a link
+            pct = round(score * 100, 1)
+            card = _cardinality(la[2], ra[2])
             eid = f"xlink:{left}>{right}:{norm}"
-            graph.add_edge(Edge(eid, "link", left, right, lon, ron, "", 0.0, 0.8,
-                                f"{lon} and {ron} name the same key (across projects); the match has not been measured",
-                                lv, rv))
+            graph.add_edge(Edge(eid, "link", left, right, lon, ron, card, pct, round(score, 3),
+                                f"{lon} and {ron} name the same key across projects and share {pct}% of their "
+                                f"sampled values ({card})", lv, rv))
             added += 1
     return added
 

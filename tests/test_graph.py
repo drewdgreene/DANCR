@@ -146,6 +146,43 @@ def test_project_level_sensitivity_is_respected(tmp_path):
     assert any("a/a.json" in d["id"] for d in graph_query(tmp_path, allow_restricted=True)["datasets"])
 
 
+def _key_project(root, name, ids, key="event_id"):
+    root.mkdir(parents=True, exist_ok=True)
+    p = Pipeline(name); p.path = root / f"{name}.json"
+    p.add_node("enter_data", params={"columns": [{"name": key, "type": "text"}, {"name": "v", "type": "number"}],
+                                     "rows": [[i, float(n)] for n, i in enumerate(ids)]}, id="t")
+    p.save()
+    return p.path
+
+
+def test_cross_project_keys_are_measured_from_overlap(tmp_path):
+    # two single-table projects that share a key: the link is measured, not name-only
+    _key_project(tmp_path / "a", "a", ["E1", "E2", "E3"])
+    _key_project(tmp_path / "b", "b", ["E2", "E3", "E4"])
+    out = build_graph(tmp_path)
+    assert out["cross_project_edges"] >= 1
+    keys = graph_shared_keys(tmp_path)["keys"]
+    assert keys and keys[0]["match_pct"] > 0
+    assert keys[0]["cardinality"] in ("one-to-one", "one-to-many", "many-to-one", "many-to-many")
+    assert "share" in keys[0]["evidence"]
+
+
+def test_cross_project_keys_with_no_overlap_are_not_linked(tmp_path):
+    _key_project(tmp_path / "a", "a", ["E1", "E2"])
+    _key_project(tmp_path / "b", "b", ["X1", "X2"])
+    assert build_graph(tmp_path)["cross_project_edges"] == 0
+
+
+def test_a_carried_over_build_keeps_measured_cross_project_edges(tmp_path):
+    # the key sketch is persisted, so a build that reuses both projects still measures the same link
+    _key_project(tmp_path / "a", "a", ["E1", "E2", "E3"])
+    _key_project(tmp_path / "b", "b", ["E2", "E3"])
+    first = build_graph(tmp_path)
+    second = build_graph(tmp_path)
+    assert second["reused"] and not second["rebuilt"]          # nothing changed: both carried over, not re-read
+    assert second["cross_project_edges"] == first["cross_project_edges"] >= 1
+
+
 def test_cli_graph_build_and_query(tmp_path):
     make_repo(tmp_path)
     r = subprocess.run([sys.executable, "-m", "dancr.cli", "graph", "build", str(tmp_path)],

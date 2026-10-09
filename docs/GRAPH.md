@@ -63,11 +63,14 @@ No new dependency: SQLite is in the standard library.
 | `containment` | points matched to the polygon they fall inside |
 
 Intra-project edges come straight from `dancr.core.understand` (the answer
-engine's relation pass). **Cross-project** edges are added deterministically:
-two datasets in *different* projects whose resolved key columns share a normalized
-name get a `link` proposal edge with a fixed confidence; the match percentage is
-left unmeasured (0) and the evidence says so. It is a hypothesis to check, not a
-measured join — no value scan, no model, no silent join.
+engine's relation pass). **Cross-project** edges are added deterministically and
+**measured**: two datasets in *different* projects whose resolved (or key-like)
+columns share a normalized name have their sampled key values compared, and get a
+`link` edge with the measured match percentage, the cardinality and a confidence
+derived from the overlap; a same-named key with no shared values is not a link. A
+capped sample of each key column is stored with the graph, so a project carried
+over from a previous build is compared **without being read again**. Still no
+model and no silent join.
 
 ## Incremental build
 
@@ -119,4 +122,6 @@ each project's `.dancr/cache/` through the executor's existing leases. See
 
 See the graph and retrieval entries in `docs/OPEN.md`. In short: identity is
 path-based (a move is a new identity); relations come from a sample; cross-project
-links are by key name only, with no measured overlap.
+overlap is measured from a capped sample of the key values, not over every row, so
+it is an estimate and the cardinality is inferred from whether each key is unique
+in its own table.

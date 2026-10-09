@@ -21,7 +21,7 @@ from .dtypes import json_safe
 from .identity import IDENTITY_VERSION, key_norm, split_dataset_id
 from .repo import Repo, write_sqlite_atomic
 
-GRAPH_VERSION = 2
+GRAPH_VERSION = 3      # 3: columns carry a capped key-value sketch, so cross-project overlap can be measured
 SENSITIVITY_LEVELS = ("public", "internal", "confidential", "restricted")
 RESTRICTED_LEVELS = ("confidential", "restricted")
 _ORDER = {name: i for i, name in enumerate(SENSITIVITY_LEVELS)}
@@ -89,10 +89,12 @@ class Column:
     role: str = ""
     kind: str = ""
     unit: str = ""
-    is_entity: bool = False            # an endpoint of a link: a resolved key
+    is_entity: bool = False            # an endpoint of a link: a resolved key (or a key-like column)
+    sketch: str = ""                   # a capped sample of the column's distinct values, for measuring overlap
+    #                                    across projects without re-reading them; kept out of to_dict/fingerprint
 
     def to_dict(self) -> dict[str, Any]:
-        return json_safe(self.__dict__)
+        return json_safe({k: v for k, v in self.__dict__.items() if k != "sketch"})
 
 
 @dataclass
@@ -335,7 +337,7 @@ class Graph:
                                   rows INTEGER, rows_exact INTEGER, time_column TEXT, source TEXT,
                                   version TEXT, sensitivity TEXT);
             CREATE TABLE columns(id TEXT PRIMARY KEY, dataset TEXT, name TEXT, role TEXT, kind TEXT,
-                                 unit TEXT, is_entity INTEGER);
+                                 unit TEXT, is_entity INTEGER, sketch TEXT);
             CREATE TABLE sources(id TEXT PRIMARY KEY, dataset TEXT, path TEXT, size INTEGER, sample TEXT);
             CREATE TABLE edges(id TEXT PRIMARY KEY, kind TEXT, left_dataset TEXT, right_dataset TEXT,
                                left_on TEXT, right_on TEXT, cardinality TEXT, match_pct REAL,
@@ -353,8 +355,8 @@ class Graph:
                          (d.id, d.project, d.node, d.title, d.shape, d.rows, 1 if d.rows_exact else 0,
                           d.time_column, d.source, d.version, d.sensitivity))
             for c in sorted(d.columns, key=lambda x: x.id):
-                conn.execute("INSERT INTO columns VALUES (?,?,?,?,?,?,?)",
-                             (c.id, c.dataset, c.name, c.role, c.kind, c.unit, 1 if c.is_entity else 0))
+                conn.execute("INSERT INTO columns VALUES (?,?,?,?,?,?,?,?)",
+                             (c.id, c.dataset, c.name, c.role, c.kind, c.unit, 1 if c.is_entity else 0, c.sketch))
             for s in sorted(d.sources, key=lambda x: x.id):
                 conn.execute("INSERT INTO sources VALUES (?,?,?,?,?)", (s.id, s.dataset, s.path, s.size, s.sample))
         for e in sorted(self.edges.values(), key=lambda x: x.id):
@@ -389,8 +391,9 @@ class Graph:
             for r in conn.execute("SELECT * FROM columns ORDER BY id"):
                 d = g.datasets.get(r["dataset"])
                 if d is not None:
+                    sketch = r["sketch"] if "sketch" in r.keys() else ""      # a graph written before the sketch
                     d.columns.append(Column(r["id"], r["dataset"], r["name"], r["role"], r["kind"],
-                                            r["unit"], bool(r["is_entity"])))
+                                            r["unit"], bool(r["is_entity"]), sketch or ""))
             for r in conn.execute("SELECT * FROM sources ORDER BY id"):
                 d = g.datasets.get(r["dataset"])
                 if d is not None:
