@@ -41,7 +41,7 @@ MAIN_FILES = ["trials/plots.csv", "trials/phenotype_measurements.csv",
 
 # --------------------------------------------------------------------------- the data
 def _write_weather(directory: Path, rng: np.random.Generator) -> None:
-    rows = {"date": [], "site": [], "tmin_c": [], "tmax_c": [], "rain_mm": []}
+    rows: dict[str, list] = {"date": [], "site": [], "tmin_c": [], "tmax_c": [], "rain_mm": []}
     for year in YEARS:
         days = [date(year, 5, 1) + timedelta(days=i) for i in range(184)]     # May 1 – Oct 31
         for sid, _name, _lat, _lon in SITES:
@@ -69,8 +69,8 @@ def _write_trials(directory: Path, rng: np.random.Generator) -> None:
             trials.append((tid, year, sid, lat, lon))
             meta.append({"trial_id": tid, "site": sid, "site_name": sname, "year": stated_year,
                          "design": design, "reps": 3})
-    plots = {"plot_id": [], "trial_id": [], "site": [], "line": [], "rep": [], "plot_index": [], "treatment": []}
-    meas = {"plot_id": [], "trial_id": [], "site": [], "line": [], "rep": [], "treatment": [], "measured_on": [],
+    plots: dict[str, list] = {"plot_id": [], "trial_id": [], "site": [], "line": [], "rep": [], "plot_index": [], "treatment": []}
+    meas: dict[str, list] = {"plot_id": [], "trial_id": [], "site": [], "line": [], "rep": [], "treatment": [], "measured_on": [],
             "grain_yield_q_ha": [], "plant_height_cm": [], "days_to_anthesis": [],
             "disease_severity_pct": [], "lodging_pct": []}
     entries = LINES + CHECKS
@@ -114,7 +114,7 @@ def _write_trials(directory: Path, rng: np.random.Generator) -> None:
 
 def _write_registry(directory: Path, rng: np.random.Generator) -> None:
     entries = LINES + CHECKS
-    rows = {"canonical_name": [], "registry_id": [], "lims_id": [], "crop": [], "status": []}
+    rows: dict[str, list] = {"canonical_name": [], "registry_id": [], "lims_id": [], "crop": [], "status": []}
     for i, ln in enumerate(entries, start=1):
         rows["canonical_name"].append(ln)
         rows["registry_id"].append(f"REG-{i:04d}")
@@ -131,7 +131,7 @@ def _write_registry(directory: Path, rng: np.random.Generator) -> None:
 
 def _write_editing(directory: Path, rng: np.random.Generator) -> None:
     n = 24
-    events = {"event_id": [], "lims_id": [], "registry_id": [], "construct_id": [], "host_line": [], "program": []}
+    events: dict[str, list] = {"event_id": [], "lims_id": [], "registry_id": [], "construct_id": [], "host_line": [], "program": []}
     for i in range(1, n + 1):
         events["event_id"].append(f"EVT-{i:04d}")
         events["lims_id"].append(f"LIMS-{20000 + i * 5}")
@@ -145,7 +145,7 @@ def _write_editing(directory: Path, rng: np.random.Generator) -> None:
 
     codes = ["CO_322:0000401", "CO_322:0000482", "CO_322:0000531", "CO_322:0000595"]
     names = ["grain yield", "plant height", "days to anthesis", "drought susceptibility"]
-    traits = {"event_id": [], "trait_reference": [], "trait_reference_type": [], "effect_direction": [], "effect_size_pct": []}
+    traits: dict[str, list] = {"event_id": [], "trait_reference": [], "trait_reference_type": [], "effect_direction": [], "effect_size_pct": []}
     for i in range(1, n + 1):
         free = (i % 3 == 0)                                   # a third written as free text (defect)
         j = i % 4
@@ -159,7 +159,7 @@ def _write_editing(directory: Path, rng: np.random.Generator) -> None:
 
 def _write_governance(directory: Path, rng: np.random.Generator) -> None:
     directory.joinpath("governance").mkdir(parents=True, exist_ok=True)
-    prov = {"record_id": [], "entity": [], "activity": [], "agent": [], "pipeline_version": [], "timestamp": []}
+    prov: dict[str, list] = {"record_id": [], "entity": [], "activity": [], "agent": [], "pipeline_version": [], "timestamp": []}
     for i in range(1, 31):
         prov["record_id"].append(f"PROV-{i:04d}")
         prov["entity"].append(["phenotype_measurements.csv", "edit_outcomes.csv", "variants.vcf"][i % 3])
@@ -169,7 +169,7 @@ def _write_governance(directory: Path, rng: np.random.Generator) -> None:
         prov["timestamp"].append(f"2026-{1 + i % 9:02d}-{1 + i % 27:02d}")
     pl.DataFrame(prov).write_csv(directory / "governance" / "provenance_log.csv")
 
-    vocab = {"vocabulary": [], "term_id": [], "label": [], "definition": []}
+    vocab: dict[str, list] = {"vocabulary": [], "term_id": [], "label": [], "definition": []}
     for term, label, definition in [
             ("CO_322:0000401", "Grain yield", "Grain yield measured as plot weight at maturity"),
             ("CO_322:0000482", "Plant height", "Plant height measured as stem length, soil to tassel tip"),

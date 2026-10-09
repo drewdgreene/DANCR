@@ -119,16 +119,20 @@ def _project_graph(root: Path, path: Path, pipe: Pipeline) -> tuple[Project, lis
     col_by_dataset = {d.id: {c.name: c for c in d.columns} for d in datasets}
     for e in edges:
         if e.kind == "link":
-            if (col := col_by_dataset.get(e.left, {}).get(e.left_on)) is not None:
-                col.is_entity = True
-            if (col := col_by_dataset.get(e.right, {}).get(e.right_on)) is not None:
-                col.is_entity = True
+            left_col = col_by_dataset.get(e.left, {}).get(e.left_on)
+            if left_col is not None:
+                left_col.is_entity = True
+            right_col = col_by_dataset.get(e.right, {}).get(e.right_on)
+            if right_col is not None:
+                right_col.is_entity = True
     # every entity column carries a capped key sketch, so a later build can measure cross-project overlap
     # without re-reading the project (the incremental-build invariant)
     for d in datasets:
         for col in d.columns:
-            if col.is_entity and (c := understood.get(col.id)) is not None and c._keys:
-                col.sketch = json.dumps({"keys": sorted(c._keys), "cut": c._key_cut, "unique": bool(c.unique)})
+            understood_col = understood.get(col.id)
+            if col.is_entity and understood_col is not None and understood_col._keys:
+                col.sketch = json.dumps({"keys": sorted(understood_col._keys), "cut": understood_col._key_cut,
+                                         "unique": bool(understood_col.unique)})
     return proj, datasets, edges
 
 

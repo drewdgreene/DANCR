@@ -152,15 +152,16 @@ def rank(query: str, *, texts: list[Any], vectors: list[Any] | None, dim: int | 
     floor on the reported score and is ignored for BM25, whose scores are unbounded."""
     if retriever not in RETRIEVERS:
         raise ValueError(f"Unknown retriever {retriever!r}. Choose one of: {', '.join(RETRIEVERS)}")
-    has_vectors = vectors is not None and len(vectors) > 0
+    vecs: list[Any] = vectors if vectors is not None else []
+    has_vectors = len(vecs) > 0
     provenance: dict[str, Any] = {"retriever": retriever, "embedder": None, "retrievers": []}
     if retriever == "bm25" or not has_vectors:
         scores = bm25_scores(texts, query)
         provenance["retrievers"] = ["bm25"]
         floor = 0.0
     else:
-        size = int(dim or (len(vectors[0]) if has_vectors else DEFAULT_DIM))
-        lex = lexical_scores(query, vectors, size)
+        size = int(dim or (len(vecs[0]) if has_vectors else DEFAULT_DIM))
+        lex = lexical_scores(query, vecs, size)
         provenance["embedder"] = EMBEDDER_ID
         if retriever == "hybrid":
             bm = bm25_scores(texts, query)
